@@ -18,6 +18,8 @@ COPY pyproject.toml ./
 # Dummy package so pip can resolve extras without the full source
 RUN mkdir -p quantnado && touch quantnado/__init__.py
 
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
+
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir ".[dev]"
 
