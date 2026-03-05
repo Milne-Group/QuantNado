@@ -38,8 +38,7 @@ jobs:
 
       - name: Install package with docs dependencies
         run: |
-          pip install mkdocs mkdocs-material mkdocstrings mkdocstrings-python pymdown-extensions
-          SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 pip install -e . --no-deps
+          SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 pip install -e ".[dev]"
 
       - name: Build
         run: mkdocs build
