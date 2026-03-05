@@ -6,25 +6,18 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        python-version: [3.13]
+    container:
+      image: ghcr.io/milne-group/quantnado-ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ".[dev]" build twine
+      - name: Install package
+        run: pip install --no-cache-dir -e ".[dev]" --no-deps
 
       - name: Run tests
-        run: |
-          pytest tests
+        run: pytest tests
