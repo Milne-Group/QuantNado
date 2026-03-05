@@ -10,7 +10,7 @@ from quantnado.cli import app, combine_metadata_main, make_zarr_main
 from quantnado.dataset.bam import BamStore
 
 
-runner = CliRunner()
+runner = CliRunner(env={"NO_COLOR": "1"})
 
 
 # ---------------------------------------------------------------------------
