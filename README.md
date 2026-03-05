@@ -126,14 +126,6 @@ Full documentation is available at [milne-group.github.io/QuantNado](https://mil
 | `scikit-learn` (via `dask-ml`) | PCA |
 | `typer`, `loguru` | CLI and logging |
 
-Optional extras for deep learning-based peak calling:
-
-```bash
-pip install "quantnado[ml]"
-```
-
-Installs `torch`, `modisco-lite`, and `crested`.
-
 ---
 
 ## License
