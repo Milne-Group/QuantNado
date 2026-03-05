@@ -98,6 +98,9 @@ markdown_extensions:
 
 plugins:
   - search
+  - mkdocs-jupyter:
+      execute: false
+      include_source: true
   - mkdocstrings:
       default_handler: python
       handlers:
@@ -129,7 +132,9 @@ nav:
   - API Reference:
     - QuantNado: api/quantnado.md
     - BamStore: api/bamstore.md
-  - Examples: examples.md
+  - Examples:
+    - Overview: examples.md
+    - Example Notebook: example_dataset.ipynb
   - Help:
     - FAQ: faq.md
     - Troubleshooting: troubleshooting.md

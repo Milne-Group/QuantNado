@@ -1,6 +1,15 @@
 # Examples and Workflows
 
-Complete workflows for common QuantNado tasks.
+For a complete, runnable end-to-end walkthrough using a real multiomics dataset, see the
+**[Example Notebook](example_dataset.ipynb)** — it covers dataset creation, signal reduction,
+PCA, feature counts, and coverage extraction over a chr21 test dataset.
+
+You can also open or download the notebook directly from GitHub:
+[example/example_dataset.ipynb](https://github.com/Milne-Group/QuantNado/blob/main/example/example_dataset.ipynb)
+
+---
+
+The code snippets below show focused workflows for common QuantNado tasks.
 
 ## Workflow 1: ChIP-seq Analysis
 
