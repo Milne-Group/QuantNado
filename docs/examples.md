@@ -1,6 +1,15 @@
 # Examples and Workflows
 
-Complete workflows for common QuantNado tasks.
+For a complete, runnable end-to-end walkthrough using a real multiomics dataset, see the
+**[Example Notebook](example_dataset.ipynb)** — it covers dataset creation, signal reduction,
+PCA, feature counts, and coverage extraction over a chr21 test dataset.
+
+You can also open or download the notebook directly from GitHub:
+[example/example_dataset.ipynb](https://github.com/Milne-Group/QuantNado/blob/main/example/example_dataset.ipynb)
+
+---
+
+The code snippets below show focused workflows for common QuantNado tasks.
 
 ## Workflow 1: ChIP-seq Analysis
 
@@ -86,14 +95,14 @@ ax = fig.add_subplot(111, projection='3d')
 # Color by sample type
 colors = {'chip': 'red', 'input': 'blue'}
 metadata = qn.metadata
-for sample in metadata.index:
+transformed_arr = np.asarray(transformed)  # (n_samples, n_components)
+for idx, sample in enumerate(qn.samples):
     sample_type = metadata.loc[sample, 'type']
     color = colors[sample_type]
-    idx = list(transformed.sample.values).index(sample)
     ax.scatter(
-        transformed.sel(PC=1).values[idx],
-        transformed.sel(PC=2).values[idx],
-        transformed.sel(PC=3).values[idx],
+        transformed_arr[idx, 0],
+        transformed_arr[idx, 1],
+        transformed_arr[idx, 2],
         c=color,
         s=100,
         label=sample_type if sample_type not in ax.get_legend_handles_labels()[1] else ""

@@ -76,7 +76,7 @@ sample3,treatment,1,high
 
 ### Max Workers (`--max-workers`)
 
-Number of parallel worker threads (default: 4):
+Number of parallel worker threads (default: 1):
 
 ```bash
 # Use more workers for faster processing (uses more memory)
@@ -154,11 +154,15 @@ quantnado create-dataset *.bam \
 
 ### Resume Processing
 
-Resume interrupted dataset creation:
+Resume interrupted dataset creation by passing `--resume`. Without this flag, re-running the
+command will fail if the store already exists (use `--overwrite` to replace it instead):
 
 ```bash
-# Automatically resumes from where it left off
-quantnado create-dataset *.bam --output dataset.zarr
+# Resume from where processing left off (skips completed samples)
+quantnado create-dataset *.bam --output dataset.zarr --resume
+
+# Or start fresh, overwriting the existing store
+quantnado create-dataset *.bam --output dataset.zarr --overwrite
 ```
 
 ## Performance

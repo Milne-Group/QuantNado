@@ -42,14 +42,17 @@ dependencies = [
 dev = [
     "mkdocs-material",
     "mkdocs>=1.6",
+    "mkdocs-jupyter",
     "mkdocstrings-python",
     "mkdocstrings",
     "pymdown-extensions",
     "pytest",
     "ruff",
+]
+example = [
     "ipykernel",
-    "pysam",
-    "crested",
+    "jupyterlab",
+    "matplotlib",
 ]
 
 [project.scripts]

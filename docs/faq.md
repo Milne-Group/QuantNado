@@ -81,15 +81,16 @@ qn = QuantNado.open("my_dataset.zarr")
 
 A:
 ```python
-data = qn["chr1"].sel(sample=["sample1", "sample2"])
+chroms = qn.to_xarray()
+data = chroms["chr1"].sel(sample=["sample1", "sample2"])
 ```
 
 **Q: Can I write modified data back to the dataset?**
 
 A: No, datasets are read-only. Export to new formats for storage:
 ```python
-df = qn["chr1"].to_dataframe()
-df.to_parquet("chr1.parquet")
+chroms = qn.to_xarray()
+chroms["chr1"].to_pandas().to_parquet("chr1.parquet")
 ```
 
 ## Troubleshooting

@@ -197,10 +197,11 @@ EOF
 ```python
 from quantnado import QuantNado
 qn = QuantNado.open("large_dataset.zarr")
+chroms = qn.to_xarray()
 
 # Process chromosome by chromosome
-for chrom in qn.sample_names:
-    data = qn[chrom]  # Lazy load
+for chrom in qn.chromosomes:
+    data = chroms[chrom]  # Lazy load
     result = data.compute()  # Compute only what you need
     del result  # Free memory
 ```
