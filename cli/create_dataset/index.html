@@ -331,17 +331,20 @@
   
   
   
-    <li class="md-tabs__item">
-      <a href="../../examples/" class="md-tabs__link">
-        
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../examples/" class="md-tabs__link">
+          
   
   
     
   
   Examples
 
-      </a>
-    </li>
+        </a>
+      </li>
+    
   
 
       
@@ -1211,9 +1214,33 @@
   
   
   
-    <li class="md-nav__item">
-      <a href="../../examples/" class="md-nav__link">
+    
+    
+      
         
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
   
   
   <span class="md-ellipsis">
@@ -1227,7 +1254,79 @@
   
   
 
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
       </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../example_dataset/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    QuantNado — Dataset Exploration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -1846,7 +1945,7 @@
 </span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>sample3,treatment,1,high
 </span></code></pre></div></p>
 <h3 id="max-workers-max-workers">Max Workers (<code>--max-workers</code>)<a class="headerlink" href="#max-workers-max-workers" title="Anchor link to this section">&para;</a></h3>
-<p>Number of parallel worker threads (default: 4):</p>
+<p>Number of parallel worker threads (default: 1):</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Use more workers for faster processing (uses more memory)</span>
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--max-workers<span class="w"> </span><span class="m">8</span>
 </span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
@@ -1891,9 +1990,13 @@
 </span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span>--verbose
 </span></code></pre></div>
 <h3 id="resume-processing">Resume Processing<a class="headerlink" href="#resume-processing" title="Anchor link to this section">&para;</a></h3>
-<p>Resume interrupted dataset creation:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Automatically resumes from where it left off</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr
+<p>Resume interrupted dataset creation by passing <code>--resume</code>. Without this flag, re-running the
+command will fail if the store already exists (use <code>--overwrite</code> to replace it instead):</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Resume from where processing left off (skips completed samples)</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--resume
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># Or start fresh, overwriting the existing store</span>
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--overwrite
 </span></code></pre></div>
 <h2 id="performance">Performance<a class="headerlink" href="#performance" title="Anchor link to this section">&para;</a></h2>
 <h3 id="typical-run-times">Typical Run Times<a class="headerlink" href="#typical-run-times" title="Anchor link to this section">&para;</a></h3>
