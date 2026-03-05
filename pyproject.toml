@@ -39,11 +39,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ml = [
-    "crested",
-    "torch",
-    "modisco-lite",
-]
 dev = [
     "mkdocs-material",
     "mkdocs>=1.6",

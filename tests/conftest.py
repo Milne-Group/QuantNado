@@ -7,11 +7,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from loguru import logger
 
 # Ensure the project root is on sys.path so imports work when running locally.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+@pytest.fixture(autouse=True)
+def reset_loguru():
+    """Remove all loguru handlers after each test to prevent I/O errors on closed files."""
+    yield
+    logger.remove()
 
 from quantnado.dataset.bam import BamStore
 

@@ -1,6 +1,7 @@
 """CLI tests for QuantNado commands using Typer's test runner."""
 from __future__ import annotations
 
+import re
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,7 +11,11 @@ from quantnado.cli import app, combine_metadata_main, make_zarr_main
 from quantnado.dataset.bam import BamStore
 
 
-runner = CliRunner(env={"NO_COLOR": "1"})
+runner = CliRunner()
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r'\x1b\[[0-9;]*[mGKHFABCDEFJKST]', '', text)
 
 
 # ---------------------------------------------------------------------------
@@ -33,13 +38,13 @@ def test_no_args_shows_help():
 def test_create_dataset_help():
     result = runner.invoke(app, ["create-dataset", "--help"])
     assert result.exit_code == 0
-    assert "--output" in result.output
+    assert "--output" in _strip_ansi(result.output)
 
 
 def test_call_peaks_help():
     result = runner.invoke(app, ["call-peaks", "--help"])
     assert result.exit_code == 0
-    assert "--bigwig-dir" in result.output
+    assert "--bigwig-dir" in _strip_ansi(result.output)
 
 
 # ---------------------------------------------------------------------------
