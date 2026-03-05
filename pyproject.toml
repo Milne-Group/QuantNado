@@ -47,9 +47,11 @@ dev = [
     "pymdown-extensions",
     "pytest",
     "ruff",
+]
+example = [
     "ipykernel",
-    "pysam",
-    "crested",
+    "jupyterlab",
+    "matplotlib",
 ]
 
 [project.scripts]
