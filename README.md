@@ -125,6 +125,8 @@ Full documentation is available at [milne-group.github.io/QuantNado](https://mil
 | `pyranges` | Genomic range operations |
 | `scikit-learn` (via `dask-ml`) | PCA |
 | `typer`, `loguru` | CLI and logging |
+| `ipykernel`, `jupyterlab`, `matplotlib` | Example notebook (`pip install "quantnado[example]"`) |
+
 
 ---
 
