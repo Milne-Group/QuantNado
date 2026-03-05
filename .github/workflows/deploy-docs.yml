@@ -48,4 +48,3 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./site
-          cname: quantnado.readthedocs.io  # Optional: update with your custom domain if desired
