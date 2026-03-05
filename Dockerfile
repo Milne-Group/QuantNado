@@ -14,9 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
-# Dummy package so pip can resolve extras without the full source
-RUN mkdir -p quantnado && touch quantnado/__init__.py
+COPY . .
 
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
 
