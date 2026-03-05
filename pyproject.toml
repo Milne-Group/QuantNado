@@ -1,0 +1,83 @@
+[build-system]
+requires = [
+    "setuptools >=82",
+    "wheel",
+    "setuptools_scm[toml]>=9.2.2",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantnado"
+description = "Dataset generation and peak calling for multi-modal Next-Generation Sequencing data"
+authors = [
+    { name = "Catherine Chahrour", email = "catherine.chahrour@imm.ox.ac.uk" },
+    { name = "Alastair Smith" }
+]
+readme = "README.md"
+requires-python = ">=3.12, <3.14"
+license = "MIT"
+dynamic = ["version"]
+
+dependencies = [
+    "bamnado",
+    "crested",
+    "dask-ml>=2025,<2027",
+    "dask>=2026",
+    "icechunk>=1.1",
+    "loguru>=0.7",
+    "numpy>=2.0,<3.0",
+    "pandas>=3.0,<4.0",
+    "pyBigWig>=0.3",
+    "pyranges==0.1.4",
+    "pysam>=0.23",
+    "seaborn>=0.13",
+    "sparse>=0.18",
+    "tqdm>=4.67",
+    "typer>=0.24",
+    "xarray>=2026",
+    "zarr>=3.0,<4.0",
+]
+
+[project.optional-dependencies]
+ml = [
+    "crested",
+    "torch",
+    "modisco-lite",
+]
+dev = [
+    "mkdocs-material",
+    "mkdocs>=1.6",
+    "mkdocstrings-python",
+    "mkdocstrings",
+    "pymdown-extensions",
+    "pytest",
+    "ruff",
+    "ipykernel",
+    "pysam",
+    "crested",
+]
+
+[project.scripts]
+quantnado = "quantnado.cli:main"
+quantnado-make-zarr = "quantnado.cli:make_zarr_main"
+quantnado-combine-metadata = "quantnado.cli:combine_metadata_main"
+
+[tool.setuptools_scm]
+write_to = "quantnado/_version.py"
+local_scheme = "no-local-version"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "unit: fast, self-contained unit tests (no BamStore or file I/O)",
+    "integration: tests that require a BamStore or file system",
+    "cli: tests for the command-line interface",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
