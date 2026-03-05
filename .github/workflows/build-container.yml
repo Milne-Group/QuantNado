@@ -1,13 +1,8 @@
 name: Build CI Container
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'pyproject.toml'
-      - 'Dockerfile'
-      - '.github/workflows/build-container.yml'
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
