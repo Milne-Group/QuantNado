@@ -154,6 +154,75 @@ def test_create_dataset_resume_flag(tmp_path, monkeypatch):
     assert calls[0]["resume"] is True
 
 
+def test_create_dataset_chunk_len_flag(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_bam_files(**kwargs):
+        calls.append(kwargs)
+        return BamStore(kwargs["store_path"], {"chr1": 4}, ["s"])
+
+    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset", str(bam),
+        "--output", str(tmp_path / "out.zarr"),
+        "--chunk-len", "131072",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["chunk_len"] == 131072
+
+
+def test_create_dataset_local_staging_flags(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_bam_files(**kwargs):
+        calls.append(kwargs)
+        return BamStore(kwargs["store_path"], {"chr1": 4}, ["s"])
+
+    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    staging_dir = tmp_path / "scratch"
+
+    result = runner.invoke(app, [
+        "create-dataset", str(bam),
+        "--output", str(tmp_path / "out.zarr"),
+        "--local-staging",
+        "--staging-dir", str(staging_dir),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["local_staging"] is True
+    assert calls[0]["staging_dir"] == staging_dir
+
+
+def test_create_dataset_construction_compression_flag(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_bam_files(**kwargs):
+        calls.append(kwargs)
+        return BamStore(kwargs["store_path"], {"chr1": 4}, ["s"])
+
+    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset", str(bam),
+        "--output", str(tmp_path / "out.zarr"),
+        "--construction-compression", "fast",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["construction_compression"] == "fast"
+
+
 def test_create_dataset_propagates_exception(tmp_path, monkeypatch):
     def fake_from_bam_files(**kwargs):
         raise RuntimeError("boom")

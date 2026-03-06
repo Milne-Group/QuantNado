@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, Any
+import os
 import shutil
 import hashlib
 import json
+import tempfile
+import uuid
 import pysam
 
 import bamnado
@@ -18,9 +21,12 @@ import xarray as xr
 import dask.array as da
 
 from .metadata import extract_metadata
+from quantnado.utils import estimate_chunk_len, is_network_fs
 
 DEFAULT_CHUNK_LEN = 65536
 BIN_SIZE = 1
+CONSTRUCTION_ARRAY_DTYPE = np.uint32
+DEFAULT_CONSTRUCTION_COMPRESSION = "default"
 
 
 def _to_str_list(values: Iterable[Any]) -> list[str]:
@@ -45,6 +51,105 @@ def _compute_bam_hash(bam_path: Path | str) -> str:
         logger.warning(f"Could not compute hash for {bam_path}: {e}")
         return ""
     return h.hexdigest()
+
+
+def _resolve_chunk_len(
+    chromsizes: dict[str, int],
+    store_path: Path,
+    chunk_len: int | None,
+) -> int:
+    if chunk_len is not None:
+        resolved = int(chunk_len)
+        if resolved <= 0:
+            raise ValueError("chunk_len must be a positive integer")
+        return resolved
+
+    fs_probe_path = store_path if store_path.exists() else store_path.parent
+    fs_is_network = is_network_fs(fs_probe_path)
+    estimate = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(CONSTRUCTION_ARRAY_DTYPE).itemsize,
+        fs_is_network=fs_is_network,
+    )
+    resolved = int(estimate["chunk_len"])
+    fs_label = "network" if fs_is_network else "local"
+    logger.info(
+        "Resolved chunk_len={} for {} filesystem at {} ({} estimated chunks)",
+        resolved,
+        fs_label,
+        fs_probe_path,
+        estimate["num_chunks"],
+    )
+    return resolved
+
+
+def _normalize_construction_compression(profile: str | None) -> str:
+    normalized = (profile or DEFAULT_CONSTRUCTION_COMPRESSION).strip().lower()
+    aliases = {
+        "uncompressed": "none",
+        "off": "none",
+    }
+    normalized = aliases.get(normalized, normalized)
+    valid_profiles = {"default", "fast", "none"}
+    if normalized not in valid_profiles:
+        raise ValueError(
+            f"construction_compression must be one of {sorted(valid_profiles)}, got {profile!r}"
+        )
+    return normalized
+
+
+def _resolve_construction_compressors(
+    profile: str | None,
+) -> tuple[str, list[BloscCodec]]:
+    normalized = _normalize_construction_compression(profile)
+    if normalized == "none":
+        return normalized, []
+    if normalized == "fast":
+        return normalized, [BloscCodec(cname="zstd", clevel=1, shuffle="shuffle")]
+    return normalized, [BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")]
+
+
+def _resolve_staging_root(staging_dir: Path | str | None) -> Path:
+    if staging_dir is not None:
+        return Path(staging_dir)
+
+    return Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
+
+
+def _build_staging_store_path(
+    final_store_path: Path,
+    staging_dir: Path | str | None,
+) -> Path:
+    staging_root = _resolve_staging_root(staging_dir)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    return staging_root / f".{final_store_path.stem}.staging-{uuid.uuid4().hex}.zarr"
+
+
+def _delete_store_path(store_path: Path) -> None:
+    if not store_path.exists():
+        return
+
+    if store_path.is_dir():
+        shutil.rmtree(store_path)
+    else:
+        store_path.unlink()
+
+
+def _publish_staged_store(staged_store_path: Path, final_store_path: Path) -> None:
+    final_store_path.parent.mkdir(parents=True, exist_ok=True)
+    publish_tmp_path = final_store_path.parent / (
+        f".{final_store_path.name}.publishing-{uuid.uuid4().hex}"
+    )
+
+    try:
+        shutil.copytree(staged_store_path, publish_tmp_path)
+        _delete_store_path(final_store_path)
+        publish_tmp_path.rename(final_store_path)
+    except Exception:
+        _delete_store_path(publish_tmp_path)
+        raise
+    finally:
+        _delete_store_path(staged_store_path)
 
 
 def _get_chromsizes_from_bam(bam_path: Path | str) -> dict[str, int]:
@@ -134,7 +239,8 @@ class BamStore:
         chromsizes: dict[str, int] | Path | str,
         sample_names: list[str],
         *,
-        chunk_len: int = DEFAULT_CHUNK_LEN,
+        chunk_len: int | None = None,
+        construction_compression: str = DEFAULT_CONSTRUCTION_COMPRESSION,
         overwrite: bool = True,
         resume: bool = False,
         read_only: bool = False,
@@ -142,11 +248,12 @@ class BamStore:
         self.store_path = self._normalize_path(store_path)
         self.chromsizes = _parse_chromsizes(chromsizes)
         self.chromosomes = list(self.chromsizes.keys())
-        self.chunk_len = int(chunk_len)
         self.sample_names = [str(s) for s in sample_names]
         self.n_samples = len(self.sample_names)
         self.sample_hash = _compute_sample_hash(self.sample_names)
-        self.compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
+        self.construction_compression, self.compressors = _resolve_construction_compressors(
+            construction_compression
+        )
         self.read_only = read_only
 
         if self.n_samples == 0:
@@ -161,9 +268,20 @@ class BamStore:
                     shutil.rmtree(self.store_path)
                 else:
                     self.store_path.unlink()
+                self.chunk_len = _resolve_chunk_len(
+                    self.chromsizes,
+                    self.store_path,
+                    chunk_len,
+                )
                 self._init_store()
             elif resume:
                 self._load_existing()
+                self.chunk_len = int(
+                    self.root.attrs.get(
+                        "chunk_len",
+                        _resolve_chunk_len(self.chromsizes, self.store_path, chunk_len),
+                    )
+                )
                 self._validate_sample_names()
             else:
                 raise FileExistsError(
@@ -172,6 +290,11 @@ class BamStore:
         else:
             if read_only:
                 raise FileNotFoundError(f"Store does not exist at {self.store_path} (read_only=True)")
+            self.chunk_len = _resolve_chunk_len(
+                self.chromsizes,
+                self.store_path,
+                chunk_len,
+            )
             self._init_store()
     @classmethod
     def open(cls, store_path: str | Path, read_only: bool = True) -> "BamStore":
@@ -233,8 +356,8 @@ class BamStore:
                 name=chrom,
                 shape=(self.n_samples, size),
                 chunks=(1, self.chunk_len),
-                dtype=np.uint32,
-                compressors=[self.compressor],
+                dtype=CONSTRUCTION_ARRAY_DTYPE,
+                compressors=self.compressors,
                 fill_value=0,
                 overwrite=True,
             )
@@ -267,6 +390,7 @@ class BamStore:
                 "chromsizes": self.chromsizes,
                 "n_samples": self.n_samples,
                 "chunk_len": self.chunk_len,
+                "construction_compression": self.construction_compression,
                 "structure": "per-chromosome (sample x position)",
                 "bin_size": BIN_SIZE,
                 "sample_names": self.sample_names,
@@ -361,7 +485,46 @@ class BamStore:
 
         return sample_data, sparsity_values
 
-    # _write_sample removed; writes occur inline in process_samples
+    def _process_single_sample(
+        self,
+        sample_idx: int,
+        bam_file: str,
+        sample_name: str,
+        chromsizes_dict: dict[str, int],
+    ) -> tuple[int, dict[str, Any]]:
+        logger.info(
+            f"Processing sample {sample_idx + 1}/{self.n_samples}: {sample_name}"
+        )
+
+        bam_hash = _compute_bam_hash(bam_file)
+        chr_data, sparsity_values = self._process_bam_file(
+            bam_file,
+            chromsizes_dict,
+            max_workers=1,
+        )
+
+        return sample_idx, {
+            "sparsity": float(np.mean(sparsity_values)) if sparsity_values else np.nan,
+            "hash": bam_hash,
+            "chr_data": chr_data,
+        }
+
+    def _write_sample_result(self, sample_idx: int, results: dict[str, Any]) -> None:
+        for contig, data in results["chr_data"].items():
+            self.root[contig][sample_idx, : data.shape[0]] = data
+
+        self.meta["sparsity"][sample_idx] = results["sparsity"]
+        self.meta["sample_hashes"][sample_idx, :] = 0
+
+        hash_value = results.get("hash") or ""
+        if hash_value:
+            hash_bytes = bytes.fromhex(hash_value)
+            self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(
+                hash_bytes,
+                dtype=np.uint8,
+            )
+
+        self.meta["completed"][sample_idx] = True
 
     def process_samples(
         self,
@@ -374,70 +537,135 @@ class BamStore:
         chromsizes_dict = self.chromsizes
         completed = self.completed_mask
 
-        # Helper function to process a single sample
-        def _process_single_sample(sample_idx: int, bam_file: str, sample_name: str) -> tuple[int, dict]:
-            """Process a single BAM file and return results."""
+        pending_samples: list[tuple[int, str, str]] = []
+        for sample_idx, (bam_file, sample_name) in enumerate(
+            zip(bam_files, self.sample_names)
+        ):
             if completed[sample_idx]:
                 logger.info(
                     f"Skipping completed sample '{sample_name}' (index {sample_idx})"
                 )
-                return sample_idx, {}
+                continue
+            pending_samples.append((sample_idx, bam_file, sample_name))
 
-            logger.info(
-                f"Processing sample {sample_idx + 1}/{self.n_samples}: {sample_name}"
+        if pending_samples:
+            from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+            from queue import Full, Queue
+            from threading import Event, Thread
+
+            max_workers = max(1, int(max_workers))
+            expected_order = [sample_idx for sample_idx, _, _ in pending_samples]
+            result_queue: Queue[tuple[int, dict[str, Any]] | object] = Queue(
+                maxsize=max_workers
             )
+            writer_failed = Event()
+            writer_errors: list[BaseException] = []
+            writer_stop_token = object()
 
-            bam_hash = _compute_bam_hash(bam_file)
-            sparsity_values: list[float] = []
-            chr_data = {}
-            
-            for contig, size in chromsizes_dict.items():
-                _c, data, sparsity = self._process_chromosome(bam_file, contig, size)
-                chr_data[contig] = data
-                sparsity_values.append(sparsity)
+            def _raise_writer_error() -> None:
+                if writer_errors:
+                    raise RuntimeError("Writer thread failed during sample flush") from writer_errors[0]
 
-            return sample_idx, {
-                "sparsity": float(np.mean(sparsity_values)) if sparsity_values else np.nan,
-                "hash": bam_hash,
-                "chr_data": chr_data,
-            }
+            def _enqueue_result(item: tuple[int, dict[str, Any]] | object) -> None:
+                while True:
+                    _raise_writer_error()
+                    try:
+                        result_queue.put(item, timeout=0.1)
+                        return
+                    except Full:
+                        continue
 
-        # Process samples in parallel or sequentially
-        if max_workers > 1:
-            from concurrent.futures import ThreadPoolExecutor
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [
-                    executor.submit(_process_single_sample, idx, bam_file, sample_name)
-                    for idx, (bam_file, sample_name) in enumerate(zip(bam_files, self.sample_names))
-                ]
-                
-                for future in futures:
-                    sample_idx, results = future.result()
-                    if results:  # Skip if no results (already completed)
-                        # Write chromosome data
-                        for contig, data in results["chr_data"].items():
-                            self.root[contig][sample_idx, : data.shape[0]] = data
-                        
-                        # Write metadata
-                        self.meta["sparsity"][sample_idx] = results["sparsity"]
-                        hash_bytes = bytes.fromhex(results["hash"])
-                        self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(hash_bytes, dtype=np.uint8)
-                        self.meta["completed"][sample_idx] = True
-        else:
-            # Sequential processing (original behavior)
-            for sample_idx, (bam_file, sample_name) in enumerate(
-                zip(bam_files, self.sample_names)
-            ):
-                sample_idx_result, results = _process_single_sample(sample_idx, bam_file, sample_name)
-                if results:
-                    for contig, data in results["chr_data"].items():
-                        self.root[contig][sample_idx, : data.shape[0]] = data
-                    
-                    self.meta["sparsity"][sample_idx] = results["sparsity"]
-                    hash_bytes = bytes.fromhex(results["hash"])
-                    self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(hash_bytes, dtype=np.uint8)
-                    self.meta["completed"][sample_idx] = True
+            def _writer_loop() -> None:
+                buffered_results: dict[int, dict[str, Any]] = {}
+                next_expected_idx = 0
+
+                try:
+                    while True:
+                        item = result_queue.get()
+                        if item is writer_stop_token:
+                            break
+
+                        sample_idx, results = item
+                        buffered_results[sample_idx] = results
+
+                        while next_expected_idx < len(expected_order):
+                            expected_sample_idx = expected_order[next_expected_idx]
+                            if expected_sample_idx not in buffered_results:
+                                break
+
+                            self._write_sample_result(
+                                expected_sample_idx,
+                                buffered_results.pop(expected_sample_idx),
+                            )
+                            next_expected_idx += 1
+
+                    if next_expected_idx != len(expected_order):
+                        raise RuntimeError(
+                            "Writer stopped before all pending samples were flushed"
+                        )
+                except BaseException as exc:
+                    writer_errors.append(exc)
+                    writer_failed.set()
+
+            writer_thread = Thread(
+                target=_writer_loop,
+                name="bamstore-writer",
+                daemon=True,
+            )
+            writer_thread.start()
+
+            producer_error: BaseException | None = None
+            executor = ThreadPoolExecutor(max_workers=max_workers)
+            active_futures = {}
+            pending_iter = iter(pending_samples)
+
+            def _submit_next() -> bool:
+                try:
+                    sample_idx, bam_file, sample_name = next(pending_iter)
+                except StopIteration:
+                    return False
+
+                future = executor.submit(
+                    self._process_single_sample,
+                    sample_idx,
+                    bam_file,
+                    sample_name,
+                    chromsizes_dict,
+                )
+                active_futures[future] = sample_idx
+                return True
+
+            try:
+                for _ in range(min(max_workers, len(pending_samples))):
+                    _submit_next()
+
+                while active_futures:
+                    _raise_writer_error()
+                    done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
+
+                    for future in done:
+                        active_futures.pop(future)
+                        sample_idx, results = future.result()
+                        _enqueue_result((sample_idx, results))
+                        _submit_next()
+            except BaseException as exc:
+                producer_error = exc
+            finally:
+                executor.shutdown(
+                    wait=producer_error is None,
+                    cancel_futures=producer_error is not None,
+                )
+
+                try:
+                    _enqueue_result(writer_stop_token)
+                except RuntimeError:
+                    pass
+
+                writer_thread.join()
+
+                _raise_writer_error()
+                if producer_error is not None:
+                    raise producer_error
 
         all_sparsity = self.meta["sparsity"][:]
         if np.isfinite(all_sparsity).any():
@@ -455,13 +683,25 @@ class BamStore:
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
-        chunk_len: int = DEFAULT_CHUNK_LEN,
+        chunk_len: int | None = None,
+        construction_compression: str = DEFAULT_CONSTRUCTION_COMPRESSION,
+        local_staging: bool = False,
+        staging_dir: Path | str | None = None,
         max_workers: int = 1,
         log_file: Path | None = None,
         test: bool = False,
     ) -> "BamStore":
         """
         Create BamStore from list of BAM files and optionally attach metadata.
+
+        If chunk_len is omitted, a filesystem-aware value is derived from
+        quantnado.utils.estimate_chunk_len using the destination store path.
+
+        If local_staging is enabled or staging_dir is provided, construction is
+        performed under scratch storage and then published to the final store path.
+
+        construction_compression controls build-time compression only and does
+        not affect reader compatibility.
         """
 
         if log_file is not None:
@@ -487,27 +727,67 @@ class BamStore:
         if store_path is None:
             raise ValueError("store_path must be provided.")
 
-        store = cls(
-            store_path=store_path,
-            chromsizes=chromsizes_dict,
-            sample_names=sample_names,
-            chunk_len=chunk_len,
-            overwrite=overwrite,
-            resume=resume,
+        final_store_path = cls._normalize_path(store_path)
+        staging_enabled = local_staging or staging_dir is not None
+
+        if resume and staging_enabled:
+            raise ValueError(
+                "resume=True is not supported with local staging; resume the final store directly"
+            )
+
+        if staging_enabled and final_store_path.exists() and not overwrite:
+            raise FileExistsError(
+                f"Store already exists at {final_store_path}; set overwrite=True to publish staged output"
+            )
+
+        build_store_path = (
+            _build_staging_store_path(final_store_path, staging_dir)
+            if staging_enabled
+            else final_store_path
         )
-        store.process_samples(bam_files, max_workers=max_workers)
+        resolved_chunk_len = _resolve_chunk_len(
+            chromsizes_dict,
+            final_store_path,
+            chunk_len,
+        )
 
-        if metadata is not None:
-            if isinstance(metadata, list):
-                metadata_df = cls._combine_metadata_files(metadata)
-            elif isinstance(metadata, (str, Path)):
-                metadata_df = pd.read_csv(metadata)
-            else:
-                metadata_df = metadata
+        if staging_enabled:
+            logger.info(
+                f"Building dataset under staging path {build_store_path} before publishing to {final_store_path}"
+            )
 
-            store.set_metadata(metadata_df, sample_column=sample_column)
+        try:
+            store = cls(
+                store_path=build_store_path,
+                chromsizes=chromsizes_dict,
+                sample_names=sample_names,
+                chunk_len=resolved_chunk_len,
+                construction_compression=construction_compression,
+                overwrite=True if staging_enabled else overwrite,
+                resume=False if staging_enabled else resume,
+            )
+            store.process_samples(bam_files, max_workers=max_workers)
 
-        return store
+            if metadata is not None:
+                if isinstance(metadata, list):
+                    metadata_df = cls._combine_metadata_files(metadata)
+                elif isinstance(metadata, (str, Path)):
+                    metadata_df = pd.read_csv(metadata)
+                else:
+                    metadata_df = metadata
+
+                store.set_metadata(metadata_df, sample_column=sample_column)
+
+            if staging_enabled:
+                _publish_staged_store(build_store_path, final_store_path)
+                logger.info(f"Published staged dataset to {final_store_path}")
+                return cls.open(final_store_path, read_only=False)
+
+            return store
+        except Exception:
+            if staging_enabled:
+                _delete_store_path(build_store_path)
+            raise
 
     @staticmethod
     def _combine_metadata_files(metadata_files: list[Path | str]) -> pd.DataFrame:

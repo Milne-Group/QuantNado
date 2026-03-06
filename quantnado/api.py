@@ -128,7 +128,10 @@ class QuantNado:
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
-        chunk_len: int = 65536,
+        chunk_len: int | None = None,
+        construction_compression: str = "default",
+        local_staging: bool = False,
+        staging_dir: str | Path | None = None,
         log_file: Path | None = None,
         test: bool = False,
     ) -> "QuantNado":
@@ -154,8 +157,22 @@ class QuantNado:
             If True, resume processing an existing store.
         sample_column : str, default "sample_id"
             Column name in metadata DataFrame that matches BAM file stems.
-        chunk_len : int, default 65536
-            Zarr chunk size for position dimension.
+        chunk_len : int, optional
+            Zarr chunk size for the position dimension. If omitted, dataset
+            construction derives a filesystem-aware default from the target
+            store path. Older stores without a persisted value still fall back
+            to ``DEFAULT_CHUNK_LEN``.
+        construction_compression : {"default", "fast", "none"}, default "default"
+            Build-time compression profile. Use ``fast`` for lower zstd
+            compression overhead or ``none`` for uncompressed construction
+            arrays when benchmarking filesystem write throughput.
+        local_staging : bool, default False
+            If True, build the dataset under local scratch storage and publish
+            it to ``store_path`` after construction completes.
+        staging_dir : str or Path, optional
+            Scratch directory to use for local staging. If omitted while
+            ``local_staging`` is enabled, QuantNado uses ``TMPDIR`` or the
+            system temporary directory.
         log_file : Path, optional
             Path to write processing logs.
         test : bool, default False
@@ -176,6 +193,9 @@ class QuantNado:
             resume=resume,
             sample_column=sample_column,
             chunk_len=chunk_len,
+            construction_compression=construction_compression,
+            local_staging=local_staging,
+            staging_dir=staging_dir,
             log_file=log_file,
             test=test,
         )
