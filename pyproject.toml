@@ -19,16 +19,17 @@ license = "MIT"
 dynamic = ["version"]
 
 dependencies = [
-    "bamnado",
-    "crested",
+    "bamnado==0.4.4",
+    "crested==1.6.1",
     "dask-ml>=2025,<2027",
     "dask>=2026",
     "icechunk>=1.1",
     "loguru>=0.7",
+    "matplotlib==3.10.8",
     "numpy>=2.0,<3.0",
     "pandas>=3.0,<4.0",
     "pyBigWig>=0.3",
-    "pyranges==0.1.4",
+    "pyranges1>=1.0",
     "pysam>=0.23",
     "seaborn>=0.13",
     "sparse>=0.18",
@@ -40,19 +41,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "mkdocs-material",
+    "mkdocs-material==9.7.4",
     "mkdocs>=1.6,<2.0",
-    "mkdocs-jupyter",
-    "mkdocstrings-python",
-    "mkdocstrings",
-    "pymdown-extensions",
-    "pytest",
-    "ruff",
+    "mkdocs-jupyter==0.25.1",
+    "mkdocstrings-python==2.0.3",
+    "mkdocstrings==1.0.3",
+    "pymdown-extensions==10.21",
+    "pytest==9.0.2",
+    "pytest-cov==7.0.0",
+    "ruff==0.15.4",
 ]
 example = [
-    "ipykernel",
-    "jupyterlab",
-    "matplotlib",
+    "ipykernel>=6.0.0,<7.0.0",
+    "jupyterlab==4.5.5",
 ]
 
 [project.scripts]

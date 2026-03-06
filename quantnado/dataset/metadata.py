@@ -61,10 +61,10 @@ def extract_metadata(ds) -> pd.DataFrame:
                     else:
                         hashes.append("".join(f"{int(b):02x}" for b in row))
                 metadata_df["sample_hash"] = hashes
-        if "completed" in meta_group:
-            metadata_df["completed"] = meta_group["completed"][:].astype(bool)
-        if "sparsity" in meta_group:
-            metadata_df["sparsity"] = meta_group["sparsity"][:]
+            if "completed" in meta_group:
+                metadata_df["completed"] = meta_group["completed"][:].astype(bool)
+            if "sparsity" in meta_group:
+                metadata_df["sparsity"] = meta_group["sparsity"][:]
 
     # Reorder to keep sample_id and assay (if present) at the front
     front_cols = ["sample_id"]

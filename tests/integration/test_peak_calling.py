@@ -23,7 +23,7 @@ def test_call_quantile_peaks_basic():
 
     assert peaks is not None
     assert len(peaks) == 1
-    peak_df = peaks.df
+    peak_df = pd.DataFrame(peaks)
     assert peak_df.iloc[0]["Start"] == 300
     assert peak_df.iloc[0]["End"] == 400
 

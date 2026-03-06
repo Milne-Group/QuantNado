@@ -1,7 +1,12 @@
 """Unit tests for quantnado.utils (pure-logic functions, no I/O)."""
 import pytest
 
-from quantnado.utils import estimate_chunk_len, parse_genomic_region
+from quantnado.utils import (
+    estimate_chunk_len,
+    get_filesystem_type,
+    is_network_fs,
+    parse_genomic_region,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +54,11 @@ class TestParseGenomicRegion:
     def test_missing_dash_in_coords_raises(self):
         with pytest.raises(ValueError):
             parse_genomic_region("chr1:1000")
+
+    def test_single_leading_dash_in_coords_raises(self):
+        # coords like "-5000" → rfind("-") == 0 → invalid
+        with pytest.raises(ValueError, match="Invalid region"):
+            parse_genomic_region("chr1:-5000")
 
     def test_zero_start(self):
         chrom, start, end = parse_genomic_region("chr1:0-100")
@@ -109,3 +119,73 @@ class TestEstimateChunkLen:
     def test_chunk_len_never_exceeds_total(self):
         result = estimate_chunk_len(total_positions=100)
         assert result["chunk_len"] <= 100
+
+    def test_network_fs_flag_stored(self):
+        result = estimate_chunk_len(total_positions=1_000_000, fs_is_network=True)
+        assert result["fs_is_network"] is True
+
+    def test_default_fs_is_local(self):
+        result = estimate_chunk_len(total_positions=1_000_000)
+        assert result["fs_is_network"] is False
+
+    def test_max_chunks_cap_triggers_growth(self):
+        # Force the while loop: many small chunks → chunk_len must grow
+        result = estimate_chunk_len(
+            total_positions=100_000_000,
+            max_chunks_local=3,
+            fs_is_network=False,
+        )
+        assert result["num_chunks"] <= 3
+
+    def test_max_contig_cap_inside_loop(self):
+        # Trigger the cap-at-max_contig branch inside the while loop
+        result = estimate_chunk_len(
+            contig_lengths=[100],
+            max_chunks_local=1,
+            local_target_bytes=1,
+            min_chunk_bytes=1,
+            round_to=1,
+            fs_is_network=False,
+        )
+        assert result["chunk_len"] <= 100
+
+    def test_min_chunk_bytes_floor_applied(self):
+        # Force the min_chunk_bytes correction branch
+        result = estimate_chunk_len(
+            total_positions=1_000_000,
+            local_target_bytes=1,       # tiny target → tiny initial chunk_len
+            min_chunk_bytes=65536,
+            round_to=1,
+            fs_is_network=False,
+        )
+        assert result["chunk_bytes"] >= 65536
+
+    def test_zero_total_positions(self):
+        result = estimate_chunk_len(total_positions=0)
+        assert result["total_positions"] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_filesystem_type and is_network_fs
+# ---------------------------------------------------------------------------
+
+
+class TestGetFilesystemType:
+    def test_returns_string(self, tmp_path):
+        fs_type = get_filesystem_type(tmp_path)
+        assert isinstance(fs_type, str)
+        assert len(fs_type) > 0
+
+    def test_accepts_str_path(self, tmp_path):
+        result = get_filesystem_type(str(tmp_path))
+        assert isinstance(result, str)
+
+
+class TestIsNetworkFs:
+    def test_returns_bool(self, tmp_path):
+        result = is_network_fs(tmp_path)
+        assert isinstance(result, bool)
+
+    def test_tmp_path_not_network(self, tmp_path):
+        # /tmp is local on the test runner
+        assert is_network_fs(tmp_path) is False
