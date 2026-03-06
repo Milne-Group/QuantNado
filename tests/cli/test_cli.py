@@ -66,7 +66,8 @@ def test_create_dataset_basic(tmp_path, monkeypatch):
     bam.write_text("dummy")
 
     result = runner.invoke(app, [
-        "create-dataset", str(bam),
+        "create-dataset",
+        "--bam", str(bam),
         "--output", str(tmp_path / "out.zarr"),
         "--log-file", str(tmp_path / "log.log"),
     ])
@@ -100,7 +101,8 @@ def test_create_dataset_with_metadata(tmp_path, monkeypatch):
     bam.write_text("dummy")
 
     result = runner.invoke(app, [
-        "create-dataset", str(bam),
+        "create-dataset",
+        "--bam", str(bam),
         "--output", str(tmp_path / "out.zarr"),
         "--metadata", str(metadata_csv),
         "--log-file", str(tmp_path / "log.log"),
@@ -121,7 +123,8 @@ def test_create_dataset_overwrite_flag(tmp_path, monkeypatch):
     bam.write_text("dummy")
 
     runner.invoke(app, [
-        "create-dataset", str(bam),
+        "create-dataset",
+        "--bam", str(bam),
         "--output", str(tmp_path / "out.zarr"),
         "--overwrite",
         "--log-file", str(tmp_path / "log.log"),
@@ -141,7 +144,8 @@ def test_create_dataset_resume_flag(tmp_path, monkeypatch):
     bam.write_text("dummy")
 
     runner.invoke(app, [
-        "create-dataset", str(bam),
+        "create-dataset",
+        "--bam", str(bam),
         "--output", str(tmp_path / "out.zarr"),
         "--resume",
         "--log-file", str(tmp_path / "log.log"),
@@ -159,7 +163,8 @@ def test_create_dataset_propagates_exception(tmp_path, monkeypatch):
     bam.write_text("dummy")
 
     result = runner.invoke(app, [
-        "create-dataset", str(bam),
+        "create-dataset",
+        "--bam", str(bam),
         "--output", str(tmp_path / "out.zarr"),
         "--log-file", str(tmp_path / "log.log"),
     ])

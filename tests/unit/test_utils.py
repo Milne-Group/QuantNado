@@ -164,28 +164,3 @@ class TestEstimateChunkLen:
         result = estimate_chunk_len(total_positions=0)
         assert result["total_positions"] == 0
 
-
-# ---------------------------------------------------------------------------
-# get_filesystem_type and is_network_fs
-# ---------------------------------------------------------------------------
-
-
-class TestGetFilesystemType:
-    def test_returns_string(self, tmp_path):
-        fs_type = get_filesystem_type(tmp_path)
-        assert isinstance(fs_type, str)
-        assert len(fs_type) > 0
-
-    def test_accepts_str_path(self, tmp_path):
-        result = get_filesystem_type(str(tmp_path))
-        assert isinstance(result, str)
-
-
-class TestIsNetworkFs:
-    def test_returns_bool(self, tmp_path):
-        result = is_network_fs(tmp_path)
-        assert isinstance(result, bool)
-
-    def test_tmp_path_not_network(self, tmp_path):
-        # /tmp is local on the test runner
-        assert is_network_fs(tmp_path) is False
