@@ -1,7 +1,9 @@
 """Unit tests for quantnado.utils (pure-logic functions, no I/O)."""
+from unittest.mock import mock_open, patch
+
 import pytest
 
-from quantnado.utils import estimate_chunk_len, parse_genomic_region
+from quantnado.utils import estimate_chunk_len, get_filesystem_type, parse_genomic_region
 
 
 # ---------------------------------------------------------------------------
@@ -109,3 +111,14 @@ class TestEstimateChunkLen:
     def test_chunk_len_never_exceeds_total(self):
         result = estimate_chunk_len(total_positions=100)
         assert result["chunk_len"] <= 100
+
+
+class TestFilesystemDetection:
+    def test_get_filesystem_type_returns_unknown_when_mountinfo_missing(self):
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            assert get_filesystem_type("/tmp/example") == "unknown"
+
+    def test_get_filesystem_type_uses_best_mount_match(self):
+        mountinfo = """36 25 0:31 / / rw,relatime - overlay overlay rw\n42 36 0:40 / /ceph rw,relatime - ceph ceph rw\n43 42 0:41 /project /ceph/project rw,relatime - ceph ceph rw\n"""
+        with patch("builtins.open", mock_open(read_data=mountinfo)):
+            assert get_filesystem_type("/ceph/project/data/store.zarr") == "ceph"

@@ -112,6 +112,34 @@ def test_create_dataset_with_metadata(tmp_path, monkeypatch):
     assert calls[0]["metadata"] == metadata_csv
 
 
+def test_create_dataset_with_custom_sample_names_and_sample_column(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_bam_files(**kwargs):
+        calls.append(kwargs)
+        return BamStore(kwargs["store_path"], {"chr1": 4}, kwargs["sample_names"])
+
+    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+
+    bam1 = tmp_path / "sample1.bam"
+    bam2 = tmp_path / "sample2.bam"
+    bam1.write_text("dummy")
+    bam2.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset", str(bam1), str(bam2),
+        "--output", str(tmp_path / "out.zarr"),
+        "--sample-name", "ATAC",
+        "--sample-name", "H3K27ac",
+        "--sample-column", "library_name",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["sample_names"] == ["ATAC", "H3K27ac"]
+    assert calls[0]["sample_column"] == "library_name"
+
+
 def test_create_dataset_overwrite_flag(tmp_path, monkeypatch):
     calls = []
 

@@ -43,6 +43,24 @@ def test_from_bam_files(tmp_path, monkeypatch):
     assert qn.samples == ["s1"]
 
 
+def test_from_bam_files_with_custom_sample_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 10},
+    )
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))
+
+    bam = tmp_path / "raw_name.bam"
+    bam.write_text("dummy")
+    qn = QuantNado.from_bam_files(
+        bam_files=[str(bam)],
+        store_path=tmp_path / "custom_ds",
+        chromsizes=None,
+        sample_names=["ATAC"],
+    )
+    assert qn.samples == ["ATAC"]
+
+
 # ---------------------------------------------------------------------------
 # Properties
 # ---------------------------------------------------------------------------

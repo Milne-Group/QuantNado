@@ -29,6 +29,7 @@ dependencies = [
     "pandas>=3.0,<4.0",
     "pyBigWig>=0.3",
     "pyranges==0.1.4",
+    "pyranges1",
     "pysam>=0.23",
     "seaborn>=0.13",
     "sparse>=0.18",

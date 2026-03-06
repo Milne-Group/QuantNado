@@ -17,9 +17,11 @@ from loguru import logger
 import xarray as xr
 import dask.array as da
 
+from ..utils import estimate_chunk_len, get_filesystem_type, is_network_fs
 from .metadata import extract_metadata
 
-DEFAULT_CHUNK_LEN = 65536
+# Fallback when automatic chunk estimation cannot determine a better value.
+DEFAULT_CHUNK_LEN = 1_048_576
 BIN_SIZE = 1
 
 
@@ -47,10 +49,63 @@ def _compute_bam_hash(bam_path: Path | str) -> str:
     return h.hexdigest()
 
 
+def _resolve_sample_names(
+    bam_files: list[str],
+    sample_names: list[str] | None = None,
+) -> list[str]:
+    if sample_names is None:
+        resolved_names = [Path(f).stem for f in bam_files]
+    else:
+        resolved_names = [str(name).strip() for name in sample_names]
+        if len(resolved_names) != len(bam_files):
+            raise ValueError(
+                "sample_names length must match bam_files length"
+            )
+
+    if not resolved_names:
+        raise ValueError("At least one BAM file must be provided")
+
+    if any(not name for name in resolved_names):
+        raise ValueError("sample_names must not contain empty values")
+
+    if len(set(resolved_names)) != len(resolved_names):
+        duplicates = sorted(
+            {name for name in resolved_names if resolved_names.count(name) > 1}
+        )
+        raise ValueError(
+            f"sample_names must be unique; duplicates found: {', '.join(duplicates)}"
+        )
+
+    return resolved_names
+
+
 def _get_chromsizes_from_bam(bam_path: Path | str) -> dict[str, int]:
     """Extract chromosome names and sizes from a BAM file header."""
     with pysam.AlignmentFile(str(bam_path), "rb") as sam:
         return {ref: length for ref, length in zip(sam.references, sam.lengths)}
+
+
+def _resolve_chunk_len(
+    chunk_len: int | None,
+    chromsizes: dict[str, int],
+    store_path: Path | str,
+) -> tuple[int, dict[str, int] | None, str]:
+    if chunk_len is not None:
+        return int(chunk_len), None, "explicit"
+
+    try:
+        filesystem_type = get_filesystem_type(store_path)
+        chunk_info = estimate_chunk_len(
+            contig_lengths=chromsizes,
+            dtype_bytes=np.dtype(np.uint32).itemsize,
+            fs_is_network=is_network_fs(store_path),
+        )
+        return int(chunk_info["chunk_len"]), chunk_info, filesystem_type
+    except Exception as exc:
+        logger.warning(
+            f"Falling back to default chunk length {DEFAULT_CHUNK_LEN} for {store_path}: {exc}"
+        )
+        return DEFAULT_CHUNK_LEN, None, "unknown"
 
 
 def _parse_chromsizes(
@@ -134,7 +189,7 @@ class BamStore:
         chromsizes: dict[str, int] | Path | str,
         sample_names: list[str],
         *,
-        chunk_len: int = DEFAULT_CHUNK_LEN,
+        chunk_len: int | None = None,
         overwrite: bool = True,
         resume: bool = False,
         read_only: bool = False,
@@ -142,7 +197,11 @@ class BamStore:
         self.store_path = self._normalize_path(store_path)
         self.chromsizes = _parse_chromsizes(chromsizes)
         self.chromosomes = list(self.chromsizes.keys())
-        self.chunk_len = int(chunk_len)
+        self.chunk_len, self.chunk_info, self.filesystem_type = _resolve_chunk_len(
+            chunk_len=chunk_len,
+            chromsizes=self.chromsizes,
+            store_path=self.store_path,
+        )
         self.sample_names = [str(s) for s in sample_names]
         self.n_samples = len(self.sample_names)
         self.sample_hash = _compute_sample_hash(self.sample_names)
@@ -267,12 +326,22 @@ class BamStore:
                 "chromsizes": self.chromsizes,
                 "n_samples": self.n_samples,
                 "chunk_len": self.chunk_len,
+                "chunk_len_source": "auto" if self.chunk_info is not None else "explicit",
+                "filesystem_type": self.filesystem_type,
                 "structure": "per-chromosome (sample x position)",
                 "bin_size": BIN_SIZE,
                 "sample_names": self.sample_names,
                 "sample_names_hash": self.sample_hash,
             }
         )
+        if self.chunk_info is not None:
+            self.root.attrs.update(
+                {
+                    "chunk_bytes": int(self.chunk_info["chunk_bytes"]),
+                    "estimated_chunk_count": int(self.chunk_info["num_chunks"]),
+                    "fs_is_network": bool(self.chunk_info["fs_is_network"]),
+                }
+            )
         logger.info(f"Initialized Zarr store at {self.store_path}")
 
     def _load_existing(self) -> None:
@@ -450,12 +519,13 @@ class BamStore:
         chromsizes: str | Path | dict[str, int] | None = None,
         store_path: Path | str | None = None,
         metadata: pd.DataFrame | Path | str | list[Path | str] | None = None,
+        sample_names: list[str] | None = None,
         *,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
-        chunk_len: int = DEFAULT_CHUNK_LEN,
+        chunk_len: int | None = None,
         max_workers: int = 1,
         log_file: Path | None = None,
         test: bool = False,
@@ -482,7 +552,10 @@ class BamStore:
         chromsizes_dict = _parse_chromsizes(
             chromsizes_raw, filter_chromosomes=filter_chromosomes, test=test
         )
-        sample_names = [Path(f).stem for f in bam_files]
+        resolved_sample_names = _resolve_sample_names(
+            bam_files=bam_files,
+            sample_names=sample_names,
+        )
 
         if store_path is None:
             raise ValueError("store_path must be provided.")
@@ -490,7 +563,7 @@ class BamStore:
         store = cls(
             store_path=store_path,
             chromsizes=chromsizes_dict,
-            sample_names=sample_names,
+            sample_names=resolved_sample_names,
             chunk_len=chunk_len,
             overwrite=overwrite,
             resume=resume,

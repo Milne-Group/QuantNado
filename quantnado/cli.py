@@ -96,6 +96,16 @@ def create_dataset(
         None, "--chromsizes", help="Path to chromsizes. If omitted, extracted from first BAM."
     ),
     metadata: Path | None = typer.Option(None, "--metadata", help="Path to metadata CSV file."),
+    sample_names: list[str] | None = typer.Option(
+        None,
+        "--sample-name",
+        help="Explicit sample name for each BAM file, in the same order as BAM_FILES.",
+    ),
+    sample_column: str = typer.Option(
+        "sample_id",
+        "--sample-column",
+        help="Metadata column used to match rows to QuantNado sample names.",
+    ),
     max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for processing BAM files."),
     log_file: Path = typer.Option("quantnado_processing.log", "--log-file", help="Path to the log file."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
@@ -114,6 +124,8 @@ def create_dataset(
             chromsizes=chromsizes,
             store_path=output,
             metadata=metadata,
+            sample_names=sample_names,
+            sample_column=sample_column,
             max_workers=max_workers,
             log_file=log_file,
             overwrite=overwrite,

@@ -66,12 +66,46 @@ Path to metadata CSV file:
 quantnado create-dataset *.bam --output dataset.zarr --metadata samples.csv
 ```
 
-CSV format with sample_id column:
+CSV format with a sample-matching column:
 ```
 sample_id,condition,replicate,quality
 sample1,control,1,high
 sample2,control,2,high
 sample3,treatment,1,high
+```
+
+Metadata rules:
+- By default, QuantNado matches metadata rows using the `sample_id` column.
+- Use `--sample-column` if your metadata uses a different column name.
+- Sample names default to BAM filename stems, or can be set explicitly with repeated `--sample-name` options.
+- Metadata can contain any additional columns; all of them are stored.
+- Metadata rows may be a subset of samples; missing values are stored as empty.
+- An optional `sample_hash` column is accepted for validating that metadata matches the processed BAMs.
+
+### Sample Names (`--sample-name`)
+
+Provide one explicit sample name per BAM file, in the same order as `BAM_FILES`:
+
+```bash
+quantnado create-dataset sample1.bam sample2.bam \
+  --sample-name ATAC \
+  --sample-name H3K27ac \
+  --output dataset.zarr
+```
+
+This is useful when BAM filenames are not the labels you want to carry through into the dataset and metadata.
+
+### Metadata Sample Column (`--sample-column`)
+
+Use a different metadata column to match rows to the dataset sample names:
+
+```bash
+quantnado create-dataset sample1.bam sample2.bam \
+  --sample-name ATAC \
+  --sample-name H3K27ac \
+  --metadata samples.csv \
+  --sample-column assay_label \
+  --output dataset.zarr
 ```
 
 ### Max Workers (`--max-workers`)
@@ -139,6 +173,18 @@ Include sample metadata:
 quantnado create-dataset *.bam \
   --output dataset.zarr \
   --metadata samples.csv
+```
+
+### With Explicit Sample Names From a Notebook Mapping
+
+If you already have a mapping like `{label: bam_path}`, pass the BAM paths positionally and the labels with repeated `--sample-name` flags in the same order:
+
+```bash
+quantnado create-dataset atac.bam h3k27ac.bam myb.bam \
+  --sample-name ATAC \
+  --sample-name H3K27ac \
+  --sample-name MYB \
+  --output dataset.zarr
 ```
 
 ### Parallel Processing
@@ -239,6 +285,7 @@ qn = QuantNado.from_bam_files(
     store_path="dataset.zarr",
     chromsizes="hg38.chrom.sizes",
     metadata="samples.csv",
+  sample_names=["ATAC", "H3K27ac", "MYB"],
     overwrite=True
 )
 ```

@@ -32,18 +32,21 @@ def get_filesystem_type(path: str | Path) -> str:
     best_match = None
     best_len = -1
 
-    with open("/proc/self/mountinfo") as f:
-        for line in f:
-            parts = line.strip().split()
-            # mountinfo format:
-            # [..] mount_point [..] - fs_type source super_opts
-            sep = parts.index("-")
-            mount_point = parts[4]
-            fs_type = parts[sep + 1]
+    try:
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                parts = line.strip().split()
+                # mountinfo format:
+                # [..] mount_point [..] - fs_type source super_opts
+                sep = parts.index("-")
+                mount_point = parts[4]
+                fs_type = parts[sep + 1]
 
-            if path.as_posix().startswith(mount_point) and len(mount_point) > best_len:
-                best_match = fs_type
-                best_len = len(mount_point)
+                if path.as_posix().startswith(mount_point) and len(mount_point) > best_len:
+                    best_match = fs_type
+                    best_len = len(mount_point)
+    except (FileNotFoundError, OSError, ValueError):
+        return "unknown"
 
     return best_match or "unknown"
 

@@ -41,6 +41,8 @@ quantnado create-dataset sample1.bam sample2.bam sample3.bam \
 - `--output, -o PATH` - Output Zarr dataset path (required)
 - `--chromsizes PATH` - Path to chromsizes file (optional; auto-detected from first BAM if omitted)
 - `--metadata PATH` - Path to metadata CSV file (optional)
+- `--sample-name TEXT` - Explicit sample name for each BAM file; repeat once per BAM in input order
+- `--sample-column TEXT` - Metadata column used to match rows to sample names (default: `sample_id`)
 - `--max-workers N` - Number of parallel threads (default: 1, recommended: 2-16)
 - `--verbose, -v` - Enable debug logging
 - `--overwrite` - Overwrite existing dataset if it exists
@@ -66,7 +68,17 @@ quantnado create-dataset *.bam \
   --output dataset.zarr \
   --chromsizes hg38.chrom.sizes \
   --metadata samples.csv
+
+# With explicit dataset labels and custom metadata column
+quantnado create-dataset raw1.bam raw2.bam \
+  --sample-name ATAC \
+  --sample-name H3K27ac \
+  --metadata samples.csv \
+  --sample-column assay_label \
+  --output dataset.zarr
 ```
+
+Metadata requirements are minimal: the CSV only needs one column that matches the QuantNado sample names, which are either BAM stems or the values passed with `--sample-name`. Additional columns are stored as sample metadata, subset rows are allowed, and an optional `sample_hash` column can be included for validation.
 
 ## call-peaks
 

@@ -123,12 +123,13 @@ class QuantNado:
         store_path: str | Path,
         chromsizes: str | Path | dict[str, int] | None = None,
         metadata: pd.DataFrame | Path | str | list[Path | str] | None = None,
+        sample_names: list[str] | None = None,
         *,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
-        chunk_len: int = 65536,
+        chunk_len: int | None = None,
         log_file: Path | None = None,
         test: bool = False,
     ) -> "QuantNado":
@@ -146,6 +147,9 @@ class QuantNado:
             Can be a .chrom.sizes file or a dict mapping chromosome names to sizes.
         metadata : DataFrame, Path, or list of Paths, optional
             Sample metadata. Can be a DataFrame, path to CSV, or list of CSV paths.
+        sample_names : list of str, optional
+            Explicit sample names to use for the dataset. If omitted, BAM filename stems
+            are used.
         filter_chromosomes : bool, default True
             If True, keep only canonical chromosomes (chr1-22, chrX, chrY, chrM).
         overwrite : bool, default True
@@ -154,8 +158,11 @@ class QuantNado:
             If True, resume processing an existing store.
         sample_column : str, default "sample_id"
             Column name in metadata DataFrame that matches BAM file stems.
-        chunk_len : int, default 65536
-            Zarr chunk size for position dimension.
+        chunk_len : int, optional
+            Zarr chunk size for the position dimension. If omitted, QuantNado
+            estimates a chunk length from the dataset span and the output
+            filesystem type so local disks and network filesystems use
+            different defaults.
         log_file : Path, optional
             Path to write processing logs.
         test : bool, default False
@@ -171,6 +178,7 @@ class QuantNado:
             chromsizes=chromsizes,
             store_path=store_path,
             metadata=metadata,
+            sample_names=sample_names,
             filter_chromosomes=filter_chromosomes,
             overwrite=overwrite,
             resume=resume,

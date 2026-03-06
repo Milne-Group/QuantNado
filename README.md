@@ -30,6 +30,7 @@ from quantnado import QuantNado
 qn = QuantNado.from_bam_files(
     bam_files=["sample1.bam", "sample2.bam", "sample3.bam"],
     store_path="dataset.zarr",
+  sample_names=["ATAC", "H3K27ac", "MYB"],  # optional explicit names
     metadata="samples.csv",  # optional
 )
 ```
@@ -68,6 +69,7 @@ QuantNado installs a `quantnado` command with two subcommands.
 
 ```bash
 quantnado create-dataset sample1.bam sample2.bam sample3.bam \
+  --sample-name ATAC --sample-name H3K27ac --sample-name MYB \
   --output dataset.zarr \
   --chromsizes hg38.chrom.sizes \
   --metadata samples.csv \

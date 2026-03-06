@@ -9,6 +9,7 @@ from quantnado.dataset.core import QuantNadoDataset
 from quantnado.dataset.counts import feature_counts
 from quantnado.dataset.reduce import reduce_byranges_signal
 from quantnado.dataset.pca import run_pca
+from quantnado.utils import estimate_chunk_len
 
 
 @pytest.fixture
@@ -222,6 +223,109 @@ def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
 
     assert store.chromsizes == {"chr1": 100, "chr2": 200}
     assert store.sample_names == ["test"]
+
+
+def test_bamstore_auto_chunk_len_uses_local_profile(tmp_path, monkeypatch):
+    chromsizes = {"chr1": 5_000_000, "chr2": 3_000_000}
+    expected = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(np.uint32).itemsize,
+        fs_is_network=False,
+    )
+
+    monkeypatch.setattr("quantnado.dataset.bam._get_chromsizes_from_bam", lambda path: chromsizes)
+    monkeypatch.setattr("quantnado.dataset.bam.is_network_fs", lambda path: False)
+    monkeypatch.setattr("quantnado.dataset.bam.get_filesystem_type", lambda path: "ext4")
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *args, **kwargs: (args[2], np.zeros(args[3]), 0.0))
+
+    bam_path = tmp_path / "local.bam"
+    bam_path.write_text("dummy")
+
+    store = BamStore.from_bam_files(
+        bam_files=[str(bam_path)],
+        store_path=tmp_path / "local_auto",
+        chromsizes=None,
+    )
+
+    assert store.chunk_len == expected["chunk_len"]
+    assert store.root.attrs["chunk_len_source"] == "auto"
+    assert store.root.attrs["filesystem_type"] == "ext4"
+    assert store.root.attrs["fs_is_network"] is False
+
+
+def test_bamstore_auto_chunk_len_uses_network_profile(tmp_path, monkeypatch):
+    chromsizes = {"chr1": 60_000_000, "chr2": 40_000_000}
+    local = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(np.uint32).itemsize,
+        fs_is_network=False,
+    )
+    network = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(np.uint32).itemsize,
+        fs_is_network=True,
+    )
+
+    monkeypatch.setattr("quantnado.dataset.bam._get_chromsizes_from_bam", lambda path: chromsizes)
+    monkeypatch.setattr("quantnado.dataset.bam.is_network_fs", lambda path: True)
+    monkeypatch.setattr("quantnado.dataset.bam.get_filesystem_type", lambda path: "ceph")
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *args, **kwargs: (args[2], np.zeros(args[3]), 0.0))
+
+    bam_path = tmp_path / "network.bam"
+    bam_path.write_text("dummy")
+
+    store = BamStore.from_bam_files(
+        bam_files=[str(bam_path)],
+        store_path=tmp_path / "network_auto",
+        chromsizes=None,
+    )
+
+    assert network["chunk_len"] > local["chunk_len"]
+    assert store.chunk_len == network["chunk_len"]
+    assert store.root.attrs["filesystem_type"] == "ceph"
+    assert store.root.attrs["fs_is_network"] is True
+
+
+def test_bamstore_custom_sample_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 100},
+    )
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *args, **kwargs: (args[2], np.zeros(args[3]), 0.0))
+
+    bam1 = tmp_path / "first.bam"
+    bam2 = tmp_path / "second.bam"
+    bam1.write_text("dummy")
+    bam2.write_text("dummy")
+
+    store = BamStore.from_bam_files(
+        bam_files=[str(bam1), str(bam2)],
+        store_path=tmp_path / "custom_names",
+        sample_names=["ATAC", "H3K27ac"],
+        chromsizes=None,
+    )
+
+    assert store.sample_names == ["ATAC", "H3K27ac"]
+
+
+def test_bamstore_rejects_duplicate_sample_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 100},
+    )
+
+    bam1 = tmp_path / "first.bam"
+    bam2 = tmp_path / "second.bam"
+    bam1.write_text("dummy")
+    bam2.write_text("dummy")
+
+    with pytest.raises(ValueError, match="sample_names must be unique"):
+        BamStore.from_bam_files(
+            bam_files=[str(bam1), str(bam2)],
+            store_path=tmp_path / "duplicate_names",
+            sample_names=["dup", "dup"],
+            chromsizes=None,
+        )
 
 
 def test_bamstore_metadata_json_roundtrip(tmp_path):
