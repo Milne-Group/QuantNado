@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from quantnado.cli import app, combine_metadata_main, make_zarr_main
 from quantnado.dataset.bam import BamStore
+from quantnado.dataset.multiomics import MultiomicsStore
 
 
 runner = CliRunner()
@@ -54,17 +55,12 @@ def test_call_peaks_help():
 
 def test_create_dataset_basic(tmp_path, monkeypatch):
     """Happy path: create-dataset processes BAM files and exits 0."""
-    created_stores = []
+    calls = []
 
-    def fake_from_bam_files(**kwargs):
-        # Return a real BamStore without doing any BAM processing.
-        cs = {"chr1": 4}
-        names = [p.rsplit("/", 1)[-1].replace(".bam", "") for p in kwargs["bam_files"]]
-        store = BamStore(kwargs["store_path"], cs, names)
-        created_stores.append(store)
-        return store
+    def fake_from_files(**kwargs):
+        calls.append(kwargs)
 
-    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "sample1.bam"
     bam.write_text("dummy")
@@ -76,7 +72,9 @@ def test_create_dataset_basic(tmp_path, monkeypatch):
     ])
 
     assert result.exit_code == 0, result.output
-    assert len(created_stores) == 1
+    assert len(calls) == 1
+    assert calls[0]["store_dir"] == tmp_path / "out.zarr"
+    assert calls[0]["bam_files"] == [str(bam)]
 
 
 def test_create_dataset_missing_output_errors(tmp_path):
@@ -93,11 +91,10 @@ def test_create_dataset_with_metadata(tmp_path, monkeypatch):
 
     calls = []
 
-    def fake_from_bam_files(**kwargs):
+    def fake_from_files(**kwargs):
         calls.append(kwargs)
-        return BamStore(kwargs["store_path"], {"chr1": 4}, ["sample1"])
 
-    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "sample1.bam"
     bam.write_text("dummy")
@@ -115,11 +112,10 @@ def test_create_dataset_with_metadata(tmp_path, monkeypatch):
 def test_create_dataset_overwrite_flag(tmp_path, monkeypatch):
     calls = []
 
-    def fake_from_bam_files(**kwargs):
+    def fake_from_files(**kwargs):
         calls.append(kwargs)
-        return BamStore(kwargs["store_path"], {"chr1": 4}, ["s"])
 
-    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
@@ -136,11 +132,10 @@ def test_create_dataset_overwrite_flag(tmp_path, monkeypatch):
 def test_create_dataset_resume_flag(tmp_path, monkeypatch):
     calls = []
 
-    def fake_from_bam_files(**kwargs):
+    def fake_from_files(**kwargs):
         calls.append(kwargs)
-        return BamStore(kwargs["store_path"], {"chr1": 4}, ["s"])
 
-    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
@@ -155,10 +150,10 @@ def test_create_dataset_resume_flag(tmp_path, monkeypatch):
 
 
 def test_create_dataset_propagates_exception(tmp_path, monkeypatch):
-    def fake_from_bam_files(**kwargs):
+    def fake_from_files(**kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
