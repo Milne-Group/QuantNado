@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import pyranges as pr
 
 from .enums import FeatureType
 from .features import extract_feature_ranges, load_gtf
@@ -89,7 +88,7 @@ def feature_counts(
         
         # Extract feature ranges and convert from PyRanges to DataFrame
         feature_ranges_pr = extract_feature_ranges(gtf_source, feature_type=feature_type)
-        resolved_ranges = feature_ranges_pr.as_df() if isinstance(feature_ranges_pr, pr.PyRanges) else feature_ranges_pr
+        resolved_ranges = pd.DataFrame(feature_ranges_pr)
         
         # Normalize column names from PyRanges convention to internal convention
         resolved_ranges = resolved_ranges.rename(columns={

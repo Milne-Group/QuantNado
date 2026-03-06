@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import dask.array as da
 import xarray as xr
-import pyranges as pr
+import pyranges1 as pr
 from typing import TYPE_CHECKING, Iterable
 from loguru import logger
 
@@ -129,21 +129,21 @@ def _resolve_ranges(
 			ranges_df = extract_feature_ranges(gtf_df, feature_type=feature_type)
 
 		if isinstance(ranges_df, pr.PyRanges):
-			ranges_df = ranges_df.as_df()
+			ranges_df = pd.DataFrame(ranges_df)
 		start_col, end_col, contig_col = "Start", "End", "Chromosome"
 
 	elif intervals_path is not None:
 		if intervals_path.endswith((".bed", ".bed.gz")):
-			ranges_df = pr.read_bed(intervals_path).as_df()
+			ranges_df = pd.DataFrame(pr.read_bed(intervals_path))
 		elif intervals_path.endswith((".gtf", ".gtf.gz", ".gff", ".gff3", ".gff.gz")):
-			ranges_df = pr.read_gtf(intervals_path).as_df()
+			ranges_df = pd.DataFrame(pr.read_gtf(intervals_path))
 		else:
 			raise ValueError("Unsupported intervals file format. Use .bed or .gtf/.gff extensions.")
 		start_col, end_col, contig_col = "Start", "End", "Chromosome"
 
 	elif ranges_df is not None:
 		if isinstance(ranges_df, pr.PyRanges):
-			ranges_df = ranges_df.as_df()
+			ranges_df = pd.DataFrame(ranges_df)
 	else:
 		raise TypeError(
 			"Must provide one of: ranges_df, intervals_path, or (feature_type + gtf_path)"

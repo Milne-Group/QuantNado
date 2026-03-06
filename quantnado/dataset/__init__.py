@@ -17,3 +17,6 @@ from .ranges import (
 )
 from .reduce import reduce_byranges_signal, extract_byranges_signal
 from .bam import BamStore
+from .methylation import MethylStore
+from .variants import VariantStore
+from .multiomics import MultiomicsStore

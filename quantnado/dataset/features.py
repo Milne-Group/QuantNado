@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pyranges as pr
+import pyranges1 as pr
 import pandas as pd
 import numpy as np
 from typing import Iterable
@@ -78,7 +78,7 @@ def load_gtf(
 		pr_obj = pr.read_gtf(path)
 		
 		# Convert to DataFrame for attribute parsing
-		df = pr_obj.as_df()
+		df = pd.DataFrame(pr_obj)
 		df = df.rename(columns={"Chromosome": "seqname", "Start": "start", "End": "end"})
 		
 		if "feature" not in df.columns:
@@ -112,12 +112,12 @@ def load_gtf(
 		for col in usecols:
 			empty_df[col] = pd.Series([], dtype=object)
 		empty_df = empty_df.rename(columns={"seqname": "Chromosome", "start": "Start", "end": "End"})
-		return pr.PyRanges(df=empty_df)
+		return pr.PyRanges(empty_df)
 
 	combined_df = pd.concat(ranges_list, ignore_index=True)
 	combined_df = combined_df.rename(columns={"seqname": "Chromosome", "start": "Start", "end": "End"})
-	
-	return pr.PyRanges(df=combined_df)
+
+	return pr.PyRanges(combined_df)
 
 
 def extract_feature_ranges(
@@ -147,10 +147,7 @@ def extract_feature_ranges(
 	feature_type = FeatureType(feature_type) if isinstance(feature_type, str) else feature_type
 
 	# Convert input to DataFrame for consistent processing
-	if isinstance(gtf_source, pr.PyRanges):
-		df = gtf_source.as_df()
-	else:
-		df = gtf_source.copy()
+	df = pd.DataFrame(gtf_source)
 
 	# Normalize column names to PyRanges convention
 	if "seqname" in df.columns:
@@ -170,7 +167,7 @@ def extract_feature_ranges(
 		subset["Length"] = subset["End"] - subset["Start"]
 		subset["Midpoint"] = (subset["Start"] + subset["End"]) // 2
 
-	return pr.PyRanges(df=subset)
+	return pr.PyRanges(subset)
 
 
 def extract_promoters(
@@ -202,7 +199,7 @@ def extract_promoters(
 	
 	# Get anchors using extract_feature_ranges
 	anchors_pr = extract_feature_ranges(gtf_source, feature_type=anchor_feature)
-	anchors = anchors_pr.as_df()
+	anchors = pd.DataFrame(anchors_pr)
 
 	# If no features found and anchor was GENE, try TRANSCRIPT as fallback
 	if anchors.empty and anchor_feature == FeatureType.GENE:
@@ -210,8 +207,8 @@ def extract_promoters(
 			f"No '{anchor_feature}' features found in GTF; falling back to '{FeatureType.TRANSCRIPT}'"
 		)
 		anchors_pr = extract_feature_ranges(gtf_source, feature_type=FeatureType.TRANSCRIPT)
-		anchors = anchors_pr.as_df()
-	
+		anchors = pd.DataFrame(anchors_pr)
+
 	if anchors.empty:
 		# Return empty PyRanges with proper column structure
 		empty_df = pd.DataFrame({
@@ -221,7 +218,7 @@ def extract_promoters(
 			"Strand": pd.Series([], dtype=str),
 			"feature": pd.Series([], dtype=str),
 		})
-		return pr.PyRanges(df=empty_df)
+		return pr.PyRanges(empty_df)
 
 	starts = anchors["Start"].to_numpy()
 	ends = anchors["End"].to_numpy()
@@ -241,7 +238,7 @@ def extract_promoters(
 	promoters["End"] = promo_end
 	promoters["feature"] = "promoter"
 	
-	return pr.PyRanges(df=promoters)
+	return pr.PyRanges(promoters)
 
 
 def annotate_intervals(
@@ -275,20 +272,20 @@ def annotate_intervals(
 	features_pr = _to_pyranges(feature_ranges, "Chromosome", "Start", "End") if not isinstance(feature_ranges, pr.PyRanges) else feature_ranges
 
 	# Perform join operation
-	joined = intervals_pr.join(features_pr, strandedness=None)
-	
+	joined = intervals_pr.join_overlaps(features_pr, strand_behavior="ignore")
+
 	# Get result as DataFrame
-	result_df = joined.as_df()
-	
+	result_df = pd.DataFrame(joined)
+
 	# Rename feature columns with prefix
-	feature_cols = [c for c in features_pr.as_df().columns if c not in {"Chromosome", "Start", "End", "Strand"}]
+	feature_cols = [c for c in features_pr.columns if c not in {"Chromosome", "Start", "End", "Strand"}]
 	rename_map = {c: f"{feature_prefix}{c}" for c in feature_cols}
 	result_df = result_df.rename(columns=rename_map)
-	
+
 	# Handle require_overlap logic
 	if not require_overlap:
 		# Get original intervals as DataFrame
-		intervals_df = intervals_pr.as_df() if isinstance(intervals_pr, pr.PyRanges) else intervals
+		intervals_df = pd.DataFrame(intervals_pr)
 		
 		# For non-overlapping intervals, add them back with NaN feature columns
 		original_ids = set(zip(intervals_df["Chromosome"], intervals_df["Start"], intervals_df["End"]))
@@ -308,7 +305,7 @@ def annotate_intervals(
 	
 	# Return in same format as input
 	if isinstance(intervals, pr.PyRanges):
-		return pr.PyRanges(df=result_df)
+		return pr.PyRanges(result_df)
 	else:
 		return result_df
 
@@ -367,5 +364,5 @@ def _to_pyranges(
 		missing = required - set(df.columns)
 		raise ValueError(f"DataFrame must contain columns: {missing}")
 	
-	return pr.PyRanges(df=df)
+	return pr.PyRanges(df)
 

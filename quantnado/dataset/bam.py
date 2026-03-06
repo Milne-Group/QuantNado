@@ -22,6 +22,76 @@ from .metadata import extract_metadata
 DEFAULT_CHUNK_LEN = 65536
 BIN_SIZE = 1
 
+STRANDED_LIBRARY_TYPES = {"fr-firststrand", "fr-secondstrand"}
+
+
+def _get_stranded_signal(
+    bam_path: str | Path,
+    chrom: str,
+    chrom_size: int,
+    library_type: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Extract per-base coverage split by strand using pysam.
+
+    Parameters
+    ----------
+    library_type : str
+        RNA-seq library type:
+        - ``"fr-firststrand"`` — dUTP / RF (most common; e.g. TruSeq stranded)
+        - ``"fr-secondstrand"`` — ligation / FR (e.g. Directional)
+
+    Returns
+    -------
+    (fwd, rev) : tuple of np.ndarray uint32
+        Per-base coverage for the sense (+) and antisense (−) strands,
+        each of length *chrom_size*.
+    """
+    if library_type not in STRANDED_LIBRARY_TYPES:
+        raise ValueError(
+            f"library_type must be one of {STRANDED_LIBRARY_TYPES}, got {library_type!r}"
+        )
+
+    def _is_sense(read) -> bool:
+        """True if this read represents the + (sense) strand of the transcript."""
+        if read.is_paired:
+            if library_type == "fr-firststrand":
+                return (read.is_read1 and read.is_reverse) or (
+                    read.is_read2 and not read.is_reverse
+                )
+            else:  # fr-secondstrand
+                return (read.is_read1 and not read.is_reverse) or (
+                    read.is_read2 and read.is_reverse
+                )
+        else:  # single-end
+            return read.is_reverse if library_type == "fr-firststrand" else not read.is_reverse
+
+    def _valid(read) -> bool:
+        return not read.is_unmapped and not read.is_secondary and not read.is_supplementary
+
+    def _sense_cb(read):
+        return _valid(read) and _is_sense(read)
+
+    def _antisense_cb(read):
+        return _valid(read) and not _is_sense(read)
+
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        fwd_raw = bam.count_coverage(chrom, 0, chrom_size, quality_threshold=0, read_callback=_sense_cb)
+        rev_raw = bam.count_coverage(chrom, 0, chrom_size, quality_threshold=0, read_callback=_antisense_cb)
+
+    fwd = sum(np.asarray(a, dtype=np.uint32) for a in fwd_raw)
+    rev = sum(np.asarray(a, dtype=np.uint32) for a in rev_raw)
+
+    # align to expected length (mirrors bamnado length correction)
+    def _align(arr: np.ndarray, size: int) -> np.ndarray:
+        if arr.shape[0] > size:
+            return arr[:size]
+        if arr.shape[0] < size:
+            return np.pad(arr, (0, size - arr.shape[0]))
+        return arr
+
+    return _align(fwd, chrom_size), _align(rev, chrom_size)
+
 
 def _to_str_list(values: Iterable[Any]) -> list[str]:
     arr_obj = np.asarray(list(values), dtype=object)
@@ -138,6 +208,7 @@ class BamStore:
         overwrite: bool = True,
         resume: bool = False,
         read_only: bool = False,
+        strandedness: str | None = None,
     ) -> None:
         self.store_path = self._normalize_path(store_path)
         self.chromsizes = _parse_chromsizes(chromsizes)
@@ -148,6 +219,11 @@ class BamStore:
         self.sample_hash = _compute_sample_hash(self.sample_names)
         self.compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         self.read_only = read_only
+        if strandedness is not None and strandedness not in STRANDED_LIBRARY_TYPES:
+            raise ValueError(
+                f"strandedness must be one of {STRANDED_LIBRARY_TYPES} or None, got {strandedness!r}"
+            )
+        self.strandedness = strandedness
 
         if self.n_samples == 0:
             raise ValueError("sample_names must not be empty")
@@ -202,6 +278,7 @@ class BamStore:
             chunk_len = int(group.attrs["chunk_len"])
         except KeyError as e:
             raise ValueError(f"Missing required attribute in store: {e}")
+        strandedness = group.attrs.get("strandedness") or None
         # Return BamStore instance
         return cls(
             store_path=store_path,
@@ -211,6 +288,7 @@ class BamStore:
             overwrite=False,
             resume=True,
             read_only=read_only,
+            strandedness=strandedness,
         )
     def _check_writable(self):
         if getattr(self, "read_only", False):
@@ -261,6 +339,19 @@ class BamStore:
             overwrite=True,
         )
 
+        if self.strandedness:
+            for chrom, size in self.chromsizes.items():
+                for suffix in ("_fwd", "_rev"):
+                    self.root.create_array(
+                        name=f"{chrom}{suffix}",
+                        shape=(self.n_samples, size),
+                        chunks=(1, self.chunk_len),
+                        dtype=np.uint32,
+                        compressors=[self.compressor],
+                        fill_value=0,
+                        overwrite=True,
+                    )
+
         self.root.attrs.update(
             {
                 "chromosomes": self.chromosomes,
@@ -271,6 +362,7 @@ class BamStore:
                 "bin_size": BIN_SIZE,
                 "sample_names": self.sample_names,
                 "sample_names_hash": self.sample_hash,
+                "strandedness": self.strandedness or "",
             }
         )
         logger.info(f"Initialized Zarr store at {self.store_path}")
