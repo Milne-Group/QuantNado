@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import math
 from pathlib import Path
@@ -29,23 +30,50 @@ def setup_logging(log_path: Path, verbose: bool):
 
 def get_filesystem_type(path: str | Path) -> str:
     path = Path(path).resolve()
-    best_match = None
-    best_len = -1
 
-    with open("/proc/self/mountinfo") as f:
-        for line in f:
-            parts = line.strip().split()
-            # mountinfo format:
-            # [..] mount_point [..] - fs_type source super_opts
-            sep = parts.index("-")
-            mount_point = parts[4]
-            fs_type = parts[sep + 1]
+    mountinfo = Path("/proc/self/mountinfo")
+    if mountinfo.exists():
+        best_match = None
+        best_len = -1
+        with open(mountinfo) as f:
+            for line in f:
+                parts = line.strip().split()
+                # mountinfo format:
+                # [..] mount_point [..] - fs_type source super_opts
+                sep = parts.index("-")
+                mount_point = parts[4]
+                fs_type = parts[sep + 1]
 
+                if path.as_posix().startswith(mount_point) and len(mount_point) > best_len:
+                    best_match = fs_type
+                    best_len = len(mount_point)
+        return best_match or "unknown"
+
+    # macOS / non-Linux fallback: parse `mount` output
+    # Format: "<dev> on <mountpoint> (<fstype>, ...)"
+    try:
+        result = subprocess.run(
+            ["mount"],
+            capture_output=True, text=True, check=True,
+        )
+        best_match = None
+        best_len = -1
+        for line in result.stdout.splitlines():
+            # e.g. "/dev/disk1 on /Volumes/foo (apfs, local, ...)"
+            try:
+                mount_point = line.split(" on ")[1].split(" (")[0]
+                fs_type = line.split("(")[1].split(",")[0].strip()
+            except (IndexError, ValueError):
+                continue
             if path.as_posix().startswith(mount_point) and len(mount_point) > best_len:
                 best_match = fs_type
                 best_len = len(mount_point)
+        if best_match:
+            return best_match
+    except Exception:
+        pass
 
-    return best_match or "unknown"
+    return "unknown"
 
 
 def is_network_fs(path):

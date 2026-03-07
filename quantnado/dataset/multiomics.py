@@ -88,6 +88,10 @@ class MultiomicsStore:
         resume: bool = False,
         sample_column: str = "sample_id",
         chunk_len: int = DEFAULT_CHUNK_LEN,
+        construction_compression: str = "default",
+        local_staging: bool = False,
+        staging_dir: "Path | str | None" = None,
+        log_file: "Path | None" = None,
         max_workers: int = 1,
         test: bool = False,
     ) -> "MultiomicsStore":
@@ -131,6 +135,14 @@ class MultiomicsStore:
             Column in ``metadata`` matching sample names.
         chunk_len : int, default 65536
             Zarr chunk size for the position dimension (coverage store only).
+        construction_compression : {"default", "fast", "none"}, default "default"
+            Build-time compression profile for the coverage store.
+        local_staging : bool, default False
+            Build the coverage store under local scratch storage before publishing.
+        staging_dir : str or Path, optional
+            Scratch directory for local staging. Defaults to system temp dir.
+        log_file : Path, optional
+            Path to write BAM processing logs.
         max_workers : int, default 1
             Parallel workers for BAM processing.
         test : bool, default False
@@ -154,6 +166,10 @@ class MultiomicsStore:
                 resume=resume,
                 sample_column=sample_column,
                 chunk_len=chunk_len,
+                construction_compression=construction_compression,
+                local_staging=local_staging,
+                staging_dir=staging_dir,
+                log_file=log_file,
                 max_workers=max_workers,
                 test=test,
             )
