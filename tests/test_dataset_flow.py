@@ -6,7 +6,7 @@ import xarray as xr
 
 from quantnado.dataset.bam import BamStore
 from quantnado.dataset.core import QuantNadoDataset
-from quantnado.dataset.counts import feature_counts
+from quantnado.dataset.counts import count_features
 from quantnado.dataset.reduce import reduce_byranges_signal
 from quantnado.dataset.pca import run_pca
 
@@ -50,7 +50,7 @@ def test_feature_counts_basic(simple_store):
         }
     )
 
-    counts_df, feature_metadata = feature_counts(
+    counts_df, feature_metadata = count_features(
         simple_store,
         ranges_df=ranges,
         contig_col="contig",

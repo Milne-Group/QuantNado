@@ -91,16 +91,16 @@ def call_peaks(
 @app.command()
 def create_dataset(
     output: Path = typer.Option(..., "--output", "-o", help="Output directory for the multiomics store."),
-    bam_files: list[Path] = typer.Option([], "--bam", help="BAM file for coverage (repeat for multiple)."),
-    bedgraph_files: list[Path] = typer.Option([], "--bedgraph", help="bedGraph file for methylation (repeat for multiple)."),
-    vcf_files: list[Path] = typer.Option([], "--vcf", help="VCF.gz file for variants (repeat for multiple)."),
+    bam: str | None = typer.Option(None, "--bam", help="Comma-separated BAM files for coverage."),
+    bedgraph: str | None = typer.Option(None, "--bedgraph", help="Comma-separated bedGraph files for methylation."),
+    vcf: str | None = typer.Option(None, "--vcf", help="Comma-separated VCF.gz files for variants."),
     chromsizes: Path | None = typer.Option(
         None, "--chromsizes", help="Path to chromsizes. If omitted, extracted from first BAM."
     ),
     metadata: Path | None = typer.Option(None, "--metadata", help="Path to metadata CSV file."),
-    bam_sample_names: list[str] = typer.Option([], "--bam-sample-name", help="Override sample name for a BAM file (repeat for multiple)."),
-    bedgraph_sample_names: list[str] = typer.Option([], "--bedgraph-sample-name", help="Override sample name for a bedGraph file (repeat for multiple)."),
-    vcf_sample_names: list[str] = typer.Option([], "--vcf-sample-name", help="Override sample name for a VCF file (repeat for multiple)."),
+    bam_sample_names: str | None = typer.Option(None, "--bam-sample-names", help="Comma-separated sample name overrides for BAM files."),
+    bedgraph_sample_names: str | None = typer.Option(None, "--bedgraph-sample-names", help="Comma-separated sample name overrides for bedGraph files."),
+    vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
     sample_column: str = typer.Option("sample_id", "--sample-column", help="Column in metadata matching sample names."),
     chunk_len: int = typer.Option(65536, "--chunk-len", help="Zarr chunk size for coverage store."),
     filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
@@ -114,8 +114,19 @@ def create_dataset(
     Create a multiomics store from BAM, bedGraph, and/or VCF files.
 
     At least one of --bam, --bedgraph, or --vcf must be provided.
+    Multiple files can be passed as a comma-separated list, e.g. --bam a.bam,b.bam
     """
     _setup_cli_logging(log_file, verbose)
+
+    def _split(s: str | None) -> list[str]:
+        return [v.strip() for v in s.split(",") if v.strip()] if s else []
+
+    bam_files = _split(bam)
+    bedgraph_files = _split(bedgraph)
+    vcf_files = _split(vcf)
+    bam_names = _split(bam_sample_names)
+    bedgraph_names = _split(bedgraph_sample_names)
+    vcf_names = _split(vcf_sample_names)
 
     if not any([bam_files, bedgraph_files, vcf_files]):
         logger.error("Provide at least one of --bam, --bedgraph, or --vcf.")
@@ -133,14 +144,14 @@ def create_dataset(
 
         MultiomicsStore.from_files(
             store_dir=output,
-            bam_files=[str(b) for b in bam_files] or None,
-            bedgraph_files=[str(b) for b in bedgraph_files] or None,
-            vcf_files=[str(b) for b in vcf_files] or None,
+            bam_files=bam_files or None,
+            bedgraph_files=bedgraph_files or None,
+            vcf_files=vcf_files or None,
             chromsizes=chromsizes,
             metadata=metadata,
-            bam_sample_names=bam_sample_names or None,
-            bedgraph_sample_names=bedgraph_sample_names or None,
-            vcf_sample_names=vcf_sample_names or None,
+            bam_sample_names=bam_names or None,
+            bedgraph_sample_names=bedgraph_names or None,
+            vcf_sample_names=vcf_names or None,
             sample_column=sample_column,
             chunk_len=chunk_len,
             filter_chromosomes=filter_chromosomes,

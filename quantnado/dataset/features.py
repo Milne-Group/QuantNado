@@ -94,9 +94,10 @@ def load_gtf(
 				df[key] = attr_dicts.apply(lambda d: d.get(key))
 			df = df.drop(columns=["attribute"])
 		else:
-			# Fill with NA if attributes not present
+			# PyRanges may have already parsed attributes into columns; only fill missing ones
 			for key in usecols:
-				df[key] = pd.NA
+				if key not in df.columns:
+					df[key] = pd.NA
 
 		ranges_list.append(df)
 

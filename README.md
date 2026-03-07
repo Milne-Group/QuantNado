@@ -50,7 +50,7 @@ pca_obj, transformed = qn.pca(promoter_signal["mean"], n_components=10)
 print(transformed.shape)  # (n_samples, 10)
 
 # Generate a count matrix for DESeq2
-counts, features = qn.feature_counts("genes.gtf", feature_type="gene")
+counts, features = qn.count_features("genes.gtf", feature_type="gene")
 counts.to_csv("counts.csv")
 
 # Extract signal over a specific region
@@ -99,7 +99,7 @@ Full documentation is available at [milne-group.github.io/QuantNado](https://mil
 | `QuantNado.from_bam_files(bam_files, store_path, ...)` | Create a new dataset from BAM files |
 | `QuantNado.open(store_path, read_only=True)` | Open an existing dataset |
 | `.reduce(ranges, reduction="mean")` | Aggregate signal over genomic ranges (BED) |
-| `.feature_counts(gtf_file, feature_type="gene")` | Generate a DESeq2-compatible count matrix |
+| `.count_features(gtf_file, feature_type="gene")` | Generate a DESeq2-compatible count matrix |
 | `.pca(data, n_components=10)` | Run PCA on a signal matrix |
 | `.extract_region(region)` | Extract raw signal for a genomic region |
 | `.to_xarray(chromosomes)` | Load dataset as lazy xarray DataArrays |

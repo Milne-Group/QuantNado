@@ -55,8 +55,8 @@ def extract_metadata(ds) -> pd.DataFrame:
                 arr = meta_group["sample_hashes"][:]
                 hashes = []
                 for row in arr:
-                    # treat all-zero rows as missing
-                    if (getattr(row, "all", None) and row.all() == 0) or (hasattr(row, "__array__") and (row == 0).all()):
+                    # treat all-zero rows as missing (hash not yet computed)
+                    if (row == 0).all():
                         hashes.append(pd.NA)
                     else:
                         hashes.append("".join(f"{int(b):02x}" for b in row))

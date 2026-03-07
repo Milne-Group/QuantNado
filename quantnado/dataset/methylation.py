@@ -402,6 +402,203 @@ class MethylStore:
             )
         return result
 
+    def count_features(
+        self,
+        *,
+        gtf_file=None,
+        bed_file=None,
+        ranges_df=None,
+        feature_type: str = "gene",
+        feature_id_col: str | list[str] | None = None,
+        strand: str | None = None,
+        integerize: bool = False,
+    ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+        """
+        Aggregate methylation data over genomic features.
+
+        For each feature, finds all CpG sites within it and computes a full set
+        of methylation statistics across those sites per sample.
+
+        Parameters
+        ----------
+        gtf_file : str or Path, optional
+            Path to GTF file for feature extraction.
+        bed_file : str or Path, optional
+            Path to BED file with genomic ranges.
+        ranges_df : DataFrame, optional
+            Pre-parsed genomic ranges with contig/start/end columns.
+        feature_type : str, default "gene"
+            GTF feature type to extract (e.g., "gene", "transcript", "exon").
+        feature_id_col : str or list[str], optional
+            Column(s) to use as row index of the output DataFrames.
+            For GTF inputs defaults to the first available of: gene_id, transcript_id,
+            gene_name, transcript_name.
+        strand : str, optional
+            If "+" or "-", restrict to features on that strand.
+        integerize : bool, default False
+            If True, round n_methylated/n_unmethylated/n_cpg_covered to int64.
+
+        Returns
+        -------
+        stats : dict[str, DataFrame]
+            Dictionary of features × samples DataFrames:
+
+            - ``"n_methylated"``     — sum of methylated reads across CpG sites
+            - ``"n_unmethylated"``   — sum of unmethylated reads across CpG sites
+            - ``"n_cpg_covered"``    — number of CpG sites with any read coverage
+            - ``"methylation_ratio"``— n_methylated / (n_methylated + n_unmethylated);
+                                       NaN where total depth is zero
+            - ``"methylation_pct"``  — mean methylation_pct across covered CpG sites;
+                                       NaN where no site is covered
+        feature_metadata : DataFrame
+            Per-feature metadata (contig, strand, start, end, range_length,
+            n_cpg_total — total CpG sites regardless of coverage).
+        """
+        from .features import extract_feature_ranges, load_gtf
+
+        # ── Resolve ranges ────────────────────────────────────────────────────
+        if ranges_df is None and bed_file is None:
+            if gtf_file is None:
+                raise TypeError("Provide ranges_df, bed_file, or gtf_file")
+            gtf_source = load_gtf(gtf_file, feature_types=None)
+            ranges_df = pd.DataFrame(extract_feature_ranges(gtf_source, feature_type=feature_type))
+            ranges_df = ranges_df.rename(columns={"Chromosome": "contig", "Start": "start", "End": "end"})
+            if feature_id_col is None:
+                for candidate in ("gene_id", "transcript_id", "gene_name", "transcript_name"):
+                    if candidate in ranges_df.columns:
+                        feature_id_col = candidate
+                        break
+        elif bed_file is not None:
+            ranges_df = pd.read_csv(
+                bed_file, sep="\t", header=None, usecols=[0, 1, 2],
+                names=["contig", "start", "end"],
+            )
+
+        ranges_df = ranges_df.reset_index(drop=True)
+
+        # Normalize PyRanges Strand column
+        if "Strand" in ranges_df.columns and "strand" not in ranges_df.columns:
+            ranges_df = ranges_df.rename(columns={"Strand": "strand"})
+        if strand is not None and "strand" in ranges_df.columns:
+            ranges_df = ranges_df[ranges_df["strand"] == strand].reset_index(drop=True)
+
+        contig_col = next((c for c in ("contig", "Chromosome", "chrom") if c in ranges_df.columns), None)
+        start_col = next((c for c in ("start", "Start") if c in ranges_df.columns), "start")
+        end_col = next((c for c in ("end", "End") if c in ranges_df.columns), "end")
+
+        # ── Pre-load all three variables per chromosome ───────────────────────
+        # methylation_pct has NaN where no coverage; counts have fill=0
+        chrom_data: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+        if contig_col is not None:
+            for chrom in ranges_df[contig_col].unique():
+                if chrom in self.chromosomes:
+                    chrom_data[chrom] = (
+                        self.get_positions(chrom),
+                        self.root[chrom]["n_methylated"][:].astype(np.float64),
+                        self.root[chrom]["n_unmethylated"][:].astype(np.float64),
+                        self.root[chrom]["methylation_pct"][:].astype(np.float64),
+                    )
+
+        # ── Aggregate per feature ─────────────────────────────────────────────
+        rows_meth = []
+        rows_unmeth = []
+        rows_covered = []
+        rows_ratio = []
+        rows_pct = []
+        n_cpg_total = []
+
+        for _, row in ranges_df.iterrows():
+            chrom = row[contig_col] if contig_col else None
+            feat_start, feat_end = int(row[start_col]), int(row[end_col])
+
+            if chrom is None or chrom not in chrom_data:
+                rows_meth.append(np.zeros(self.n_samples))
+                rows_unmeth.append(np.zeros(self.n_samples))
+                rows_covered.append(np.zeros(self.n_samples))
+                rows_ratio.append(np.full(self.n_samples, np.nan))
+                rows_pct.append(np.full(self.n_samples, np.nan))
+                n_cpg_total.append(0)
+                continue
+
+            positions, n_meth, n_unmeth, meth_pct = chrom_data[chrom]
+            lo = int(np.searchsorted(positions, feat_start, side="left"))
+            hi = int(np.searchsorted(positions, feat_end, side="left"))
+            n_cpg_total.append(hi - lo)
+
+            if lo == hi:
+                rows_meth.append(np.zeros(self.n_samples))
+                rows_unmeth.append(np.zeros(self.n_samples))
+                rows_covered.append(np.zeros(self.n_samples))
+                rows_ratio.append(np.full(self.n_samples, np.nan))
+                rows_pct.append(np.full(self.n_samples, np.nan))
+                continue
+
+            s_meth = n_meth[:, lo:hi]       # (n_samples, n_sites)
+            s_unmeth = n_unmeth[:, lo:hi]
+            s_pct = meth_pct[:, lo:hi]
+
+            sum_meth = s_meth.sum(axis=1)
+            sum_unmeth = s_unmeth.sum(axis=1)
+            total_reads = sum_meth + sum_unmeth
+            covered = (~np.isnan(s_pct)).sum(axis=1).astype(np.float64)
+
+            with np.errstate(invalid="ignore", divide="ignore"):
+                ratio = np.where(total_reads > 0, sum_meth / total_reads, np.nan)
+                mean_pct = np.nanmean(s_pct, axis=1)
+                mean_pct = np.where(covered > 0, mean_pct, np.nan)
+
+            rows_meth.append(sum_meth)
+            rows_unmeth.append(sum_unmeth)
+            rows_covered.append(covered)
+            rows_ratio.append(ratio)
+            rows_pct.append(mean_pct)
+
+        idx = ranges_df.index
+
+        def _df(rows):
+            return pd.DataFrame(rows, columns=self.sample_names, index=idx)
+
+        stats = {
+            "n_methylated": _df(rows_meth),
+            "n_unmethylated": _df(rows_unmeth),
+            "n_cpg_covered": _df(rows_covered),
+            "methylation_ratio": _df(rows_ratio),
+            "methylation_pct": _df(rows_pct),
+        }
+
+        # ── Build feature metadata ────────────────────────────────────────────
+        feature_metadata = pd.DataFrame({
+            "start": ranges_df[start_col].values,
+            "end": ranges_df[end_col].values,
+            "range_length": (ranges_df[end_col] - ranges_df[start_col]).values,
+            "n_cpg_total": n_cpg_total,
+        }, index=idx)
+        if contig_col is not None:
+            feature_metadata.insert(0, "contig", ranges_df[contig_col].values)
+        if "strand" in ranges_df.columns:
+            feature_metadata.insert(feature_metadata.columns.get_loc("start"), "strand", ranges_df["strand"].values)
+
+        # Apply feature_id_col as shared index across all outputs
+        id_cols = [feature_id_col] if isinstance(feature_id_col, str) else (feature_id_col or [])
+        if id_cols and all(c in ranges_df.columns for c in id_cols):
+            for col in reversed(id_cols):
+                if col not in feature_metadata.columns:
+                    feature_metadata.insert(0, col, ranges_df[col].values)
+            new_index = (
+                feature_metadata[id_cols[0]].values
+                if len(id_cols) == 1
+                else pd.MultiIndex.from_frame(feature_metadata[id_cols])
+            )
+            for df in stats.values():
+                df.index = new_index
+            feature_metadata.index = new_index
+
+        if integerize:
+            for key in ("n_methylated", "n_unmethylated", "n_cpg_covered"):
+                stats[key] = stats[key].round().astype("int64")
+
+        return stats, feature_metadata
+
     def extract_region(
         self,
         region: str | None = None,

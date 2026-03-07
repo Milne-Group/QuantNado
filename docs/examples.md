@@ -138,7 +138,7 @@ import pandas as pd
 qn = QuantNado.open("chip_dataset.zarr")
 
 # Generate gene counts
-counts, features = qn.feature_counts(
+counts, features = qn.count_features(
     gtf_file="genes.gtf",
     feature_type="gene",
     integerize=True

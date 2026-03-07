@@ -157,7 +157,7 @@ def test_extract_fixed_width(qn):
 
 
 # ---------------------------------------------------------------------------
-# feature_counts
+# count_features
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +168,7 @@ def test_feature_counts_from_ranges(qn):
         "end": [2, 4],
         "gene_id": ["g1", "g2"],
     })
-    counts_df, meta = qn.feature_counts(ranges=ranges)
+    counts_df, meta = qn.count_features(ranges=ranges)
     assert "s1" in counts_df.columns
     assert "s2" in counts_df.columns
     assert counts_df.shape[0] == 2
