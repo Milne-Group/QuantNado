@@ -1057,7 +1057,7 @@ class BamStore:
         # Add metadata columns as coordinates
         for col in metadata_subset.columns:
             if col != "sample_id":  # sample_id redundant with "sample" coordinate
-                coords[col] = ("sample", metadata_subset[col].values)
+                coords[col] = ("sample", np.asarray(metadata_subset[col]))
         
         # Create DataArray
         da_xr = xr.DataArray(

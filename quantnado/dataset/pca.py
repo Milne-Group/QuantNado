@@ -153,7 +153,21 @@ def run_pca(
 
     pca = PCA(**pca_kwargs)
     pca_object = pca.fit(array)
-    transformed = pca_object.transform(array)
+    transformed_np = pca_object.transform(array)
+
+    sample_dim = arr_2d.dims[0]
+    sample_coord = arr_2d.coords[sample_dim] if sample_dim in arr_2d.coords else np.arange(array.shape[0])
+    n_components_out = transformed_np.shape[1]
+
+    # Return a lazy dask-backed DataArray so callers can call `.compute()`.
+    transformed = xr.DataArray(
+        da.from_array(transformed_np, chunks=transformed_np.shape),
+        dims=(sample_dim, "component"),
+        coords={
+            sample_dim: sample_coord,
+            "component": np.arange(1, n_components_out + 1),
+        },
+    )
 
     return pca_object, transformed
 

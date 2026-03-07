@@ -566,7 +566,7 @@ class VariantStore:
         coords: dict = {"sample": sample_names_out, "position": region_positions}
         for col in metadata_subset.columns:
             if col != "sample_id":
-                coords[col] = ("sample", metadata_subset[col].values)
+                coords[col] = ("sample", np.asarray(metadata_subset[col]))
 
         return xr.DataArray(
             da.from_array(data, chunks=(1, -1)),

@@ -676,7 +676,7 @@ class MethylStore:
         coords: dict = {"sample": sample_names_out, "position": region_positions}
         for col in metadata_subset.columns:
             if col != "sample_id":
-                coords[col] = ("sample", metadata_subset[col].values)
+                coords[col] = ("sample", np.asarray(metadata_subset[col]))
 
         return xr.DataArray(
             da.from_array(data, chunks=(1, -1)),
@@ -688,4 +688,203 @@ class MethylStore:
                 "start": start,
                 "end": end,
             },
+        )
+
+    def extract(
+        self,
+        intervals_path: "str | None" = None,
+        ranges_df: "pd.DataFrame | None" = None,
+        feature_type: "str | None" = None,
+        gtf_path: "str | None" = None,
+        variable: str = "methylation_pct",
+        upstream: "int | None" = None,
+        downstream: "int | None" = None,
+        fixed_width: "int | None" = None,
+        anchor: str = "midpoint",
+        bin_size: "int | None" = 50,
+        samples: "list[str] | None" = None,
+    ) -> xr.DataArray:
+        """
+        Extract methylation signal over genomic intervals, binned into fixed windows.
+
+        Bins sparse CpG methylation values into fixed-width windows around an anchor
+        point (TSS, midpoint, etc.) and returns a ``(interval, bin, sample)`` DataArray
+        compatible with :func:`metaplot` and :func:`tornadoplot`.
+
+        Parameters
+        ----------
+        intervals_path : str, optional
+            Path to a BED or GTF file with genomic intervals.
+        ranges_df : DataFrame, optional
+            Pre-loaded ranges with columns Chromosome, Start, End (and optionally Strand).
+        feature_type : str, optional
+            Feature type to extract from GTF: ``"gene"``, ``"transcript"``, ``"promoter"``.
+            Requires ``gtf_path``.
+        gtf_path : str, optional
+            Path to GTF file (used with ``feature_type``).
+        variable : str, default "methylation_pct"
+            Which methylation variable to bin (``"methylation_pct"``, ``"n_methylated"``,
+            ``"n_unmethylated"``).
+        upstream : int, optional
+            Bases upstream of anchor to include. Cannot be combined with ``fixed_width``.
+        downstream : int, optional
+            Bases downstream of anchor to include. Cannot be combined with ``fixed_width``.
+        fixed_width : int, optional
+            Symmetric window total width. Cannot be combined with ``upstream``/``downstream``.
+        anchor : str, default "midpoint"
+            Anchor point: ``"midpoint"``, ``"start"`` (5' end, strand-aware),
+            or ``"end"`` (3' end, strand-aware).
+        bin_size : int, optional, default 50
+            Bin size in bp. Bins CpG sites into windows of this size.
+            ``None`` returns one value per base position (slow for large windows).
+        samples : list of str, optional
+            Subset of sample names to include. Defaults to all samples.
+
+        Returns
+        -------
+        xr.DataArray
+            Dimensions ``(interval, bin, sample)``. Position coordinate contains bp
+            offsets from the anchor (negative = upstream). Bins with no CpG sites
+            are ``NaN``.
+
+        Examples
+        --------
+        >>> binned_meth = meth.extract(
+        ...     feature_type="transcript",
+        ...     gtf_path="genes.gtf",
+        ...     upstream=1000,
+        ...     downstream=1000,
+        ...     anchor="start",
+        ...     bin_size=50,
+        ... )
+        >>> ax = metaplot(binned_meth, modality="methylation", title="CpG methylation at TSS")
+        """
+        from .reduce import _resolve_ranges, _log_chromosome_overlap
+        from .enums import AnchorPoint
+
+        # Resolve window
+        if upstream is not None or downstream is not None:
+            if fixed_width is not None:
+                raise ValueError("Cannot specify both fixed_width and upstream/downstream")
+            _upstream = upstream if upstream is not None else 0
+            _downstream = downstream if downstream is not None else 0
+        elif fixed_width is not None:
+            _upstream = fixed_width // 2
+            _downstream = fixed_width - _upstream
+        else:
+            raise ValueError("Must specify upstream/downstream or fixed_width")
+
+        _total_width = _upstream + _downstream
+        if bin_size is not None and _total_width % bin_size != 0:
+            raise ValueError(
+                f"Total window ({_total_width}) must be divisible by bin_size ({bin_size})"
+            )
+        n_bins = _total_width // bin_size if bin_size is not None else _total_width
+
+        # Resolve ranges and samples
+        ranges_df, start_col, end_col, contig_col = _resolve_ranges(
+            ranges_df, intervals_path, feature_type, gtf_path, "Start", "End", "Chromosome"
+        )
+        if samples is None:
+            sample_indices = np.arange(self.n_samples)
+            sample_names_out = list(self.sample_names)
+        else:
+            sample_indices_list, sample_names_out = [], []
+            for s in samples:
+                idx = self.sample_names.index(s) if isinstance(s, str) else int(s)
+                sample_indices_list.append(idx)
+                sample_names_out.append(self.sample_names[idx])
+            sample_indices = np.array(sample_indices_list)
+        n_samples_out = len(sample_indices)
+
+        _log_chromosome_overlap(
+            set(ranges_df[contig_col].unique()), set(self.chromosomes), "intervals"
+        )
+
+        anchor_enum = AnchorPoint(anchor) if isinstance(anchor, str) else anchor
+        has_strand = "Strand" in ranges_df.columns
+
+        all_matrices: list[np.ndarray] = []
+        meta_starts, meta_ends, meta_contigs, meta_strands = [], [], [], []
+
+        for chrom, group in ranges_df.groupby(contig_col, observed=True):
+            if chrom not in self.chromosomes:
+                continue
+
+            cpg_pos = self.get_positions(chrom)  # (n_cpg,)
+            n_cpg = len(cpg_pos)
+            meth_data = np.array(
+                self.root[chrom][variable][np.ix_(sample_indices, np.arange(n_cpg))]
+            )  # (n_samples, n_cpg)
+
+            starts = np.asarray(group[start_col], dtype=np.int64)
+            ends = np.asarray(group[end_col], dtype=np.int64)
+            strands = np.asarray(group["Strand"], dtype=object) if has_strand else None
+
+            if anchor_enum == AnchorPoint.MIDPOINT:
+                anchor_pos = (starts + ends) // 2
+            elif anchor_enum == AnchorPoint.START:
+                anchor_pos = np.where(strands == "-", ends, starts) if has_strand else starts
+            else:  # END
+                anchor_pos = np.where(strands == "-", starts, ends) if has_strand else ends
+
+            win_starts = anchor_pos - _upstream
+            win_ends = anchor_pos + _downstream
+
+            for i in range(len(starts)):
+                ws, we = int(win_starts[i]), int(win_ends[i])
+                strand = strands[i] if has_strand else "+"
+                cpg_mask = (cpg_pos >= ws) & (cpg_pos < we)
+                cpg_idx = np.where(cpg_mask)[0]
+
+                mat = np.full((n_bins, n_samples_out), np.nan, dtype=np.float32)
+                if cpg_idx.size > 0:
+                    rel = cpg_pos[cpg_idx] - ws  # [0, _total_width)
+                    if has_strand and strand == "-":
+                        rel = _total_width - 1 - rel
+                    bins = (rel * n_bins // _total_width).clip(0, n_bins - 1)
+                    vals = meth_data[:, cpg_idx]  # (n_samples, n_cpg_in_window)
+                    for s_idx in range(n_samples_out):
+                        sv = vals[s_idx]
+                        valid = ~np.isnan(sv)
+                        if valid.any():
+                            b_valid = bins[valid]
+                            sv_valid = sv[valid]
+                            sums = np.bincount(b_valid, weights=sv_valid, minlength=n_bins)
+                            counts = np.bincount(b_valid, minlength=n_bins)
+                            mat[:, s_idx] = np.where(counts > 0, sums / counts, np.nan)
+
+                all_matrices.append(mat)
+                meta_starts.append(int(starts[i]))
+                meta_ends.append(int(ends[i]))
+                meta_contigs.append(chrom)
+                meta_strands.append(str(strand))
+
+        if not all_matrices:
+            raise ValueError("No intervals found on chromosomes present in methylation store")
+
+        data_arr = np.stack(all_matrices, axis=0)  # (n_intervals, n_bins, n_samples)
+
+        if bin_size is not None:
+            pos_values = np.arange(n_bins, dtype=np.int64) * bin_size - _upstream
+            pos_dim = "bin"
+        else:
+            pos_values = np.arange(-_upstream, _downstream, dtype=np.int64)
+            pos_dim = "relative_position"
+
+        coords: dict = {
+            pos_dim: pos_values,
+            "sample": sample_names_out,
+            "start": ("interval", np.array(meta_starts)),
+            "end": ("interval", np.array(meta_ends)),
+            "contig": ("interval", np.array(meta_contigs)),
+        }
+        if has_strand:
+            coords["strand"] = ("interval", np.array(meta_strands))
+
+        return xr.DataArray(
+            data_arr,
+            dims=("interval", pos_dim, "sample"),
+            coords=coords,
+            attrs={"variable": variable, "upstream": _upstream, "downstream": _downstream, "bin_size": bin_size},
         )

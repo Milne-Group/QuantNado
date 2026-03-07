@@ -571,6 +571,7 @@ class QuantNado:
         self,
         data: xr.DataArray,
         *,
+        modality: "str | None" = None,
         samples: list[str] | None = None,
         groups: "dict[str, list[str]] | None" = None,
         flip_minus_strand: bool = True,
@@ -579,7 +580,7 @@ class QuantNado:
         reference_point: "float | None" = 0,
         reference_label: str = "TSS",
         xlabel: str = "Relative position",
-        ylabel: str = "Mean signal",
+        ylabel: "str | None" = None,
         title: str = "Metagene profile",
         figsize: "tuple[float, float]" = (8, 4),
         ax: Any = None,
@@ -624,6 +625,7 @@ class QuantNado:
         """
         return metaplot(
             data,
+            modality=modality,
             samples=samples,
             groups=groups,
             flip_minus_strand=flip_minus_strand,
@@ -643,16 +645,19 @@ class QuantNado:
         self,
         data: xr.DataArray,
         *,
+        modality: "str | None" = None,
         samples: "list[str] | None" = None,
+        sample_names: "list[str] | None" = None,
         groups: "dict[str, list[str]] | None" = None,
         flip_minus_strand: bool = True,
         sort_by: "str | None" = "mean",
         vmin: "float | None" = None,
         vmax: "float | None" = None,
-        cmap: str = "RdYlBu_r",
+        cmap: "str | None" = None,
         reference_point: "float | None" = 0,
         reference_label: str = "TSS",
         xlabel: str = "Relative position",
+        ylabel: "str | None" = None,
         title: str = "Signal heatmap",
         figsize: "tuple[float, float] | None" = None,
         filepath: "str | Path | None" = None,
@@ -668,6 +673,8 @@ class QuantNado:
             Output of ``qn.extract()``.
         samples : list of str, optional
             Subset of samples (one panel each). Ignored when ``groups`` is set.
+        sample_names : list of str, optional
+            Display names for samples. Must match length of ``samples``.
         groups : dict {label: [samples]}, optional
             Average samples within each group (one panel per group).
         flip_minus_strand : bool, default True
@@ -684,6 +691,8 @@ class QuantNado:
             Label for the reference line.
         xlabel : str, default "Relative position"
             X-axis label.
+        ylabel : str, optional
+            Y-axis label. Defaults to "Intervals (n=<count>)".
         title : str, default "Signal heatmap"
             Figure suptitle.
         figsize : tuple, optional
@@ -697,7 +706,9 @@ class QuantNado:
         """
         return tornadoplot(
             data,
+            modality=modality,
             samples=samples,
+            sample_names=sample_names,
             groups=groups,
             flip_minus_strand=flip_minus_strand,
             sort_by=sort_by,
@@ -707,6 +718,7 @@ class QuantNado:
             reference_point=reference_point,
             reference_label=reference_label,
             xlabel=xlabel,
+            ylabel=ylabel,
             title=title,
             figsize=figsize,
             filepath=filepath,

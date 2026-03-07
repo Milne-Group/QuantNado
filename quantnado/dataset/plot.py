@@ -11,6 +11,27 @@ if TYPE_CHECKING:
 
 __all__ = ["metaplot", "tornadoplot"]
 
+# Sensible per-modality defaults that metaplot / tornadoplot apply when
+# ``modality`` is provided.  Explicit kwargs passed by the caller always win.
+_MODALITY_DEFAULTS: "dict[str, dict]" = {
+    "coverage": {
+        "ylabel": "Coverage (CPM)",
+        "cmap": "RdYlBu_r",
+    },
+    "methylation": {
+        "ylabel": "Methylation (%)",
+        "cmap": "RdPu",
+        "vmin": 0.0,
+        "vmax": 100.0,
+    },
+    "variant": {
+        "ylabel": "Allele frequency",
+        "cmap": "OrRd",
+        "vmin": 0.0,
+        "vmax": 1.0,
+    },
+}
+
 
 def _resolve_palette(palette, n: int, labels: "list | None" = None) -> list:
     """Return a list of n colors from a palette name, list, dict, or None (default cycle)."""
@@ -35,6 +56,7 @@ def _resolve_palette(palette, n: int, labels: "list | None" = None) -> list:
 def metaplot(
     data: xr.DataArray,
     *,
+    modality: "str | None" = None,
     samples: list[str] | None = None,
     groups: "dict[str, list[str]] | None" = None,
     flip_minus_strand: bool = True,
@@ -43,7 +65,7 @@ def metaplot(
     reference_point: "float | None" = 0,
     reference_label: str = "TSS",
     xlabel: str = "Relative position",
-    ylabel: str = "Mean signal",
+    ylabel: "str | None" = None,
     title: str = "Metagene profile",
     figsize: "tuple[float, float]" = (8, 4),
     ax: "plt.Axes | None" = None,
@@ -68,6 +90,9 @@ def metaplot(
         Output of ``qn.extract()``, with dimensions
         ``(interval, relative_position, sample)`` or ``(interval, bin, sample)``.
         May be dask-backed; ``.compute()`` is called automatically if needed.
+    modality : {"coverage", "methylation", "variant"}, optional
+        Data modality. Sets sensible defaults for ``ylabel`` and visual style.
+        Explicit kwargs always override modality defaults.
     samples : list of str, optional
         Subset of samples to plot. Defaults to all samples. Ignored when
         ``groups`` is provided.
@@ -129,6 +154,16 @@ def metaplot(
     ... )
     """
     import matplotlib.pyplot as plt
+
+    # Apply modality defaults (explicit kwargs take priority)
+    if modality is not None:
+        if modality not in _MODALITY_DEFAULTS:
+            raise ValueError(f"modality must be one of {list(_MODALITY_DEFAULTS)}, got {modality!r}")
+        defaults = _MODALITY_DEFAULTS[modality]
+        if ylabel is None:
+            ylabel = defaults.get("ylabel", "Mean signal")
+    if ylabel is None:
+        ylabel = "Mean signal"
 
     # Accept either "relative_position" (no binning) or "bin" (binned output)
     position_dim = next(
@@ -258,16 +293,19 @@ def _prep_extract(data: xr.DataArray, flip_minus_strand: bool) -> "tuple[xr.Data
 def tornadoplot(
     data: xr.DataArray,
     *,
+    modality: "str | None" = None,
     samples: "list[str] | None" = None,
+    sample_names: "list[str] | None" = None,
     groups: "dict[str, list[str]] | None" = None,
     flip_minus_strand: bool = True,
     sort_by: "str | None" = "mean",
     vmin: "float | None" = None,
     vmax: "float | None" = None,
-    cmap: str = "RdYlBu_r",
+    cmap: "str | None" = None,
     reference_point: "float | None" = 0,
     reference_label: str = "TSS",
     xlabel: str = "Relative position",
+    ylabel: "str | None" = None,
     title: str = "Signal heatmap",
     figsize: "tuple[float, float] | None" = None,
     filepath: "str | Path | None" = None,
@@ -284,8 +322,15 @@ def tornadoplot(
     data : DataArray
         Output of ``qn.extract()``, dimensions
         ``(interval, relative_position|bin, sample)``.
+    modality : {"coverage", "methylation", "variant"}, optional
+        Data modality. Sets sensible defaults for ``cmap``, ``vmin``, and ``vmax``.
+        Explicit kwargs always override modality defaults.
     samples : list of str, optional
         Subset of samples to plot (one panel each). Ignored when ``groups`` is set.
+    sample_names : list of str, optional
+        Display names (aliases) for samples, in the same order as ``samples``.
+        If provided, must have the same length as ``samples``. Ignored when
+        ``groups`` is set.
     groups : dict {label: [samples]}, optional
         Average samples within each group before plotting (one panel per group).
     flip_minus_strand : bool, default True
@@ -318,6 +363,20 @@ def tornadoplot(
     """
     import matplotlib.pyplot as plt
 
+    # Apply modality defaults (explicit kwargs take priority)
+    if modality is not None:
+        if modality not in _MODALITY_DEFAULTS:
+            raise ValueError(f"modality must be one of {list(_MODALITY_DEFAULTS)}, got {modality!r}")
+        defaults = _MODALITY_DEFAULTS[modality]
+        if vmin is None:
+            vmin = defaults.get("vmin")
+        if vmax is None:
+            vmax = defaults.get("vmax")
+        if cmap is None:
+            cmap = defaults.get("cmap", "RdYlBu_r")
+    if cmap is None:
+        cmap = "RdYlBu_r"
+
     data, x, _ = _prep_extract(data, flip_minus_strand)
     all_sample_labels = list(data.coords["sample"].values)
 
@@ -338,8 +397,20 @@ def tornadoplot(
             missing = set(samples) - set(all_sample_labels)
             if missing:
                 raise ValueError(f"Samples not found: {missing}")
-        for s in label_list:
-            panels.append((s, data.sel(sample=s).values))
+        
+        # Use aliases if provided
+        if sample_names is not None:
+            if len(sample_names) != len(label_list):
+                raise ValueError(
+                    f"sample_names length ({len(sample_names)}) must match "
+                    f"samples length ({len(label_list)})"
+                )
+            display_labels = sample_names
+        else:
+            display_labels = label_list
+        
+        for s, label in zip(label_list, display_labels):
+            panels.append((label, data.sel(sample=s).values))
 
     # Sort rows by first panel's signal
     if sort_by is not None and panels:
@@ -391,7 +462,8 @@ def tornadoplot(
             ax.axvline(reference_point, color="white", linestyle="--", linewidth=0.8)
 
     axes[0].tick_params(axis="y", left=True, labelleft=True)
-    axes[0].set_ylabel(f"Intervals (n={n_intervals})", fontsize=8)
+    ylabel = f"Intervals (n={n_intervals})" if ylabel is None else ylabel
+    axes[0].set_ylabel(ylabel, fontsize=8)
 
     # Shared colorbar to the right
     cbar = fig.colorbar(im, ax=axes, shrink=0.6, pad=0.02)
