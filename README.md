@@ -1,6 +1,8 @@
 # QuantNado
 
-![QuantNado logo](docs/assets/images/logo.png)
+<p align="center">
+  <img src="docs/assets/images/logo.png" alt="QuantNado logo" width="192">
+</p>
 
 **QuantNado provides efficient Zarr-backed storage and analysis of genomic signal from BAM and bigWig files, with support for signal reduction, feature counting, dimensionality reduction, and quantile-based peak calling.**
 
