@@ -43,6 +43,32 @@ def test_from_bam_files(tmp_path, monkeypatch):
     assert qn.samples == ["s1"]
 
 
+def test_from_bam_files_with_local_staging(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 10},
+    )
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))
+
+    bam = tmp_path / "s1.bam"
+    bam.write_text("dummy")
+    staging_dir = tmp_path / "scratch"
+    final_store = tmp_path / "staged_api_ds"
+
+    qn = QuantNado.from_bam_files(
+        bam_files=[str(bam)],
+        store_path=final_store,
+        chromsizes=None,
+        local_staging=True,
+        staging_dir=staging_dir,
+    )
+
+    assert isinstance(qn, QuantNado)
+    assert qn.store_path == final_store.with_suffix(".zarr")
+    assert qn.store_path.exists()
+    assert list(staging_dir.iterdir()) == []
+
+
 # ---------------------------------------------------------------------------
 # Properties
 # ---------------------------------------------------------------------------

@@ -1,3 +1,24 @@
+import numpy as np
+import pandas as pd
+import pytest
+import time
+
+from quantnado.dataset.bam import BamStore
+from quantnado.dataset.core import QuantNadoDataset
+from quantnado.dataset.reduce import reduce_byranges_signal
+from quantnado.utils import estimate_chunk_len
+
+
+@pytest.fixture
+def chromsizes():
+    return {"chr1": 4, "chr2": 3}
+
+
+@pytest.fixture
+def sample_names():
+    return ["s1", "s2"]
+
+
 def test_open_readonly_and_writable(tmp_path, chromsizes, sample_names, monkeypatch):
     # Fake per-chromosome processing to return constant arrays per sample.
     def fake_chrom(self, bam_file, contig, size):
@@ -26,23 +47,6 @@ def test_open_readonly_and_writable(tmp_path, chromsizes, sample_names, monkeypa
     rw_store.remove_metadata_columns(["sample_hash"])
     # Confirm sample_hashes are zeroed
     assert np.all(rw_store.meta["sample_hashes"][:] == 0)
-import numpy as np
-import pandas as pd
-import pytest
-
-from quantnado.dataset.bam import BamStore
-from quantnado.dataset.core import QuantNadoDataset
-from quantnado.dataset.reduce import reduce_byranges_signal
-
-
-@pytest.fixture
-def chromsizes():
-    return {"chr1": 4, "chr2": 3}
-
-
-@pytest.fixture
-def sample_names():
-    return ["s1", "s2"]
 
 
 def test_bamstore_write_and_metadata(tmp_path, chromsizes, sample_names, monkeypatch):
@@ -397,3 +401,164 @@ def test_extract_region_errors(tmp_path, chromsizes, sample_names, monkeypatch):
     store.meta["completed"][0] = False
     with pytest.raises(RuntimeError, match="incomplete"):
         store.extract_region("chr1:0-2")
+
+
+def test_bamstore_auto_chunk_len_uses_filesystem_hint(tmp_path, monkeypatch):
+    chromsizes = {"chr1": 250_000_000}
+
+    monkeypatch.setattr("quantnado.dataset.bam.is_network_fs", lambda path: False)
+    local_store = BamStore(tmp_path / "local_ds", chromsizes, ["s1"])
+    expected_local = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(np.uint32).itemsize,
+        fs_is_network=False,
+    )["chunk_len"]
+    assert local_store.chunk_len == expected_local
+    assert local_store.root.attrs["chunk_len"] == expected_local
+
+    monkeypatch.setattr("quantnado.dataset.bam.is_network_fs", lambda path: True)
+    network_store = BamStore(tmp_path / "network_ds", chromsizes, ["s1"])
+    expected_network = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(np.uint32).itemsize,
+        fs_is_network=True,
+    )["chunk_len"]
+    assert network_store.chunk_len == expected_network
+    assert network_store.root.attrs["chunk_len"] == expected_network
+    assert network_store.chunk_len > local_store.chunk_len
+
+
+def test_bamstore_explicit_chunk_len_overrides_auto(tmp_path, monkeypatch):
+    monkeypatch.setattr("quantnado.dataset.bam.is_network_fs", lambda path: True)
+
+    store = BamStore(
+        tmp_path / "manual_chunk_ds",
+        {"chr1": 250_000_000},
+        ["s1"],
+        chunk_len=131072,
+    )
+
+    assert store.chunk_len == 131072
+    assert store.root.attrs["chunk_len"] == 131072
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_compressors"),
+    [("default", 1), ("fast", 1), ("none", 0)],
+)
+def test_bamstore_construction_compression_profiles(
+    tmp_path, chromsizes, sample_names, profile, expected_compressors
+):
+    store = BamStore(
+        tmp_path / f"{profile}_compression_ds",
+        chromsizes,
+        sample_names,
+        construction_compression=profile,
+    )
+
+    array = store.root["chr1"]
+    assert store.root.attrs["construction_compression"] == profile
+    assert len(array.compressors) == expected_compressors
+
+
+def test_bamstore_invalid_construction_compression_raises(tmp_path, chromsizes, sample_names):
+    with pytest.raises(ValueError, match="construction_compression"):
+        BamStore(
+            tmp_path / "bad_compression_ds",
+            chromsizes,
+            sample_names,
+            construction_compression="turbo",
+        )
+
+
+def test_process_samples_parallel_writer_preserves_sample_order(
+    tmp_path, chromsizes, sample_names, monkeypatch
+):
+    write_order = []
+
+    def fake_process_single_sample(
+        self,
+        sample_idx,
+        bam_file,
+        sample_name,
+        chromsizes_dict,
+    ):
+        if sample_idx == 0:
+            time.sleep(0.05)
+
+        return sample_idx, {
+            "sparsity": 0.0,
+            "hash": "",
+            "chr_data": {
+                contig: np.full(size, sample_idx + 1, dtype=np.uint16)
+                for contig, size in chromsizes_dict.items()
+            },
+        }
+
+    original_write_sample_result = BamStore._write_sample_result
+
+    def recording_write_sample_result(self, sample_idx, results):
+        write_order.append(sample_idx)
+        original_write_sample_result(self, sample_idx, results)
+
+    monkeypatch.setattr(BamStore, "_process_single_sample", fake_process_single_sample)
+    monkeypatch.setattr(BamStore, "_write_sample_result", recording_write_sample_result)
+
+    store = BamStore(tmp_path / "parallel_ds", chromsizes, sample_names)
+    store.process_samples(["1", "2"], max_workers=2)
+
+    assert write_order == [0, 1]
+    assert np.all(store.root["chr1"][0, :] == 1)
+    assert np.all(store.root["chr2"][1, :] == 2)
+    assert store.completed_mask.tolist() == [True, True]
+
+
+def test_bamstore_from_bam_files_with_local_staging_publishes_to_final_path(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 5},
+    )
+    monkeypatch.setattr(
+        BamStore,
+        "_process_chromosome",
+        lambda *args, **kwargs: (args[2], np.ones(args[3], dtype=np.uint16), 0.0),
+    )
+
+    bam_path = tmp_path / "sample1.bam"
+    bam_path.write_text("dummy")
+    final_store = tmp_path / "published_ds.zarr"
+    scratch_dir = tmp_path / "scratch"
+
+    store = BamStore.from_bam_files(
+        bam_files=[str(bam_path)],
+        store_path=final_store,
+        chromsizes=None,
+        local_staging=True,
+        staging_dir=scratch_dir,
+    )
+
+    assert store.store_path == final_store
+    assert final_store.exists()
+    assert np.all(store.root["chr1"][0, :] == 1)
+    assert list(scratch_dir.iterdir()) == []
+
+
+def test_bamstore_staging_rejects_resume(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 5},
+    )
+
+    bam_path = tmp_path / "sample1.bam"
+    bam_path.write_text("dummy")
+
+    with pytest.raises(ValueError, match="resume=True is not supported"):
+        BamStore.from_bam_files(
+            bam_files=[str(bam_path)],
+            store_path=tmp_path / "published_ds.zarr",
+            chromsizes=None,
+            resume=True,
+            local_staging=True,
+        )

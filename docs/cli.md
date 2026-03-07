@@ -41,6 +41,10 @@ quantnado create-dataset sample1.bam sample2.bam sample3.bam \
 - `--output, -o PATH` - Output Zarr dataset path (required)
 - `--chromsizes PATH` - Path to chromsizes file (optional; auto-detected from first BAM if omitted)
 - `--metadata PATH` - Path to metadata CSV file (optional)
+- `--chunk-len N` - Override the position-axis chunk length; if omitted, QuantNado derives a filesystem-aware default
+- `--construction-compression PROFILE` - Build-time compression profile: `default`, `fast`, or `none`
+- `--local-staging` - Build under local scratch storage and publish to the output path after completion
+- `--staging-dir PATH` - Scratch directory to use for local staging; defaults to `TMPDIR` when local staging is enabled
 - `--max-workers N` - Number of parallel threads (default: 1, recommended: 2-16)
 - `--verbose, -v` - Enable debug logging
 - `--overwrite` - Overwrite existing dataset if it exists
@@ -60,6 +64,23 @@ quantnado create-dataset *.bam \
   --chromsizes hg38.chrom.sizes \
   --max-workers 8 \
   --verbose
+
+# Override chunk sizing explicitly
+quantnado create-dataset *.bam \
+  --output my_cohort.zarr \
+  --chromsizes hg38.chrom.sizes \
+  --chunk-len 131072
+
+# Stage on local scratch, then publish to the final store path
+quantnado create-dataset *.bam \
+  --output /ceph/project/cohort.zarr \
+  --local-staging \
+  --staging-dir "$TMPDIR"
+
+# Use a faster build-time compression profile
+quantnado create-dataset *.bam \
+  --output /ceph/project/cohort.zarr \
+  --construction-compression fast
 
 # With metadata
 quantnado create-dataset *.bam \

@@ -86,6 +86,60 @@ quantnado create-dataset *.bam --output dataset.zarr --max-workers 8
 quantnado create-dataset *.bam --output dataset.zarr --max-workers 1
 ```
 
+### Chunk Length (`--chunk-len`)
+
+Override the position-axis Zarr chunk length. If omitted, QuantNado derives a
+filesystem-aware default from the output path so network filesystems like CephFS
+use much larger write units than local disks.
+
+```bash
+# Let QuantNado auto-select a chunk length from the target filesystem
+quantnado create-dataset *.bam --output dataset.zarr
+
+# Pin an explicit chunk length for benchmarking or reproducibility
+quantnado create-dataset *.bam --output dataset.zarr --chunk-len 131072
+```
+
+### Construction Compression (`--construction-compression`)
+
+Control build-time compression separately from the on-disk dataset layout.
+This is useful when benchmarking CephFS write throughput, where lower
+compression overhead or fully uncompressed construction may outperform the
+default profile.
+
+```bash
+# Current default profile
+quantnado create-dataset *.bam --output dataset.zarr --construction-compression default
+
+# Lower zstd compression overhead
+quantnado create-dataset *.bam --output dataset.zarr --construction-compression fast
+
+# Uncompressed construction writes
+quantnado create-dataset *.bam --output dataset.zarr --construction-compression none
+```
+
+### Local Staging (`--local-staging`, `--staging-dir`)
+
+Build the dataset under local scratch storage and only publish to the final
+output path after construction succeeds. This is useful on CephFS-backed
+clusters because it converts many incremental writes into one finalize step.
+
+```bash
+# Use TMPDIR-backed scratch staging
+quantnado create-dataset *.bam \
+  --output /ceph/project/dataset.zarr \
+  --local-staging \
+  --staging-dir "$TMPDIR"
+
+# Let QuantNado choose the system temporary directory when staging is enabled
+quantnado create-dataset *.bam \
+  --output /ceph/project/dataset.zarr \
+  --local-staging
+```
+
+`--local-staging` is opt-in. `--staging-dir` can also be supplied directly to
+pick a specific scratch filesystem.
+
 ### Overwrite (`--overwrite`)
 
 Overwrite existing dataset at same path (default: no overwrite):

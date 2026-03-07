@@ -7,6 +7,7 @@ import zarr
 import xarray as xr
 import dask.array as da
 
+from .bam import DEFAULT_CHUNK_LEN
 from .metadata import extract_metadata
 
 
@@ -96,7 +97,7 @@ class QuantNadoDataset:
             )
 
         # Default chunking: get from root attrs if available
-        chunk_len = self.root.attrs.get("chunk_len", 65536)
+        chunk_len = self.root.attrs.get("chunk_len", DEFAULT_CHUNK_LEN)
         if chunks is None:
             chunks = {"sample": 1, "position": chunk_len}
 
