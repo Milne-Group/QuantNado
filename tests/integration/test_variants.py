@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantnado.dataset.variants import VariantStore, GT_HET, GT_HOM_ALT, GT_HOM_REF, GT_MISSING
+from quantnado.dataset.store_variants import VariantStore, GT_HET, GT_HOM_ALT, GT_HOM_REF, GT_MISSING
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ def two_sample_store(tmp_path, monkeypatch):
             "chr2": _fake_vcf_data("chr2", [50]),
         },
     }
-    monkeypatch.setattr("quantnado.dataset.variants._read_vcf", _make_fake_reader(fake_data))
+    monkeypatch.setattr("quantnado.dataset.store_variants._read_vcf", _make_fake_reader(fake_data))
 
     store = VariantStore.from_vcf_files(
         vcf_files=[tmp_path / "s1.vcf.gz", tmp_path / "s2.vcf.gz"],
@@ -100,7 +100,7 @@ class TestVariantStoreConstruction:
             VariantStore(tmp_path / "v", sample_names=["s1"], overwrite=True, read_only=True)
 
     def test_sample_name_length_mismatch_raises(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("quantnado.dataset.variants._read_vcf", lambda *a, **k: {})
+        monkeypatch.setattr("quantnado.dataset.store_variants._read_vcf", lambda *a, **k: {})
         with pytest.raises(ValueError, match="length"):
             VariantStore.from_vcf_files(
                 vcf_files=[tmp_path / "s1.vcf.gz"],
@@ -111,7 +111,7 @@ class TestVariantStoreConstruction:
     def test_overwrite_existing_store(self, tmp_path, monkeypatch):
         # Covers lines 151-156: delete dir + reinit when overwrite=True on existing
         monkeypatch.setattr(
-            "quantnado.dataset.variants._read_vcf",
+            "quantnado.dataset.store_variants._read_vcf",
             lambda *a, **k: {"chr1": _fake_vcf_data("chr1", [100])},
         )
         VariantStore.from_vcf_files(
@@ -141,7 +141,7 @@ class TestVariantStoreConstruction:
     def test_from_vcf_with_metadata_df(self, tmp_path, monkeypatch):
         # Covers lines 394-398: passing metadata DataFrame to from_vcf_files
         monkeypatch.setattr(
-            "quantnado.dataset.variants._read_vcf",
+            "quantnado.dataset.store_variants._read_vcf",
             lambda *a, **k: {"chr1": _fake_vcf_data("chr1", [100])},
         )
         md = pd.DataFrame({"sample_id": ["s1"], "condition": ["ctrl"]})

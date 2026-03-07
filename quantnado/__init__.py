@@ -1,15 +1,30 @@
 """QuantNado package initialization."""
 
-from quantnado.api import QuantNado, metaplot, tornadoplot
-from quantnado.dataset.bam import BamStore
+from quantnado.api import QuantNado, locus_plot, metaplot, tornadoplot
+from quantnado.analysis.pca import plot_pca_scree, plot_pca_scatter
+
+create_dataset = QuantNado.create_dataset
+open = QuantNado.open
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
+from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_methyl import MethylStore
+from quantnado.dataset.store_variants import VariantStore
+from quantnado.dataset.store_multiomics import MultiomicsStore
 
 __all__ = [
     "QuantNado",
     "BamStore",
+    "MethylStore",
+    "VariantStore",
+    "MultiomicsStore",
     "AnchorPoint",
     "FeatureType",
     "ReductionMethod",
     "metaplot",
     "tornadoplot",
+    "locus_plot",
+    "create_dataset",
+    "open",
+    "plot_pca_scree",
+    "plot_pca_scatter",
 ]

@@ -7,9 +7,9 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from .bam import BamStore, DEFAULT_CHUNK_LEN
-from .methylation import MethylStore
-from .variants import VariantStore
+from .store_bam import BamStore, DEFAULT_CHUNK_LEN
+from .store_methyl import MethylStore
+from .store_variants import VariantStore
 
 
 class MultiomicsStore:
@@ -41,7 +41,7 @@ class MultiomicsStore:
     >>> ms.coverage.sample_names
     ['atac', 'meth-rep1']
     >>> ms.methylation.to_xarray()
-    >>> ms.variants.extract_region("chr21:5000000-6000000")
+    >>> msstore_variants.extract_region("chr21:5000000-6000000")
     """
 
     def __init__(self, store_dir: Path | str) -> None:

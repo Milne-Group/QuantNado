@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantnado.dataset.bam import BamStore
+from quantnado.dataset.store_bam import BamStore
 from quantnado import QuantNado
 
 
@@ -31,7 +31,7 @@ def test_open_wraps_bamstore(tmp_path, chromsizes, sample_names, monkeypatch):
 
 def test_from_bam_files(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
         lambda path: {"chr1": 10},
     )
     monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))
@@ -45,7 +45,7 @@ def test_from_bam_files(tmp_path, monkeypatch):
 
 def test_from_bam_files_with_local_staging(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
         lambda path: {"chr1": 10},
     )
     monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))

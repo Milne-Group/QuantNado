@@ -1,13 +1,15 @@
 """Shared fixtures for the QuantNado test suite."""
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 from loguru import logger
+
+from quantnado.dataset.store_bam import BamStore
 
 # Ensure the project root is on sys.path so imports work when running locally.
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +23,7 @@ def reset_loguru():
     yield
     logger.remove()
 
-from quantnado.dataset.bam import BamStore
+
 
 
 # ---------------------------------------------------------------------------

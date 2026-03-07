@@ -1,14 +1,14 @@
+import dask.array as da
 import numpy as np
 import pandas as pd
 import pytest
-import dask.array as da
 import xarray as xr
 
-from quantnado.dataset.bam import BamStore
-from quantnado.dataset.core import QuantNadoDataset
-from quantnado.dataset.counts import count_features
-from quantnado.dataset.reduce import reduce_byranges_signal
-from quantnado.dataset.pca import run_pca
+from quantnado.analysis.core import QuantNadoDataset
+from quantnado.analysis.counts import count_features
+from quantnado.analysis.pca import run_pca
+from quantnado.analysis.reduce import reduce_byranges_signal
+from quantnado.dataset.store_bam import BamStore
 
 
 @pytest.fixture
@@ -37,7 +37,9 @@ def test_quantnado_dataset_wrapper(simple_store):
     assert ds.sample_names == ["s1", "s2"]
     assert ds.completed_mask.tolist() == [True, True]
     assert ds.chromsizes == {"chr1": 4}
-    np.testing.assert_array_equal(ds.get_chrom("chr1")[0, :], np.array([1, 1, 1, 1], dtype=np.uint32))
+    np.testing.assert_array_equal(
+        ds.get_chrom("chr1")[0, :], np.array([1, 1, 1, 1], dtype=np.uint32)
+    )
 
 
 def test_feature_counts_basic(simple_store):
@@ -135,7 +137,9 @@ def test_bamstore_metadata_partial_updates(tmp_path, monkeypatch):
     store = BamStore(tmp_path / "ds", chromsizes, names)
 
     # 1. Full dataframe update
-    meta_df = pd.DataFrame({"sample_id": ["s1", "s2"], "group": ["A", "B"], "assay": ["ATAC", "RNA"]})
+    meta_df = pd.DataFrame(
+        {"sample_id": ["s1", "s2"], "group": ["A", "B"], "assay": ["ATAC", "RNA"]}
+    )
     store.set_metadata(meta_df)
 
     md = store.get_metadata()
@@ -178,7 +182,9 @@ def test_bamstore_sample_hash_alignment(tmp_path, monkeypatch):
     names = ["s1", "s2"]
 
     # Mock _process_chromosome to avoid bamnado
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *args, **kwargs: (args[2], np.zeros(args[3]), 0.0))
+    monkeypatch.setattr(
+        BamStore, "_process_chromosome", lambda *args, **kwargs: (args[2], np.zeros(args[3]), 0.0)
+    )
 
     store = BamStore(tmp_path / "ds", chromsizes, names)
     store.process_samples([str(f1), str(f2)])
@@ -186,7 +192,7 @@ def test_bamstore_sample_hash_alignment(tmp_path, monkeypatch):
     hashes = store.sample_hashes
     assert len(hashes) == 2
     assert hashes[0] != hashes[1]
-    assert len(hashes[0]) == 32 # MD5 hex
+    assert len(hashes[0]) == 32  # MD5 hex
 
     # Verify get_metadata includes it
     md = store.get_metadata()
@@ -205,11 +211,15 @@ def test_bamstore_sample_hash_alignment(tmp_path, monkeypatch):
 
 def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
     # Mock _get_chromsizes_from_bam
-    monkeypatch.setattr("quantnado.dataset.bam._get_chromsizes_from_bam", 
-                        lambda path: {"chr1": 100, "chr2": 200})
+    monkeypatch.setattr(
+        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 100, "chr2": 200},
+    )
     # Mock _process_chromosome to avoid bamnado
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *args, **kwargs: (args[2], np.zeros(args[3]), 0.0))
-    
+    monkeypatch.setattr(
+        BamStore, "_process_chromosome", lambda *args, **kwargs: (args[2], np.zeros(args[3]), 0.0)
+    )
+
     # Create dummy BAM path
     bam_path = tmp_path / "test.bam"
     bam_path.write_text("dummy")
@@ -217,7 +227,7 @@ def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
     store = BamStore.from_bam_files(
         bam_files=[str(bam_path)],
         store_path=tmp_path / "auto_ds",
-        chromsizes=None  # Triggers auto-extraction
+        chromsizes=None,  # Triggers auto-extraction
     )
 
     assert store.chromsizes == {"chr1": 100, "chr2": 200}

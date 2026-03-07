@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from quantnado.dataset.enums import AnchorPoint, ReductionMethod
-from quantnado.dataset.reduce import extract_byranges_signal, reduce_byranges_signal
+from quantnado.analysis.reduce import extract_byranges_signal, reduce_byranges_signal
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ import xarray as xr
 import dask.array as da
 
 from .metadata import extract_metadata
-from .bam import _compute_sample_hash, _to_str_list
+from .store_bam import _compute_sample_hash, _to_str_list
 
 DEFAULT_CHUNK_LEN = 65536
 
@@ -454,7 +454,7 @@ class MethylStore:
             Per-feature metadata (contig, strand, start, end, range_length,
             n_cpg_total — total CpG sites regardless of coverage).
         """
-        from .features import extract_feature_ranges, load_gtf
+        from quantnado.analysis.features import extract_feature_ranges, load_gtf
 
         # ── Resolve ranges ────────────────────────────────────────────────────
         if ranges_df is None and bed_file is None:
@@ -759,8 +759,8 @@ class MethylStore:
         ... )
         >>> ax = metaplot(binned_meth, modality="methylation", title="CpG methylation at TSS")
         """
-        from .reduce import _resolve_ranges, _log_chromosome_overlap
-        from .enums import AnchorPoint
+        from quantnado.analysis.reduce import _resolve_ranges, _log_chromosome_overlap
+        from quantnado.dataset.enums import AnchorPoint
 
         # Resolve window
         if upstream is not None or downstream is not None:

@@ -9,7 +9,7 @@ import xarray as xr
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
 
-__all__ = ["metaplot", "tornadoplot"]
+__all__ = ["metaplot", "tornadoplot", "locus_plot"]
 
 # Sensible per-modality defaults that metaplot / tornadoplot apply when
 # ``modality`` is provided.  Explicit kwargs passed by the caller always win.
@@ -485,5 +485,236 @@ def tornadoplot(
 
     if filepath is not None:
         fig.savefig(filepath, bbox_inches="tight")
+
+    return axes
+
+
+def locus_plot(
+    locus: str,
+    *,
+    sample_names: "list[str]",
+    modality: "list[str]",
+    coverage: "xr.DataArray | None" = None,
+    methylation: "xr.DataArray | None" = None,
+    allele_depth_ref: "xr.DataArray | None" = None,
+    allele_depth_alt: "xr.DataArray | None" = None,
+    genotype: "xr.DataArray | None" = None,
+    palette: "str | list | dict | None" = None,
+    title: "str | None" = None,
+    figsize: "tuple[float, float]" = (12, 6),
+    filepath: "str | Path | None" = None,
+) -> "list":
+    """
+    Multi-omics genome-browser-style locus plot.
+
+    Draws one horizontal track per entry in ``sample_names``, stacked vertically
+    and sharing a genomic x-axis. Each track is rendered according to its
+    ``modality``:
+
+    - **coverage** — stairsfilled area plot (per-base read depth)
+    - **methylation** — scatter points at CpG positions (methylation %)
+    - **variant** — lollipop plot (allele frequency at variant positions)
+
+    Parameters
+    ----------
+    locus : str
+        Genomic region in ``"chr:start-end"`` format, e.g. ``"chr21:5200000-5260000"``.
+    sample_names : list of str
+        Sample names for each track (must match sample dimension in the
+        corresponding DataArrays).
+    modality : list of str
+        Modality for each track. Same length as ``sample_names``.
+        Each element must be one of ``"coverage"``, ``"methylation"``,
+        ``"variant"``.
+    coverage : DataArray, optional
+        Coverage DataArray with dims ``(sample, position)``.
+        Required when any entry in ``modality`` is ``"coverage"``.
+    methylation : DataArray, optional
+        Methylation DataArray with dims ``(sample, position)`` (sparse CpG sites).
+        Required when any entry in ``modality`` is ``"methylation"``.
+    allele_depth_ref : DataArray, optional
+        Reference allele depth with dims ``(sample, position)`` (sparse variant sites).
+        Required when any entry in ``modality`` is ``"variant"``.
+    allele_depth_alt : DataArray, optional
+        Alternate allele depth with dims ``(sample, position)`` (sparse variant sites).
+        Required when any entry in ``modality`` is ``"variant"``.
+    genotype : DataArray, optional
+        Genotype DataArray with dims ``(sample, position)`` and encoding
+        ``-1`` missing, ``0`` hom-ref, ``1`` het, ``2`` hom-alt.
+        If omitted, het/hom-alt are approximated from allele frequency
+        (0.2 < AF < 0.8 for het, AF >= 0.8 for hom-alt).
+    palette : str, list, or dict, optional
+        Colour palette. A dict maps sample names to colours; a string is a
+        matplotlib colormap name; a list provides explicit colours. Defaults
+        to the matplotlib prop cycle.
+    title : str, default "Locus plot"
+        Figure title.
+    figsize : tuple, default (12, 6)
+        Figure size ``(width, height)`` in inches.
+    filepath : str or Path, optional
+        Save figure to this path if provided.
+
+    Returns
+    -------
+    axes : list of matplotlib.axes.Axes
+        One Axes per track.
+
+    Examples
+    --------
+    >>> adr = var.extract_region(locus, variable="allele_depth_ref").compute()
+    >>> ada = var.extract_region(locus, variable="allele_depth_alt").compute()
+    >>> ds.locus_plot(
+    ...     locus,
+    ...     sample_names=["atac", "chip", "meth-rep1", "snp"],
+    ...     modality=["coverage", "coverage", "methylation", "variant"],
+    ...     allele_depth_ref=adr,
+    ...     allele_depth_alt=ada,
+    ...     title="Multi-omics locus",
+    ...     figsize=(12, 8),
+    ... )
+    """
+    import matplotlib.pyplot as plt
+    title = title if title is not None else f"Locus plot for {locus}"
+    n_tracks = len(sample_names)
+    if len(modality) != n_tracks:
+        raise ValueError(
+            f"len(sample_names)={n_tracks} must match len(modality)={len(modality)}"
+        )
+
+    # Parse locus
+    chrom, coords = locus.split(":")
+    locus_start, locus_end = (int(v.replace(",", "")) for v in coords.split("-"))
+
+    colors = _resolve_palette(palette, n_tracks, labels=sample_names)
+
+    fig, axes_2d = plt.subplots(
+        n_tracks, 1,
+        figsize=figsize,
+        sharex=True,
+        gridspec_kw={"hspace": 0.05},
+        squeeze=False,
+    )
+    axes = [row[0] for row in axes_2d]
+
+    for ax, sample_name, mod, color in zip(axes, sample_names, modality, colors):
+        ax.set_facecolor("#fafafa")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.spines["left"].set_visible(True)
+        ax.spines["left"].set_linewidth(0.5)
+        ax.tick_params(axis="y", labelsize=6, length=2)
+        ax.tick_params(axis="x", bottom=False, labelbottom=False)
+
+        if mod == "coverage":
+            if coverage is None:
+                raise ValueError(
+                    f"modality='coverage' for sample '{sample_name}' but no "
+                    "coverage DataArray provided."
+                )
+            arr = coverage.sel(sample=sample_name)
+            if hasattr(arr, "compute"):
+                arr = arr.compute()
+            x = arr.coords["position"].values
+            y = arr.values.astype(float)
+            ax.fill_between(x, y, step="post", alpha=0.55, color=color)
+            ax.plot(x, y, drawstyle="steps-post", linewidth=0.5, color=color)
+            ax.set_ylim(bottom=0)
+
+        elif mod == "methylation":
+            if methylation is None:
+                raise ValueError(
+                    f"modality='methylation' for sample '{sample_name}' but no "
+                    "methylation DataArray provided."
+                )
+            arr = methylation.sel(sample=sample_name)
+            if hasattr(arr, "compute"):
+                arr = arr.compute()
+            x = arr.coords["position"].values
+            y = arr.values.astype(float)
+            ax.scatter(x, y, s=8, color=color, alpha=0.75, linewidths=0, zorder=2)
+            ax.set_ylim(0, 101)
+
+        elif mod == "variant":
+            if allele_depth_ref is None or allele_depth_alt is None:
+                raise ValueError(
+                    f"modality='variant' for sample '{sample_name}' requires "
+                    "both allele_depth_ref and allele_depth_alt."
+                )
+
+            ref_arr = allele_depth_ref.sel(sample=sample_name)
+            alt_arr = allele_depth_alt.sel(sample=sample_name)
+            if hasattr(ref_arr, "compute"):
+                ref_arr = ref_arr.compute()
+            if hasattr(alt_arr, "compute"):
+                alt_arr = alt_arr.compute()
+
+            gt_arr = None
+            if genotype is not None:
+                gt_arr = genotype.sel(sample=sample_name)
+                if hasattr(gt_arr, "compute"):
+                    gt_arr = gt_arr.compute()
+                gt_arr = gt_arr.reindex(position=ref_arr.coords["position"], fill_value=-1)
+
+            x = ref_arr.coords["position"].values
+            ref_vals = ref_arr.values.astype(float)
+            alt_vals = alt_arr.values.astype(float)
+
+            total = ref_vals + alt_vals
+            with np.errstate(invalid="ignore", divide="ignore"):
+                af = np.where(total > 0, alt_vals / total, np.nan)
+
+            if gt_arr is not None:
+                gt_vals = gt_arr.values.astype(int)
+            else:
+                # Fallback: approximate genotype from allele frequency
+                gt_vals = np.full(af.shape, -1, dtype=int)
+                gt_vals[(af > 0.2) & (af < 0.8)] = 1      # het
+                gt_vals[af >= 0.8] = 2                    # hom-alt
+
+            gt_style = {1: ("#1f77b4", "het"), 2: ("#d62728", "hom-alt")}
+            for g, (g_color, label) in gt_style.items():
+                m = gt_vals == g
+                if not np.any(m):
+                    continue
+                ax.vlines(x[m], 0, af[m], color=g_color, linewidth=0.9, alpha=0.7)
+                ax.scatter(
+                    x[m], af[m],
+                    color=g_color, s=25, zorder=3,
+                    label=f"{label} (n={int(m.sum())})",
+                )
+
+            ax.set_ylim(0, 1.08)
+            if np.any(np.isin(gt_vals, [1, 2])):
+                ax.legend(
+                    loc="upper right",
+                    bbox_to_anchor=(1.18, 1),
+                    fontsize=6,
+                    framealpha=0.8,
+                )
+
+        else:
+            raise ValueError(
+                f"Unknown modality '{mod}'. Expected 'coverage', 'methylation', or 'variant'."
+            )
+
+        # Track label inside the plot, top-left
+        ax.text(
+            0.005, 0.88, f"{sample_name}",
+            transform=ax.transAxes,
+            fontsize=7, va="top", ha="left",
+            color=color, fontweight="bold",
+        )
+
+    # Only the bottom axis shows x-tick labels
+    axes[-1].tick_params(axis="x", bottom=True, labelbottom=True, labelsize=7)
+    axes[-1].set_xlabel(f"Position ({chrom})", fontsize=8)
+    axes[-1].spines["bottom"].set_visible(True)
+    axes[-1].spines["bottom"].set_linewidth(0.5)
+    axes[-1].set_xlim(locus_start, locus_end)
+
+    fig.suptitle(title, fontsize=10, y=1.005)
+
+    if filepath is not None:
+        fig.savefig(filepath, bbox_inches="tight", dpi=150)
 
     return axes

@@ -14,7 +14,7 @@ from loguru import logger
 import traceback
 from pathlib import Path
 
-from quantnado.dataset.bam import BamStore
+from quantnado.dataset.store_bam import BamStore
 from quantnado.utils import setup_logging
 from quantnado._version import __version__
 
@@ -161,7 +161,7 @@ def create_dataset(
     logger.info(f"Building multiomics store at {output}: {', '.join(m for m in modality_counts if m)}")
 
     try:
-        from quantnado.dataset.multiomics import MultiomicsStore
+        from quantnado.dataset.store_multiomics import MultiomicsStore
 
         MultiomicsStore.from_files(
             store_dir=output,

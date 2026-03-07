@@ -8,7 +8,7 @@ import pytest
 import dask.array as da
 import xarray as xr
 
-from quantnado.dataset.pca import (
+from quantnado.analysis.pca import (
     _normalise_orientation,
     plot_pca_scatter,
     plot_pca_scree,
