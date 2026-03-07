@@ -1,4 +1,4 @@
-name: Build CI Container
+name: Container
 
 on:
   release:
