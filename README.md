@@ -1,16 +1,17 @@
 # QuantNado
 
+[![Docs](https://img.shields.io/badge/docs-milne--group.github.io-blue)](https://milne-group.github.io/QuantNado/)
+[![CI](https://github.com/Milne-Group/QuantNado/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Milne-Group/QuantNado/actions/workflows/python-tests.yml)
+[![Release](https://img.shields.io/github/v/release/Milne-Group/QuantNado?sort=semver)](https://github.com/Milne-Group/QuantNado/releases)
+[![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+[![PyPI Version](https://img.shields.io/pypi/v/quantnado)](https://pypi.org/project/quantnado)
+[![PyPI Downloads](https://static.pepy.tech/badge/quantnado)](https://pepy.tech/projects/quantnado)
+
 <p align="center">
   <img src="docs/assets/images/logo.png" alt="QuantNado logo" width="192">
 </p>
 
 **QuantNado provides efficient Zarr-backed storage and analysis of genomic signal from BAM and bigWig files, with support for signal reduction, feature counting, dimensionality reduction, and quantile-based peak calling.**
-
-[![CI](https://github.com/Milne-Group/QuantNado/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Milne-Group/QuantNado/actions/workflows/python-tests.yml)
-[![PyPI](https://img.shields.io/pypi/v/quantnado)](https://pypi.org/project/quantnado)
-[![Docs](https://img.shields.io/badge/docs-milne--group.github.io-blue)](https://milne-group.github.io/QuantNado/)
-[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](https://pypi.org/project/quantnado)
 
 ---
 
