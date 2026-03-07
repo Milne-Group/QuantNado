@@ -349,6 +349,8 @@ def tornadoplot(
         Label for the reference line in the colorbar area.
     xlabel : str, default "Relative position"
         X-axis label (shown on the bottom panel only).
+    ylabel : str, optional
+        Y-axis label. Defaults to ``Intervals (n=<count>)``.
     title : str, default "Signal heatmap"
         Figure suptitle.
     figsize : tuple, optional
@@ -397,7 +399,7 @@ def tornadoplot(
             missing = set(samples) - set(all_sample_labels)
             if missing:
                 raise ValueError(f"Samples not found: {missing}")
-        
+
         # Use aliases if provided
         if sample_names is not None:
             if len(sample_names) != len(label_list):
@@ -408,7 +410,7 @@ def tornadoplot(
             display_labels = sample_names
         else:
             display_labels = label_list
-        
+
         for s, label in zip(label_list, display_labels):
             panels.append((label, data.sel(sample=s).values))
 

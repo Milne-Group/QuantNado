@@ -64,12 +64,16 @@ print(region.shape)  # (n_samples, 4000)
 
 QuantNado installs a `quantnado` command with two subcommands.
 
-### `create-dataset` — build a Zarr dataset from BAM files
+### `create-dataset` — build a multi-omics store from BAM/bedGraph/VCF files
+
+At least one of `--bam`, `--bedgraph`, or `--vcf` is required. File lists are comma-separated.
 
 ```bash
-quantnado create-dataset sample1.bam sample2.bam sample3.bam \
-  --output dataset.zarr \
-  --chromsizes hg38.chrom.sizes \
+quantnado create-dataset \
+  --output dataset \
+  --bam sample1.bam,sample2.bam,sample3.bam \
+  --bedgraph meth_rep1.bedGraph,meth_rep2.bedGraph \
+  --vcf sample1.vcf.gz,sample2.vcf.gz \
   --metadata samples.csv \
   --max-workers 8
 ```
