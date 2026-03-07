@@ -782,6 +782,39 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#chunk-length-chunk-len" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chunk Length (--chunk-len)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#construction-compression-construction-compression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Construction Compression (--construction-compression)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#local-staging-local-staging-staging-dir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Staging (--local-staging, --staging-dir)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#overwrite-overwrite" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1587,6 +1620,39 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#chunk-length-chunk-len" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chunk Length (--chunk-len)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#construction-compression-construction-compression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Construction Compression (--construction-compression)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#local-staging-local-staging-staging-dir" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Staging (--local-staging, --staging-dir)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#overwrite-overwrite" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1952,51 +2018,92 @@
 </span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Use single worker for memory efficiency</span>
 </span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--max-workers<span class="w"> </span><span class="m">1</span>
 </span></code></pre></div>
+<h3 id="chunk-length-chunk-len">Chunk Length (<code>--chunk-len</code>)<a class="headerlink" href="#chunk-length-chunk-len" title="Anchor link to this section">&para;</a></h3>
+<p>Override the position-axis Zarr chunk length. If omitted, QuantNado derives a
+filesystem-aware default from the output path so network filesystems like CephFS
+use much larger write units than local disks.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Let QuantNado auto-select a chunk length from the target filesystem</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Pin an explicit chunk length for benchmarking or reproducibility</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--chunk-len<span class="w"> </span><span class="m">131072</span>
+</span></code></pre></div>
+<h3 id="construction-compression-construction-compression">Construction Compression (<code>--construction-compression</code>)<a class="headerlink" href="#construction-compression-construction-compression" title="Anchor link to this section">&para;</a></h3>
+<p>Control build-time compression separately from the on-disk dataset layout.
+This is useful when benchmarking CephFS write throughput, where lower
+compression overhead or fully uncompressed construction may outperform the
+default profile.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Current default profile</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--construction-compression<span class="w"> </span>default
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># Lower zstd compression overhead</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--construction-compression<span class="w"> </span>fast
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># Uncompressed construction writes</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--construction-compression<span class="w"> </span>none
+</span></code></pre></div>
+<h3 id="local-staging-local-staging-staging-dir">Local Staging (<code>--local-staging</code>, <code>--staging-dir</code>)<a class="headerlink" href="#local-staging-local-staging-staging-dir" title="Anchor link to this section">&para;</a></h3>
+<p>Build the dataset under local scratch storage and only publish to the final
+output path after construction succeeds. This is useful on CephFS-backed
+clusters because it converts many incremental writes into one finalize step.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Use TMPDIR-backed scratch staging</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--output<span class="w"> </span>/ceph/project/dataset.zarr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span>--local-staging<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span>--staging-dir<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$TMPDIR</span><span class="s2">&quot;</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="c1"># Let QuantNado choose the system temporary directory when staging is enabled</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">  </span>--output<span class="w"> </span>/ceph/project/dataset.zarr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">  </span>--local-staging
+</span></code></pre></div>
+<p><code>--local-staging</code> is opt-in. <code>--staging-dir</code> can also be supplied directly to
+pick a specific scratch filesystem.</p>
 <h3 id="overwrite-overwrite">Overwrite (<code>--overwrite</code>)<a class="headerlink" href="#overwrite-overwrite" title="Anchor link to this section">&para;</a></h3>
 <p>Overwrite existing dataset at same path (default: no overwrite):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--overwrite
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--overwrite
 </span></code></pre></div>
 <h3 id="log-file-log-file">Log File (<code>--log-file</code>)<a class="headerlink" href="#log-file-log-file" title="Anchor link to this section">&para;</a></h3>
 <p>Path to save processing logs (default: <code>quantnado_processing.log</code>):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--log-file<span class="w"> </span>processing.log
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--log-file<span class="w"> </span>processing.log
 </span></code></pre></div>
 <h3 id="verbose-verbose-v">Verbose (<code>--verbose</code>, <code>-v</code>)<a class="headerlink" href="#verbose-verbose-v" title="Anchor link to this section">&para;</a></h3>
 <p>Enable debug logging:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--verbose
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--verbose
 </span></code></pre></div>
 <h2 id="examples">Examples<a class="headerlink" href="#examples" title="Anchor link to this section">&para;</a></h2>
 <h3 id="basic-usage">Basic Usage<a class="headerlink" href="#basic-usage" title="Anchor link to this section">&para;</a></h3>
 <p>Create dataset from BAM files:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>sample1.bam<span class="w"> </span>sample2.bam<span class="w"> </span>sample3.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--output<span class="w"> </span>my_dataset.zarr
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>sample1.bam<span class="w"> </span>sample2.bam<span class="w"> </span>sample3.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span>--output<span class="w"> </span>my_dataset.zarr
 </span></code></pre></div>
 <h3 id="with-chromsizes">With Chromsizes<a class="headerlink" href="#with-chromsizes" title="Anchor link to this section">&para;</a></h3>
 <p>Specify explicit chromsizes file:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--chromsizes<span class="w"> </span>/reference/hg38.chrom.sizes
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">  </span>--chromsizes<span class="w"> </span>/reference/hg38.chrom.sizes
 </span></code></pre></div>
 <h3 id="with-metadata">With Metadata<a class="headerlink" href="#with-metadata" title="Anchor link to this section">&para;</a></h3>
 <p>Include sample metadata:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>--metadata<span class="w"> </span>samples.csv
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">  </span>--metadata<span class="w"> </span>samples.csv
 </span></code></pre></div>
 <h3 id="parallel-processing">Parallel Processing<a class="headerlink" href="#parallel-processing" title="Anchor link to this section">&para;</a></h3>
 <p>Use multiple workers for faster processing:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span>--max-workers<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span>--verbose
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="w">  </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span>--max-workers<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="w">  </span>--verbose
 </span></code></pre></div>
 <h3 id="resume-processing">Resume Processing<a class="headerlink" href="#resume-processing" title="Anchor link to this section">&para;</a></h3>
 <p>Resume interrupted dataset creation by passing <code>--resume</code>. Without this flag, re-running the
 command will fail if the store already exists (use <code>--overwrite</code> to replace it instead):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Resume from where processing left off (skips completed samples)</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--resume
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># Or start fresh, overwriting the existing store</span>
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--overwrite
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># Resume from where processing left off (skips completed samples)</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--resume
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="c1"># Or start fresh, overwriting the existing store</span>
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--overwrite
 </span></code></pre></div>
 <h2 id="performance">Performance<a class="headerlink" href="#performance" title="Anchor link to this section">&para;</a></h2>
 <h3 id="typical-run-times">Typical Run Times<a class="headerlink" href="#typical-run-times" title="Anchor link to this section">&para;</a></h3>
@@ -2051,36 +2158,36 @@ command will fail if the store already exists (use <code>--overwrite</code> to r
 <h3 id="bam-file-errors">BAM file errors<a class="headerlink" href="#bam-file-errors" title="Anchor link to this section">&para;</a></h3>
 <p><strong>Problem</strong>: <code>FileNotFoundError: BAM file not found</code></p>
 <p><strong>Solution</strong>: Verify path and ensure .bai index exists:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>ls<span class="w"> </span>-l<span class="w"> </span>sample1.bam<span class="w"> </span>sample1.bam.bai
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>samtools<span class="w"> </span>index<span class="w"> </span>sample1.bam
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>ls<span class="w"> </span>-l<span class="w"> </span>sample1.bam<span class="w"> </span>sample1.bam.bai
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>samtools<span class="w"> </span>index<span class="w"> </span>sample1.bam
 </span></code></pre></div></p>
 <h3 id="chromsizes-errors">Chromsizes errors<a class="headerlink" href="#chromsizes-errors" title="Anchor link to this section">&para;</a></h3>
 <p><strong>Problem</strong>: <code>ValueError: chromsizes_dict appears empty</code></p>
 <p><strong>Solution</strong>: Provide explicit chromsizes file:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes
 </span></code></pre></div></p>
 <h3 id="memory-issues">Memory issues<a class="headerlink" href="#memory-issues" title="Anchor link to this section">&para;</a></h3>
 <p><strong>Problem</strong>: Out of memory during processing</p>
 <p><strong>Solution</strong>: Use fewer workers:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--max-workers<span class="w"> </span><span class="m">1</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--max-workers<span class="w"> </span><span class="m">1</span>
 </span></code></pre></div></p>
 <h3 id="slow-processing">Slow processing<a class="headerlink" href="#slow-processing" title="Anchor link to this section">&para;</a></h3>
 <p><strong>Problem</strong>: Dataset creation is very slow</p>
 <p><strong>Solution</strong>: Use more workers (if memory available):
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--max-workers<span class="w"> </span><span class="m">8</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span>--max-workers<span class="w"> </span><span class="m">8</span>
 </span></code></pre></div></p>
 <h2 id="python-equivalent">Python Equivalent<a class="headerlink" href="#python-equivalent" title="Anchor link to this section">&para;</a></h2>
 <p>The CLI <code>create-dataset</code> command is equivalent to:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">quantnado</span><span class="w"> </span><span class="kn">import</span> <span class="n">QuantNado</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>
-</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="n">qn</span> <span class="o">=</span> <span class="n">QuantNado</span><span class="o">.</span><span class="n">from_bam_files</span><span class="p">(</span>
-</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>    <span class="n">bam_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;sample1.bam&quot;</span><span class="p">,</span> <span class="s2">&quot;sample2.bam&quot;</span><span class="p">,</span> <span class="s2">&quot;sample3.bam&quot;</span><span class="p">],</span>
-</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>    <span class="n">store_path</span><span class="o">=</span><span class="s2">&quot;dataset.zarr&quot;</span><span class="p">,</span>
-</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>    <span class="n">chromsizes</span><span class="o">=</span><span class="s2">&quot;hg38.chrom.sizes&quot;</span><span class="p">,</span>
-</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>    <span class="n">metadata</span><span class="o">=</span><span class="s2">&quot;samples.csv&quot;</span><span class="p">,</span>
-</span><span id="__span-20-9"><a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>    <span class="n">overwrite</span><span class="o">=</span><span class="kc">True</span>
-</span><span id="__span-20-10"><a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">quantnado</span><span class="w"> </span><span class="kn">import</span> <span class="n">QuantNado</span>
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="n">qn</span> <span class="o">=</span> <span class="n">QuantNado</span><span class="o">.</span><span class="n">from_bam_files</span><span class="p">(</span>
+</span><span id="__span-23-5"><a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a>    <span class="n">bam_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;sample1.bam&quot;</span><span class="p">,</span> <span class="s2">&quot;sample2.bam&quot;</span><span class="p">,</span> <span class="s2">&quot;sample3.bam&quot;</span><span class="p">],</span>
+</span><span id="__span-23-6"><a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a>    <span class="n">store_path</span><span class="o">=</span><span class="s2">&quot;dataset.zarr&quot;</span><span class="p">,</span>
+</span><span id="__span-23-7"><a id="__codelineno-23-7" name="__codelineno-23-7" href="#__codelineno-23-7"></a>    <span class="n">chromsizes</span><span class="o">=</span><span class="s2">&quot;hg38.chrom.sizes&quot;</span><span class="p">,</span>
+</span><span id="__span-23-8"><a id="__codelineno-23-8" name="__codelineno-23-8" href="#__codelineno-23-8"></a>    <span class="n">metadata</span><span class="o">=</span><span class="s2">&quot;samples.csv&quot;</span><span class="p">,</span>
+</span><span id="__span-23-9"><a id="__codelineno-23-9" name="__codelineno-23-9" href="#__codelineno-23-9"></a>    <span class="n">overwrite</span><span class="o">=</span><span class="kc">True</span>
+</span><span id="__span-23-10"><a id="__codelineno-23-10" name="__codelineno-23-10" href="#__codelineno-23-10"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>See <a href="../../basic_usage/">Dataset Creation Guide</a> for Python API details.</p>
 <h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Anchor link to this section">&para;</a></h2>
