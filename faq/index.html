@@ -2039,7 +2039,7 @@
 <ul>
 <li><strong><code>reduce()</code></strong>: Returns aggregated (summed/mean/etc.) signal over ranges</li>
 <li><strong><code>extract()</code></strong>: Returns per-position signal over ranges</li>
-<li><strong><code>feature_counts()</code></strong>: Returns integer counts for each feature</li>
+<li><strong><code>count_features()</code></strong>: Returns integer counts for each feature</li>
 </ul>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># reduce - returns (n_regions, n_samples)</span>
 </span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="n">signal</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="n">intervals_path</span><span class="o">=</span><span class="s2">&quot;regions.bed&quot;</span><span class="p">,</span> <span class="n">reduction</span><span class="o">=</span><span class="s2">&quot;mean&quot;</span><span class="p">)</span>
@@ -2047,8 +2047,8 @@
 </span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="c1"># extract - returns (n_regions, max_position, n_samples)</span>
 </span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="n">signal</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">extract</span><span class="p">(</span><span class="n">intervals_path</span><span class="o">=</span><span class="s2">&quot;regions.bed&quot;</span><span class="p">)</span>
 </span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>
-</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="c1"># feature_counts - returns (n_features, n_samples) integer matrix</span>
-</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="n">counts</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">feature_counts</span><span class="p">(</span><span class="n">gtf_file</span><span class="o">=</span><span class="s2">&quot;genes.gtf&quot;</span><span class="p">)</span>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="c1"># count_features - returns (n_features, n_samples) integer matrix</span>
+</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="n">counts</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">count_features</span><span class="p">(</span><span class="n">gtf_file</span><span class="o">=</span><span class="s2">&quot;genes.gtf&quot;</span><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="how-do-i-handle-nan-values">How do I handle NaN values?<a class="headerlink" href="#how-do-i-handle-nan-values" title="Anchor link to this section">&para;</a></h3>
 <p>QuantNado provides several strategies:</p>

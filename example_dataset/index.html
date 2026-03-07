@@ -4450,7 +4450,7 @@ expression analysis in DESeq2 or edgeR.</p>
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">counts</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">feature_counts</span><span class="p">(</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">counts</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">count_features</span><span class="p">(</span>
     <span class="n">bed_file</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">BED_FILE</span><span class="p">),</span>
     <span class="n">feature_type</span><span class="o">=</span><span class="s2">"gene"</span><span class="p">,</span>
     <span class="n">integerize</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
@@ -4459,7 +4459,7 @@ expression analysis in DESeq2 or edgeR.</p>
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Count matrix: </span><span class="si">{</span><span class="n">counts</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> genes × </span><span class="si">{</span><span class="n">counts</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="si">}</span><span class="s2"> samples"</span><span class="p">)</span>
 <span class="n">counts</span><span class="o">.</span><span class="n">head</span><span class="p">()</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-16">counts, features = qn.feature_counts(
+<div class="clipboard-copy-txt" id="cell-16">counts, features = qn.count_features(
     bed_file=str(BED_FILE),
     feature_type="gene",
     integerize=True,
