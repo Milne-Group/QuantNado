@@ -15,7 +15,7 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.12, <3.14"
-license = "MIT"
+license = "GPL-3.0-only"
 dynamic = ["version"]
 
 dependencies = [
