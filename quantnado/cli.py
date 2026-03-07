@@ -90,12 +90,21 @@ def call_peaks(
 
 @app.command()
 def create_dataset(
-    bam_files: list[Path] = typer.Argument(..., help="Paths to BAM files to process."),
-    output: Path = typer.Option(..., "--output", "-o", help="Path to save the unified Zarr dataset."),
+    output: Path = typer.Option(..., "--output", "-o", help="Output directory for the multiomics store."),
+    bam: str | None = typer.Option(None, "--bam", help="Comma-separated BAM files for coverage."),
+    bedgraph: str | None = typer.Option(None, "--bedgraph", help="Comma-separated bedGraph files for methylation."),
+    vcf: str | None = typer.Option(None, "--vcf", help="Comma-separated VCF.gz files for variants."),
     chromsizes: Path | None = typer.Option(
         None, "--chromsizes", help="Path to chromsizes. If omitted, extracted from first BAM."
     ),
     metadata: Path | None = typer.Option(None, "--metadata", help="Path to metadata CSV file."),
+    bam_sample_names: str | None = typer.Option(None, "--bam-sample-names", help="Comma-separated sample name overrides for BAM files."),
+    bedgraph_sample_names: str | None = typer.Option(None, "--bedgraph-sample-names", help="Comma-separated sample name overrides for bedGraph files."),
+    vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
+    sample_column: str = typer.Option("sample_id", "--sample-column", help="Column in metadata matching sample names."),
+    filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
+    overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite", help="Overwrite existing sub-stores."),
+    resume: bool = typer.Option(False, "--resume", help="Resume processing an existing store, skipping completed samples."),
     chunk_len: int | None = typer.Option(
         None,
         "--chunk-len",
@@ -118,34 +127,64 @@ def create_dataset(
         "--staging-dir",
         help="Scratch directory to use for local staging. Defaults to TMPDIR when local staging is enabled.",
     ),
-    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for processing BAM files."),
+    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for BAM processing."),
     log_file: Path = typer.Option("quantnado_processing.log", "--log-file", help="Path to the log file."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
-    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite existing dataset if it exists"),
-    resume: bool = typer.Option(False, "--resume", help="Resume processing an existing dataset, skipping completed samples."),
 ):
     """
-    Process BAM files and create a unified Zarr dataset.
+    Create a multiomics store from BAM, bedGraph, and/or VCF files.
+
+    At least one of --bam, --bedgraph, or --vcf must be provided.
+    Multiple files can be passed as a comma-separated list, e.g. --bam a.bam,b.bam
     """
     _setup_cli_logging(log_file, verbose)
 
-    logger.info(f"Processing {len(bam_files)} BAM files into {output}")
+    def _split(s: str | None) -> list[str]:
+        return [v.strip() for v in s.split(",") if v.strip()] if s else []
+
+    bam_files = _split(bam)
+    bedgraph_files = _split(bedgraph)
+    vcf_files = _split(vcf)
+    bam_names = _split(bam_sample_names)
+    bedgraph_names = _split(bedgraph_sample_names)
+    vcf_names = _split(vcf_sample_names)
+
+    if not any([bam_files, bedgraph_files, vcf_files]):
+        logger.error("Provide at least one of --bam, --bedgraph, or --vcf.")
+        raise typer.Exit(code=1)
+
+    modality_counts = [
+        f"{len(bam_files)} BAM" if bam_files else None,
+        f"{len(bedgraph_files)} bedGraph" if bedgraph_files else None,
+        f"{len(vcf_files)} VCF" if vcf_files else None,
+    ]
+    logger.info(f"Building multiomics store at {output}: {', '.join(m for m in modality_counts if m)}")
+
     try:
-        BamStore.from_bam_files(
-            bam_files=[str(b) for b in bam_files],
+        from quantnado.dataset.multiomics import MultiomicsStore
+
+        MultiomicsStore.from_files(
+            store_dir=output,
+            bam_files=bam_files or None,
+            bedgraph_files=bedgraph_files or None,
+            vcf_files=vcf_files or None,
             chromsizes=chromsizes,
-            store_path=output,
             metadata=metadata,
+            bam_sample_names=bam_names or None,
+            bedgraph_sample_names=bedgraph_names or None,
+            vcf_sample_names=vcf_names or None,
+            sample_column=sample_column,
             chunk_len=chunk_len,
+            filter_chromosomes=filter_chromosomes,
             construction_compression=construction_compression,
             local_staging=local_staging,
             staging_dir=staging_dir,
-            max_workers=max_workers,
             log_file=log_file,
             overwrite=overwrite,
             resume=resume,
+            max_workers=max_workers,
         )
-        logger.success(f"Zarr dataset created: {output}")
+        logger.success(f"Multiomics store created: {output}")
     except Exception as e:
         logger.error(f"Dataset creation failed: {e}")
         logger.debug(traceback.format_exc())

@@ -138,7 +138,7 @@ import pandas as pd
 qn = QuantNado.open("chip_dataset.zarr")
 
 # Generate gene counts
-counts, features = qn.feature_counts(
+counts, features = qn.count_features(
     gtf_file="genes.gtf",
     feature_type="gene",
     integerize=True
@@ -296,6 +296,67 @@ plt.savefig("log2fc_distribution.png", dpi=300, bbox_inches='tight')
 plt.show()
 ```
 
+## Workflow 6: Downstream API Helpers for Visualization
+
+Use the higher-level plotting and extraction helpers exposed on `QuantNado` for
+post-processing and exploratory analysis.
+
+```python
+from quantnado import QuantNado
+import matplotlib.pyplot as plt
+
+qn = QuantNado.open("chip_dataset.zarr")
+
+# 1) Load selected chromosomes as lazy xarray objects
+signal_by_chrom = qn.to_xarray(chromosomes=["chr1", "chr2"])
+print(signal_by_chrom["chr1"])  # DataArray: (sample, position)
+
+# 2) Extract a specific locus for browser-like inspection
+region = qn.extract_region("chr1:100000-102000")
+print(region.shape)  # (n_samples, 2000)
+
+# 3) Build binned windows around TSS for profile/heatmap plots
+binned = qn.extract(
+    feature_type="transcript",
+    gtf_path="genes.gtf",
+    upstream=1000,
+    downstream=1000,
+    anchor="start",
+    bin_size=50,
+)
+
+# Optional grouping from metadata
+metadata = qn.metadata.copy()
+metadata["assay"] = metadata.index.to_series().str.split("_").str[0]
+groups = metadata.groupby("assay").groups
+
+# 4) Metaplot helper
+ax = qn.metaplot(
+    binned,
+    modality="coverage",
+    groups=groups,
+    flip_minus_strand=True,
+    reference_point=0,
+    reference_label="TSS",
+    xlabel="Distance from TSS (bp)",
+    title="Coverage metaplot",
+)
+plt.show()
+
+# 5) Tornado helper with display aliases
+axes = qn.tornadoplot(
+    binned,
+    modality="coverage",
+    samples=["chip_rep1", "chip_rep2", "input_rep1", "input_rep2"],
+    sample_names=["ChIP rep1", "ChIP rep2", "Input rep1", "Input rep2"],
+    flip_minus_strand=True,
+    sort_by="mean",
+    ylabel="Promoters",
+    title="Coverage tornado",
+)
+plt.show()
+```
+
 ## Tips and Best Practices
 
 ### 1. Memory Efficiency
@@ -326,15 +387,30 @@ input_rep1.bam
 
 ### 3. Parallel Processing
 
-Use appropriate number of workers for your system:
+Use the Python API to control worker count when building datasets:
 
-```bash
+```python
+from quantnado.dataset.multiomics import MultiomicsStore
+
+bam_files = ["sample1.bam", "sample2.bam", "sample3.bam"]
+
 # Single-core (least memory)
-quantnado create-dataset *.bam --output dataset.zarr --max-workers 1
+ms = MultiomicsStore.from_files(
+    store_dir="dataset",
+    bam_files=bam_files,
+    max_workers=1,
+)
 
 # Multi-core (more memory, faster)
-quantnado create-dataset *.bam --output dataset.zarr --max-workers 8
+ms = MultiomicsStore.from_files(
+    store_dir="dataset",
+    bam_files=bam_files,
+    max_workers=8,
+)
 ```
+
+If you prefer the convenience wrapper for BAM-only workflows, use
+`QuantNado.from_bam_files(...)`.
 
 ### 4. Metadata Organization
 

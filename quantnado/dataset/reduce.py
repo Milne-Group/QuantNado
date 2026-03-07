@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import dask.array as da
 import xarray as xr
-import pyranges as pr
+import pyranges1 as pr
 from typing import TYPE_CHECKING, Iterable
 from loguru import logger
 
@@ -129,21 +129,21 @@ def _resolve_ranges(
 			ranges_df = extract_feature_ranges(gtf_df, feature_type=feature_type)
 
 		if isinstance(ranges_df, pr.PyRanges):
-			ranges_df = ranges_df.as_df()
+			ranges_df = pd.DataFrame(ranges_df)
 		start_col, end_col, contig_col = "Start", "End", "Chromosome"
 
 	elif intervals_path is not None:
 		if intervals_path.endswith((".bed", ".bed.gz")):
-			ranges_df = pr.read_bed(intervals_path).as_df()
+			ranges_df = pd.DataFrame(pr.read_bed(intervals_path))
 		elif intervals_path.endswith((".gtf", ".gtf.gz", ".gff", ".gff3", ".gff.gz")):
-			ranges_df = pr.read_gtf(intervals_path).as_df()
+			ranges_df = pd.DataFrame(pr.read_gtf(intervals_path))
 		else:
 			raise ValueError("Unsupported intervals file format. Use .bed or .gtf/.gff extensions.")
 		start_col, end_col, contig_col = "Start", "End", "Chromosome"
 
 	elif ranges_df is not None:
 		if isinstance(ranges_df, pr.PyRanges):
-			ranges_df = ranges_df.as_df()
+			ranges_df = pd.DataFrame(ranges_df)
 	else:
 		raise TypeError(
 			"Must provide one of: ranges_df, intervals_path, or (feature_type + gtf_path)"
@@ -434,6 +434,8 @@ def extract_byranges_signal(
 	end_col: str = "End",
 	contig_col: str = "Chromosome",
 	fixed_width: int | None = None,
+	upstream: int | None = None,
+	downstream: int | None = None,
 	anchor: AnchorPoint | str = AnchorPoint.MIDPOINT,
 	bin_size: int | None = None,
 	bin_agg: ReductionMethod | str = ReductionMethod.MEAN,
@@ -507,11 +509,25 @@ def extract_byranges_signal(
 	anchor = AnchorPoint(anchor) if isinstance(anchor, str) else anchor
 	bin_agg_str = str(ReductionMethod(bin_agg) if isinstance(bin_agg, str) else bin_agg)
 
-	# Validate fixed_width and bin_size combination
-	if fixed_width is not None and bin_size is not None:
-		if fixed_width % bin_size != 0:
+	# Resolve anchor window from upstream/downstream or fixed_width
+	if upstream is not None or downstream is not None:
+		if fixed_width is not None:
+			raise ValueError("Cannot specify both fixed_width and upstream/downstream")
+		_upstream = upstream if upstream is not None else 0
+		_downstream = downstream if downstream is not None else 0
+		_total_width = _upstream + _downstream
+	elif fixed_width is not None:
+		_upstream = fixed_width // 2
+		_downstream = fixed_width - _upstream
+		_total_width = fixed_width
+	else:
+		_upstream = _downstream = _total_width = None
+
+	# Validate window divisible by bin_size
+	if _total_width is not None and bin_size is not None:
+		if _total_width % bin_size != 0:
 			raise ValueError(
-				f"fixed_width ({fixed_width}) must be divisible by bin_size ({bin_size})"
+				f"Total window ({_total_width}) must be divisible by bin_size ({bin_size})"
 			)
 
 	ranges_df, start_col, end_col, contig_col = _resolve_ranges(
@@ -534,7 +550,7 @@ def extract_byranges_signal(
 
 	# Determine global extraction width.
 	# If bin_size is provided, drop remainder bases (exact multiple of bin_size only).
-	if fixed_width is None:
+	if _total_width is None:
 		contig_lengths = {k: int(root[k].shape[1]) for k in root.keys() if k != "metadata"}
 		contig_len = ranges_df[contig_col].map(contig_lengths)
 		starts_all = np.asarray(ranges_df[start_col], dtype=np.int64)
@@ -562,7 +578,7 @@ def extract_byranges_signal(
 		else:
 			target_bases = int(lengths.max())
 	else:
-		target_bases = int(fixed_width)
+		target_bases = int(_total_width)
 
 	# Extract per contig (Dask parallelizes across contigs)
 	outputs: list[da.Array] = []
@@ -608,8 +624,7 @@ def extract_byranges_signal(
 		if starts.size == 0:
 			continue
 
-		if fixed_width is not None:
-			half_width = fixed_width // 2
+		if _total_width is not None:
 			if anchor == AnchorPoint.MIDPOINT:
 				anchor_pos = (starts + ends) // 2
 			elif anchor == AnchorPoint.START:
@@ -619,22 +634,22 @@ def extract_byranges_signal(
 			else:
 				raise ValueError(f"Unknown anchor point: {anchor}")
 
-			extract_starts = anchor_pos - half_width
+			extract_starts = anchor_pos - _upstream
 			pad_left = int(max(0, -int(extract_starts.min())))
-			pad_right = int(max(0, int(extract_starts.max() + fixed_width) - arr_len))
+			pad_right = int(max(0, int(extract_starts.max() + _total_width) - arr_len))
 			if pad_left or pad_right:
 				arr = da.pad(arr, ((pad_left, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
 
 			start_idx = (extract_starts + pad_left).astype(np.int64)
-			offsets = np.arange(fixed_width, dtype=np.int64)
+			offsets = np.arange(_total_width, dtype=np.int64)
 			indices = start_idx[:, None] + offsets[None, :]
 			gathered = da.take(arr, indices.reshape(-1), axis=0).reshape(
-				(start_idx.shape[0], fixed_width, arr.shape[1])
+				(start_idx.shape[0], _total_width, arr.shape[1])
 			)
 			signal = gathered
 
 			if bin_size is not None:
-				n_bins = fixed_width // bin_size
+				n_bins = _total_width // bin_size
 				reshaped = signal.reshape((signal.shape[0], n_bins, bin_size, signal.shape[2]))
 				if bin_agg_str == "mean":
 					signal = da.nanmean(reshaped, axis=2)
@@ -726,9 +741,18 @@ def extract_byranges_signal(
 	contigs_cat = np.concatenate(contigs_meta)[sort_order]
 
 	relative_position_name = "bin" if bin_size is not None else "relative_position"
+	# When an anchor window is used, express positions as bp offset from anchor.
+	if _total_width is not None:
+		if bin_size is not None:
+			n_bins = _total_width // bin_size
+			pos_values = np.arange(n_bins, dtype=np.int64) * bin_size - _upstream
+		else:
+			pos_values = np.arange(-_upstream, _downstream, dtype=np.int64)
+	else:
+		pos_values = np.arange(int(stacked.shape[1]), dtype=int)
 	coords: dict[str, object] = {
 		"interval": np.arange(int(stacked.shape[0]), dtype=int),
-		relative_position_name: np.arange(int(stacked.shape[1]), dtype=int),
+		relative_position_name: pos_values,
 		"sample": np.asarray(sample_labels),
 		"start": ("interval", starts_cat),
 		"end": ("interval", ends_cat),
@@ -747,7 +771,8 @@ def extract_byranges_signal(
 		dims=("interval", relative_position_name, "sample"),
 		coords=coords,
 		attrs={
-			"fixed_width": fixed_width,
+			"upstream": _upstream,
+			"downstream": _downstream,
 			"anchor": str(anchor),
 			"bin_size": bin_size,
 			"bin_agg": bin_agg_str if bin_size is not None else None,

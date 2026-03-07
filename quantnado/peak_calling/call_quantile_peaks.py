@@ -3,7 +3,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import pyranges as pr
+import pyranges1 as pr
 from crested import import_bigwigs
 from loguru import logger
 
@@ -55,12 +55,12 @@ def call_quantile_peaks(
 
     pr_obj = pr.PyRanges(peaks_df)
     if merge:
-        pr_obj = pr_obj.merge()
+        pr_obj = pr_obj.merge_overlaps()
 
     if blacklist_file and blacklist_file.exists():
         logger.debug(f"[{signal.name}] Subtracting blacklist regions: {blacklist_file}")
         blacklist = pr.read_bed(str(blacklist_file))
-        pr_obj = pr_obj.subtract(blacklist)
+        pr_obj = pr_obj.subtract_overlaps(blacklist, strand_behavior="ignore")
 
     logger.info(f"[{signal.name}] Final peak count: {len(pr_obj)}")
     return pr_obj if len(pr_obj) > 0 else None
@@ -93,13 +93,13 @@ def call_peaks_from_bigwig_dir(
 
     logger.info(f"Tiling genome with tilesize {tilesize} bp...")
     full_ranges = pr.PyRanges(chromsizes)
-    tiled = full_ranges.tile(tilesize)
-    tiled = tiled.intersect(full_ranges)
+    tiled = full_ranges.tile_ranges(tilesize, use_strand=False)
+    tiled = tiled.intersect_overlaps(full_ranges, strand_behavior="ignore")
     if blacklist_file and Path(blacklist_file).exists():
         logger.info(f"Applying blacklist from: {blacklist_file}")
         blacklist = pr.read_bed(str(blacklist_file))
-        tiled = tiled.subtract(blacklist)
-    tiled_df = tiled.df
+        tiled = tiled.subtract_overlaps(blacklist, strand_behavior="ignore")
+    tiled_df = pd.DataFrame(tiled)
     tmp_regions_bed = tmp_dir / "tiled_regions.bed"
     tiled.to_bed(tmp_regions_bed)
     logger.info(f"Tiled regions saved to: {tmp_regions_bed}")

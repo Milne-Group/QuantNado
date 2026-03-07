@@ -131,7 +131,7 @@ class QuantNadoDataset:
             # Add all metadata columns as coordinates
             for col in metadata_df.columns:
                 if col != "sample_id":  # sample_id is already in "sample" coordinate
-                    coords[col] = ("sample", metadata_df[col].values)
+                    coords[col] = ("sample", metadata_df[col].to_numpy(dtype=object, na_value=None))
 
             # Create DataArray with coordinates and metadata attributes
             da_xr = xr.DataArray(
@@ -301,7 +301,7 @@ class QuantNadoDataset:
         # Add metadata columns as coordinates
         for col in metadata_subset.columns:
             if col != "sample_id":  # sample_id redundant with "sample" coordinate
-                coords[col] = ("sample", metadata_subset[col].values)
+                coords[col] = ("sample", metadata_subset[col].to_numpy(dtype=object, na_value=None))
         
         # Create DataArray
         da_xr = xr.DataArray(

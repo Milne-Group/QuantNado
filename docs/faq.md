@@ -211,7 +211,7 @@ qn = QuantNado.from_bam_files(
 
 - **`reduce()`**: Returns aggregated (summed/mean/etc.) signal over ranges
 - **`extract()`**: Returns per-position signal over ranges
-- **`feature_counts()`**: Returns integer counts for each feature
+- **`count_features()`**: Returns integer counts for each feature
 
 ```python
 # reduce - returns (n_regions, n_samples)
@@ -220,8 +220,8 @@ signal = qn.reduce(intervals_path="regions.bed", reduction="mean")
 # extract - returns (n_regions, max_position, n_samples)
 signal = qn.extract(intervals_path="regions.bed")
 
-# feature_counts - returns (n_features, n_samples) integer matrix
-counts, features = qn.feature_counts(gtf_file="genes.gtf")
+# count_features - returns (n_features, n_samples) integer matrix
+counts, features = qn.count_features(gtf_file="genes.gtf")
 ```
 
 ### How do I handle NaN values?

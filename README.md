@@ -1,12 +1,17 @@
 # QuantNado
 
-**QuantNado provides efficient Zarr-backed storage and analysis of genomic signal from BAM and bigWig files, with support for signal reduction, feature counting, dimensionality reduction, and quantile-based peak calling.**
-
-[![CI](https://github.com/Milne-Group/QuantNado/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Milne-Group/QuantNado/actions/workflows/python-tests.yml)
-[![PyPI](https://img.shields.io/pypi/v/quantnado)](https://pypi.org/project/quantnado)
 [![Docs](https://img.shields.io/badge/docs-milne--group.github.io-blue)](https://milne-group.github.io/QuantNado/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](https://pypi.org/project/quantnado)
+[![CI](https://github.com/Milne-Group/QuantNado/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Milne-Group/QuantNado/actions/workflows/python-tests.yml)
+[![Release](https://img.shields.io/github/v/release/Milne-Group/QuantNado?sort=semver)](https://github.com/Milne-Group/QuantNado/releases)
+[![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+[![PyPI Version](https://img.shields.io/pypi/v/quantnado)](https://pypi.org/project/quantnado)
+[![PyPI Downloads](https://static.pepy.tech/badge/quantnado)](https://pepy.tech/projects/quantnado)
+
+<p align="center">
+  <img src="docs/assets/images/logo.png" alt="QuantNado logo" width="192">
+</p>
+
+**QuantNado provides efficient Zarr-backed storage and analysis of genomic signal from BAM and bigWig files, with support for signal reduction, feature counting, dimensionality reduction, and quantile-based peak calling.**
 
 ---
 
@@ -50,7 +55,7 @@ pca_obj, transformed = qn.pca(promoter_signal["mean"], n_components=10)
 print(transformed.shape)  # (n_samples, 10)
 
 # Generate a count matrix for DESeq2
-counts, features = qn.feature_counts("genes.gtf", feature_type="gene")
+counts, features = qn.count_features("genes.gtf", feature_type="gene")
 counts.to_csv("counts.csv")
 
 # Extract signal over a specific region
@@ -64,12 +69,16 @@ print(region.shape)  # (n_samples, 4000)
 
 QuantNado installs a `quantnado` command with two subcommands.
 
-### `create-dataset` — build a Zarr dataset from BAM files
+### `create-dataset` — build a multi-omics store from BAM/bedGraph/VCF files
+
+At least one of `--bam`, `--bedgraph`, or `--vcf` is required. File lists are comma-separated.
 
 ```bash
-quantnado create-dataset sample1.bam sample2.bam sample3.bam \
-  --output dataset.zarr \
-  --chromsizes hg38.chrom.sizes \
+quantnado create-dataset \
+  --output dataset \
+  --bam sample1.bam,sample2.bam,sample3.bam \
+  --bedgraph meth_rep1.bedGraph,meth_rep2.bedGraph \
+  --vcf sample1.vcf.gz,sample2.vcf.gz \
   --metadata samples.csv \
   --max-workers 8
 ```
@@ -99,7 +108,7 @@ Full documentation is available at [milne-group.github.io/QuantNado](https://mil
 | `QuantNado.from_bam_files(bam_files, store_path, ...)` | Create a new dataset from BAM files |
 | `QuantNado.open(store_path, read_only=True)` | Open an existing dataset |
 | `.reduce(ranges, reduction="mean")` | Aggregate signal over genomic ranges (BED) |
-| `.feature_counts(gtf_file, feature_type="gene")` | Generate a DESeq2-compatible count matrix |
+| `.count_features(gtf_file, feature_type="gene")` | Generate a DESeq2-compatible count matrix |
 | `.pca(data, n_components=10)` | Run PCA on a signal matrix |
 | `.extract_region(region)` | Extract raw signal for a genomic region |
 | `.to_xarray(chromosomes)` | Load dataset as lazy xarray DataArrays |
@@ -130,4 +139,4 @@ Full documentation is available at [milne-group.github.io/QuantNado](https://mil
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GNU GPL v3.0 — see [LICENSE](LICENSE).

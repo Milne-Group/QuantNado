@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import pandas as pd
-import pyranges as pr
 
 from .enums import FeatureType
 from .features import extract_feature_ranges, load_gtf
 from .reduce import reduce_byranges_signal
 
 
-def feature_counts(
+def count_features(
     dataset,
     *,
     ranges_df=None,
@@ -19,8 +18,9 @@ def feature_counts(
     start_col: str = "start",
     end_col: str = "end",
     contig_col: str | None = None,
-    feature_id_col: str | None = None,
+    feature_id_col: str | list[str] | None = None,
     aggregate_by: str | None = None,
+    strand: str | None = None,
     assay: str | None = None,
     integerize: bool = True,
     fillna_value: float | int | None = 0,
@@ -89,7 +89,7 @@ def feature_counts(
         
         # Extract feature ranges and convert from PyRanges to DataFrame
         feature_ranges_pr = extract_feature_ranges(gtf_source, feature_type=feature_type)
-        resolved_ranges = feature_ranges_pr.as_df() if isinstance(feature_ranges_pr, pr.PyRanges) else feature_ranges_pr
+        resolved_ranges = pd.DataFrame(feature_ranges_pr)
         
         # Normalize column names from PyRanges convention to internal convention
         resolved_ranges = resolved_ranges.rename(columns={
@@ -119,6 +119,14 @@ def feature_counts(
             and "gene_id" in resolved_ranges.columns
         ):
             resolved_aggregate_by = "gene_id"
+
+    # Normalize PyRanges Strand column name across all input sources.
+    if resolved_ranges is not None and "Strand" in resolved_ranges.columns and "strand" not in resolved_ranges.columns:
+        resolved_ranges = resolved_ranges.rename(columns={"Strand": "strand"})
+
+    # Filter by strand if requested.
+    if strand is not None and resolved_ranges is not None and "strand" in resolved_ranges.columns:
+        resolved_ranges = resolved_ranges[resolved_ranges["strand"] == strand].reset_index(drop=True)
 
     reduced = reduce_byranges_signal(
         dataset,
@@ -167,17 +175,31 @@ def feature_counts(
     if "contig" in reduced.coords:
         feature_metadata.insert(0, "contig", reduced["contig"].values)
 
+    strand_col = next(
+        (c for c in ("strand", "Strand") if aligned_ranges is not None and c in aligned_ranges.columns),
+        None,
+    )
+    if strand_col and aligned_ranges is not None and len(aligned_ranges) == len(feature_metadata):
+        feature_metadata.insert(feature_metadata.columns.get_loc("start"), "strand", aligned_ranges[strand_col].values)
+
     # If caller provided feature IDs and they align, use them to index the counts matrix.
+    id_cols = (
+        [resolved_feature_id_col] if isinstance(resolved_feature_id_col, str)
+        else (resolved_feature_id_col or [])
+    )
     if (
-        resolved_feature_id_col
+        id_cols
         and aligned_ranges is not None
-        and resolved_feature_id_col in aligned_ranges.columns
+        and all(c in aligned_ranges.columns for c in id_cols)
         and len(aligned_ranges) == len(feature_metadata)
     ):
-        feature_metadata.insert(
-            0, resolved_feature_id_col, aligned_ranges[resolved_feature_id_col].values
-        )
-        counts_df.index = feature_metadata[resolved_feature_id_col].values
+        for col in reversed(id_cols):
+            if col not in feature_metadata.columns:
+                feature_metadata.insert(0, col, aligned_ranges[col].values)
+        if len(id_cols) == 1:
+            counts_df.index = feature_metadata[id_cols[0]].values
+        else:
+            counts_df.index = pd.MultiIndex.from_frame(feature_metadata[id_cols])
 
     # Ensure the aggregation key is present in metadata if available in ranges.
     if (
@@ -202,18 +224,12 @@ def feature_counts(
 
         agg_meta = feature_metadata.copy()
         agg_meta[resolved_aggregate_by] = feature_metadata[resolved_aggregate_by].values
-        agg_meta = (
-            agg_meta.groupby(resolved_aggregate_by)
-            .agg(
-                contig=("contig", "first")
-                if "contig" in agg_meta.columns
-                else ("start", "size"),
-                start=("start", "min"),
-                end=("end", "max"),
-                range_length=("range_length", "sum"),
-            )
-            .reset_index()
-        )
+        agg_spec = {"start": ("start", "min"), "end": ("end", "max"), "range_length": ("range_length", "sum")}
+        if "contig" in agg_meta.columns:
+            agg_spec["contig"] = ("contig", "first")
+        if "strand" in agg_meta.columns:
+            agg_spec["strand"] = ("strand", "first")
+        agg_meta = agg_meta.groupby(resolved_aggregate_by).agg(**agg_spec).reset_index()
         feature_metadata = agg_meta
         counts_df.index.name = resolved_aggregate_by
         # Reindex to metadata order without raising if keys differ; missing keys become NaN rows.

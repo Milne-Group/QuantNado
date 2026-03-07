@@ -19,7 +19,7 @@ Example:
     reduced_ds = qn.reduce("promoters.bed", reduction="mean")
 
     # Compute feature counts for DESeq2
-    counts_df, feature_df = qn.feature_counts("genes.gtf", feature_type="gene")
+    counts_df, feature_df = qn.count_features("genes.gtf", feature_type="gene")
 
     # Run PCA on reduced data
     pca_obj, transformed = qn.pca(reduced_ds["mean"], n_components=10)
@@ -43,8 +43,9 @@ from typing import Iterable
 
 from quantnado.dataset.bam import BamStore
 from quantnado.dataset.reduce import reduce_byranges_signal, extract_byranges_signal
-from quantnado.dataset.counts import feature_counts as _feature_counts
+from quantnado.dataset.counts import count_features as _feature_counts
 from quantnado.dataset.pca import run_pca as _run_pca
+from quantnado.dataset.plot import metaplot, tornadoplot
 from quantnado.dataset.enums import FeatureType, ReductionMethod, AnchorPoint
 
 
@@ -74,7 +75,7 @@ class QuantNado:
 
     >>> # Reduce signal and run analysis
     >>> reduced = qn.reduce("promoters.bed", reduction="mean")
-    >>> counts, features = qn.feature_counts("genes.gtf")
+    >>> counts, features = qn.count_features("genes.gtf")
     >>> pca, transformed = qn.pca(reduced["mean"])
     """
 
@@ -399,6 +400,8 @@ class QuantNado:
         feature_type: FeatureType | str | None = None,
         gtf_path: str | Path | Iterable[str | Path] | None = None,
         fixed_width: int | None = None,
+        upstream: int | None = None,
+        downstream: int | None = None,
         anchor: AnchorPoint | str = AnchorPoint.MIDPOINT,
         bin_size: int | None = None,
         bin_agg: ReductionMethod | str = ReductionMethod.MEAN,
@@ -408,7 +411,13 @@ class QuantNado:
         Extract raw per-position signal over genomic ranges.
 
         Unlike reduce(), this returns the full signal vector for each interval,
-        optionally resized to fixed_width and binned into coarser resolution.
+        optionally resized to a fixed window and binned into coarser resolution.
+
+        Window specification (pick one):
+        - ``upstream`` / ``downstream``: asymmetric window around the anchor point,
+          like deeptools ``-b`` / ``-a``. Position coordinate is bp offset from anchor
+          (negative = upstream, positive = downstream).
+        - ``fixed_width``: symmetric window of this total width centered on anchor.
 
         Supports three input modes for specifying ranges:
         1. `intervals_path`: Path to BED/GTF file
@@ -429,15 +438,20 @@ class QuantNado:
         gtf_path : str, Path, or Iterable[str|Path], optional
             Path(s) to GTF file(s) for feature extraction.
         fixed_width : int, optional
-            If set, all intervals are resized to this width (centered on anchor).
-            Shorter intervals are padded with NaN; longer ones are trimmed.
-            Must be divisible by bin_size if bin_size is also set.
+            Symmetric window: total bp around anchor (upstream = downstream = width//2).
+            Cannot be combined with upstream/downstream.
+        upstream : int, optional
+            Bases upstream of the anchor to include (e.g. 2000 for 2 kb upstream).
+            Cannot be combined with fixed_width.
+        downstream : int, optional
+            Bases downstream of the anchor to include (e.g. 2000 for 2 kb downstream).
+            Cannot be combined with fixed_width.
         anchor : AnchorPoint or str, default "midpoint"
-            Anchor point for fixed_width: 'midpoint', 'start', or 'end'.
-            'start' and 'end' are strand-aware (5'/3') when Strand column is present.
+            Anchor point: 'midpoint', 'start' (5' end, strand-aware), or
+            'end' (3' end, strand-aware).
         bin_size : int, optional
             If set, aggregate positions into bins of this size (e.g., 50 bp).
-            Must divide fixed_width evenly if fixed_width is also set.
+            Total window must be divisible by bin_size.
         bin_agg : ReductionMethod or str, default "mean"
             Aggregation method for binning: 'mean', 'sum', 'max', 'min', 'median'.
         filter_incomplete : bool, default True
@@ -446,58 +460,38 @@ class QuantNado:
         Returns
         -------
         DataArray
-            Xarray DataArray with dimensions (interval, relative_position, sample).
-            - interval: unique ID for each genomic region
-            - relative_position: 0-based offset within interval (or bin index if bin_size set)
-            - sample: sample name
-            
-            Coordinates include interval metadata:
-            - start, end: genomic coordinates
-            - contig: chromosome name
-            - strand: DNA strand (if present in input)
-            
+            Xarray DataArray with dimensions (interval, relative_position|bin, sample).
+            When upstream/downstream or fixed_width is set, the position coordinate
+            contains actual bp offsets from the anchor (negative = upstream).
             Dask-backed for lazy evaluation; call `.compute()` to materialize.
-
-        Raises
-        ------
-        ValueError
-            If fixed_width is not divisible by bin_size.
-        TypeError
-            If neither ranges_df nor intervals_path nor (feature_type, gtf_path) are provided.
 
         Examples
         --------
         >>> qn = QuantNado.open("store.zarr")
-        
-        >>> # Extract raw signal over promoters, fixed to 2 kb
-        >>> promoter_signal = qn.extract(
-        ...     feature_type="promoter",
-        ...     gtf_path="genes.gtf",
-        ...     fixed_width=2000
-        ... )
-        >>> promoter_signal.shape
-        (n_promoters, 2000, n_samples)
-        
-        >>> # Bin into 50 bp windows
+
+        >>> # 2 kb upstream, 2 kb downstream of TSS, binned at 50 bp (deeptools style)
         >>> binned = qn.extract(
-        ...     feature_type="promoter",
+        ...     feature_type="transcript",
         ...     gtf_path="genes.gtf",
-        ...     fixed_width=2000,
+        ...     upstream=2000,
+        ...     downstream=2000,
+        ...     anchor="start",
         ...     bin_size=50,
-        ...     bin_agg="mean"
         ... )
-        >>> binned.shape
-        (n_promoters, 40, n_samples)
-        
-        >>> # Extract from BED file without fixed_width (variable length)
-        >>> peaks_signal = qn.extract(intervals_path="peaks.bed")
-        >>> peaks_signal.shape
-        (n_peaks, max_peak_length, n_samples)  # NaN-padded to max length
-        
-        >>> # Materialize and plot
-        >>> data = binned.compute()
-        >>> import matplotlib.pyplot as plt
-        >>> plt.imshow(data[0, :, :].T, aspect='auto')  # 1st region, all samples
+        >>> binned.coords["bin"].values  # [-2000, -1950, ..., 1950]
+
+        >>> # Asymmetric: 1 kb upstream, 3 kb downstream
+        >>> binned = qn.extract(
+        ...     feature_type="transcript",
+        ...     gtf_path="genes.gtf",
+        ...     upstream=1000,
+        ...     downstream=3000,
+        ...     anchor="start",
+        ...     bin_size=100,
+        ... )
+
+        >>> # Symmetric (old style)
+        >>> qn.extract(feature_type="promoter", gtf_path="genes.gtf", fixed_width=2000)
         """
         return extract_byranges_signal(
             self.store,
@@ -506,21 +500,29 @@ class QuantNado:
             feature_type=feature_type,
             gtf_path=gtf_path,
             fixed_width=fixed_width,
+            upstream=upstream,
+            downstream=downstream,
             anchor=anchor,
             bin_size=bin_size,
             bin_agg=bin_agg,
             include_incomplete=not filter_incomplete,
         )
 
-    def feature_counts(
+    def count_features(
         self,
         gtf_file: str | Path | None = None,
         bed_file: str | Path | None = None,
         ranges: Any | None = None,
         feature_type: FeatureType | str = FeatureType.GENE,
+        feature_id_col: str | list[str] | None = None,
         aggregation: str | None = None,
+        strand: str | None = None,
         assays: list[str] | None = None,
         integerize: bool = False,
+        fillna_value: float | int | None = 0,
+        min_count: int = 1,
+        filter_zero: bool = False,
+        include_incomplete: bool = False,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Generate feature count matrix compatible with DESeq2.
@@ -535,12 +537,24 @@ class QuantNado:
             Pre-parsed genomic ranges (DataFrame or PyRanges).
         feature_type : FeatureType or str, default FeatureType.GENE
             GTF feature type to extract (e.g., 'gene', 'transcript', 'exon').
+        feature_id_col : str, optional
+            Column to use as feature identifiers and index the counts matrix.
+            For GTF inputs defaults to the first available of: gene_id, transcript_id,
+            gene_name, transcript_name.
         aggregation : str, optional
-            How to aggregate sub-features (e.g., 'sum' to merge exons into genes).
+            Column to aggregate sub-features by (e.g., 'gene_id' to sum exons to genes).
         assays : list of str, optional
             Which assays to include in output (e.g., ['sum']).
         integerize : bool, default False
             If True, round counts to nearest integer for DESeq2.
+        fillna_value : float or int or None, default 0
+            Value to fill NaNs before integerization. None skips filling.
+        min_count : int, default 1
+            Minimum count threshold for mean masking.
+        filter_zero : bool, default False
+            If True, remove features with zero counts across all samples.
+        include_incomplete : bool, default False
+            If True, include samples not yet marked complete.
 
         Returns
         -------
@@ -552,7 +566,7 @@ class QuantNado:
         Examples
         --------
         >>> qn = QuantNado.open("store.zarr")
-        >>> counts, features = qn.feature_counts("genes.gtf", feature_type="gene")
+        >>> counts, features = qn.count_features("genes.gtf", feature_type="gene")
         >>> counts.shape
         (n_genes, n_samples)
         """
@@ -562,9 +576,172 @@ class QuantNado:
             bed_file=bed_file,
             ranges_df=ranges,
             feature_type=feature_type,
+            feature_id_col=feature_id_col,
             aggregate_by=aggregation,
+            strand=strand,
             assay=assays[0] if assays else None,
             integerize=integerize,
+            fillna_value=fillna_value,
+            min_count=min_count,
+            filter_zero=filter_zero,
+            include_incomplete=include_incomplete,
+        )
+
+    def metaplot(
+        self,
+        data: xr.DataArray,
+        *,
+        modality: "str | None" = None,
+        samples: list[str] | None = None,
+        groups: "dict[str, list[str]] | None" = None,
+        flip_minus_strand: bool = True,
+        error_stat: "str | None" = "sem",
+        palette: "str | list | dict | None" = None,
+        reference_point: "float | None" = 0,
+        reference_label: str = "TSS",
+        xlabel: str = "Relative position",
+        ylabel: "str | None" = None,
+        title: str = "Metagene profile",
+        figsize: "tuple[float, float]" = (8, 4),
+        ax: Any = None,
+        filepath: "str | Path | None" = None,
+    ) -> Any:
+        """
+        Plot a metagene profile from the output of ``qn.extract()``.
+
+        Thin wrapper around :func:`quantnado.dataset.plot.metaplot`.
+        See that function for full parameter documentation.
+
+        Parameters
+        ----------
+        data : DataArray
+            Output of ``qn.extract()`` — dimensions
+            ``(interval, relative_position|bin, sample)``.
+        samples : list of str, optional
+            Subset of samples to plot (ignored when ``groups`` is provided).
+        groups : dict {label: [samples]}, optional
+            Group samples for averaging. One line per group with inter-sample
+            error bands. Example: ``{"ctrl": ["s1","s2"], "treat": ["s3","s4"]}``
+        flip_minus_strand : bool, default True
+            Reverse minus-strand intervals before averaging so all profiles
+            run 5'→3'.
+        error_stat : {"sem", "std", None}, default "sem"
+            Shaded confidence band around each line.
+            ``"sem"`` matches deeptools plotProfile default.
+        reference_point : float or None, default 0
+            X position of the vertical reference line (e.g. TSS). ``None`` omits it.
+        reference_label : str, default "TSS"
+            Legend label for the reference line.
+        xlabel, ylabel, title : str
+            Axis labels and figure title.
+        ax : matplotlib Axes, optional
+            Axes to draw on; creates a new figure if None.
+        filepath : str or Path, optional
+            Save figure to this path if provided.
+
+        Returns
+        -------
+        ax : matplotlib.axes.Axes
+        """
+        return metaplot(
+            data,
+            modality=modality,
+            samples=samples,
+            groups=groups,
+            flip_minus_strand=flip_minus_strand,
+            error_stat=error_stat,
+            palette=palette,
+            reference_point=reference_point,
+            reference_label=reference_label,
+            xlabel=xlabel,
+            ylabel=ylabel,
+            title=title,
+            figsize=figsize,
+            ax=ax,
+            filepath=filepath,
+        )
+
+    def tornadoplot(
+        self,
+        data: xr.DataArray,
+        *,
+        modality: "str | None" = None,
+        samples: "list[str] | None" = None,
+        sample_names: "list[str] | None" = None,
+        groups: "dict[str, list[str]] | None" = None,
+        flip_minus_strand: bool = True,
+        sort_by: "str | None" = "mean",
+        vmin: "float | None" = None,
+        vmax: "float | None" = None,
+        cmap: "str | None" = None,
+        reference_point: "float | None" = 0,
+        reference_label: str = "TSS",
+        xlabel: str = "Relative position",
+        ylabel: "str | None" = None,
+        title: str = "Signal heatmap",
+        figsize: "tuple[float, float] | None" = None,
+        filepath: "str | Path | None" = None,
+    ) -> list:
+        """
+        Tornado / heatmap plot from the output of ``qn.extract()``.
+
+        One panel per sample (or group). Rows = intervals, colour = signal.
+
+        Parameters
+        ----------
+        data : DataArray
+            Output of ``qn.extract()``.
+        samples : list of str, optional
+            Subset of samples (one panel each). Ignored when ``groups`` is set.
+        sample_names : list of str, optional
+            Display names for samples. Must match length of ``samples``.
+        groups : dict {label: [samples]}, optional
+            Average samples within each group (one panel per group).
+        flip_minus_strand : bool, default True
+            Reverse minus-strand intervals before plotting.
+        sort_by : {"mean", "max", None}, default "mean"
+            Sort intervals by signal (descending) using the first panel.
+        vmin, vmax : float, optional
+            Colour scale limits. Defaults: 0 and 99th percentile.
+        cmap : str, default "RdYlBu_r"
+            Matplotlib colormap.
+        reference_point : float or None, default 0
+            X position of the vertical reference line. ``None`` omits it.
+        reference_label : str, default "TSS"
+            Label for the reference line.
+        xlabel : str, default "Relative position"
+            X-axis label.
+        ylabel : str, optional
+            Y-axis label. Defaults to "Intervals (n=<count>)".
+        title : str, default "Signal heatmap"
+            Figure suptitle.
+        figsize : tuple, optional
+            Figure size. Auto-computed if None.
+        filepath : str or Path, optional
+            Save figure to this path if provided.
+
+        Returns
+        -------
+        axes : list of matplotlib.axes.Axes
+        """
+        return tornadoplot(
+            data,
+            modality=modality,
+            samples=samples,
+            sample_names=sample_names,
+            groups=groups,
+            flip_minus_strand=flip_minus_strand,
+            sort_by=sort_by,
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+            reference_point=reference_point,
+            reference_label=reference_label,
+            xlabel=xlabel,
+            ylabel=ylabel,
+            title=title,
+            figsize=figsize,
+            filepath=filepath,
         )
 
     def pca(

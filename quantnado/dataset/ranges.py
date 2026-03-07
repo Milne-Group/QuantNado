@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-import pyranges as pr
+import pyranges1 as pr
 import dask.array as da
 
 
@@ -12,16 +12,16 @@ def merge_ranges(ranges: pr.PyRanges, columns: list[str] | None = None, strand: 
 
     cols = columns or ["Gene_name", "Gene_type", "Gene_id", "Tag", "Level"]
 
-    clustered = ranges.cluster(strand=strand)
-    merged = clustered.merge(by="Cluster", strand=strand)
+    clustered = ranges.cluster_overlaps(use_strand=strand or False)
+    merged = clustered.merge_overlaps(use_strand=strand or False, match_by="Cluster")
 
     for col in cols:
         values = []
-        for cluster_id in merged.Cluster.values:
-            mask = clustered.Cluster.values == cluster_id
-            joined = sep.join([str(v) for v in getattr(clustered, col).values[mask]])
+        for cluster_id in merged["Cluster"].values:
+            mask = clustered["Cluster"].values == cluster_id
+            joined = sep.join([str(v) for v in clustered[col].values[mask]])
             values.append(joined)
-        setattr(merged, col, np.asarray(values))
+        merged[col] = np.asarray(values)
 
     return merged
 
@@ -31,9 +31,9 @@ def get_fixed_windows(contig_lengths: dict[str, int], window_size: int = 50_000)
     chroms = list(contig_lengths.keys())
     starts = [0] * len(chroms)
     ends = [contig_lengths[c] for c in chroms]
-    gr = pr.from_dict({"Chromosome": chroms, "Start": starts, "End": ends})
-    gr = gr.window(window_size, strand=False)
-    gr.Ranges_ID = np.arange(len(gr))
+    gr = pr.PyRanges({"Chromosome": chroms, "Start": starts, "End": ends})
+    gr = gr.window_ranges(window_size, use_strand=False)
+    gr["Ranges_ID"] = np.arange(len(gr))
     return gr
 
 
@@ -49,12 +49,9 @@ def masked_array_fromranges(positions_array: da.Array | np.ndarray, contig: str,
     max_pos = int(np.max(positions_array))
     mask = np.zeros(max_pos + 1, dtype=bool)
 
-    try:
-        df = ranges.dfs[contig]
-    except KeyError:
-        return mask[positions_array]
+    df = ranges.loci[contig]
 
-    for start, end in zip(df.Start.values, df.End.values):
+    for start, end in zip(df["Start"].values, df["End"].values):
         mask[start:end] = True
 
     return mask[positions_array]
@@ -79,19 +76,19 @@ def ranges_loader(
         if not ranges:
             raise ValueError("No ranges provided")
         ranges = pr.concat(ranges)
-        ranges.Ranges_ID = np.arange(len(ranges))
+        ranges["Ranges_ID"] = np.arange(len(ranges))
 
     if not isinstance(ranges, pr.PyRanges):
         raise ValueError("ranges must be a PyRanges object or list of them")
 
     if ranges_are_1based:
-        ranges.Start = ranges.Start - 1
-        ranges.End = ranges.End - 1
+        ranges["Start"] = ranges["Start"] - 1
+        ranges["End"] = ranges["End"] - 1
 
-    if getattr(ranges, "stranded", False):
+    if ranges.strand_valid:
         raise ValueError("Stranded ranges not supported; drop Strand first")
 
     if merge_intervals:
-        ranges = ranges.merge()
+        ranges = ranges.merge_overlaps()
 
     return ranges

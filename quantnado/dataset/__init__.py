@@ -5,9 +5,10 @@ from .features import (
     extract_promoters,
     load_gtf,
 )
-from .counts import feature_counts
+from .counts import count_features
 from .metadata import extract_metadata
 from .pca import plot_pca_scatter, plot_pca_scree, run_pca
+from .plot import metaplot, tornadoplot
 from .ranges import (
     default_position_mask,
     get_fixed_windows,
@@ -17,3 +18,6 @@ from .ranges import (
 )
 from .reduce import reduce_byranges_signal, extract_byranges_signal
 from .bam import BamStore
+from .methylation import MethylStore
+from .variants import VariantStore
+from .multiomics import MultiomicsStore

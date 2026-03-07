@@ -5,7 +5,7 @@ import dask.array as da
 import numpy as np
 import seaborn as sns
 import xarray as xr
-from dask_ml.decomposition import PCA
+from sklearn.decomposition import PCA
 
 __all__ = [
     "run_pca",
@@ -141,17 +141,33 @@ def run_pca(
             std = np.nanstd(array, axis=0)
             array = (array - mean) / np.maximum(std, 1e-12)
 
+    # Materialise dask arrays — the sample count is always small enough for in-memory PCA.
+    if isinstance(array, da.Array):
+        array = array.compute()
+    if not isinstance(array, np.ndarray):
+        array = np.asarray(array)
+
     pca_kwargs = {"n_components": n_components, **kwargs}
     if random_state is not None:
         pca_kwargs["random_state"] = random_state
 
     pca = PCA(**pca_kwargs)
-    # compute_chunk_sizes is only available on dask arrays; guard for numpy inputs
-    if isinstance(array, da.Array):
-        array = array.rechunk({0: -1}).compute_chunk_sizes()
-
     pca_object = pca.fit(array)
-    transformed = pca_object.transform(array)
+    transformed_np = pca_object.transform(array)
+
+    sample_dim = arr_2d.dims[0]
+    sample_coord = arr_2d.coords[sample_dim] if sample_dim in arr_2d.coords else np.arange(array.shape[0])
+    n_components_out = transformed_np.shape[1]
+
+    # Return a lazy dask-backed DataArray so callers can call `.compute()`.
+    transformed = xr.DataArray(
+        da.from_array(transformed_np, chunks=transformed_np.shape),
+        dims=(sample_dim, "component"),
+        coords={
+            sample_dim: sample_coord,
+            "component": np.arange(1, n_components_out + 1),
+        },
+    )
 
     return pca_object, transformed
 
@@ -160,7 +176,7 @@ def plot_pca_scree(pca_object, filepath: str | None = None, **kwargs):
     """Bar plot of explained variance ratios."""
 
     exp_var = np.asarray(pca_object.explained_variance_ratio_)
-    labels = [f"PC{i + 1} ({exp_var[i]:.2f})" for i in range(exp_var.size)]
+    labels = [f"PC{i + 1}\n({exp_var[i]*100:.1f}%)" for i in range(exp_var.size)]
     plot = sns.catplot(x=labels, y=exp_var, kind="bar", **kwargs)
     plot.set_ylabels("Explained variance")
     plot.set_xlabels("Principal components")
