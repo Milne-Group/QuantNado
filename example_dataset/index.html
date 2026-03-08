@@ -590,7 +590,7 @@
   <span class="md-ellipsis">
     
   
-    Basics
+    Workflows
   
 
     
@@ -710,6 +710,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -792,6 +798,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../api/multiomicsstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MultiomicsStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../api/bamstore/" class="md-nav__link">
         
   
@@ -800,6 +834,62 @@
     
   
     BamStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/methylstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MethylStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/variantstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    VariantStore
   
 
     
@@ -3165,7 +3255,7 @@ qn = QuantNado(ms.coverage)</div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="application/vnd.jupyter.stderr" tabindex="0">
 <pre><span class="ansi-green-fg">2026-03-07 18:10:04.289</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">quantnado.dataset.bam</span>:<span class="ansi-cyan-fg">_load_existing</span>:<span class="ansi-cyan-fg">374</span> - <span class="ansi-bold">Resuming existing store at multiomics_run/dataset/coverage.zarr</span>
 <span class="ansi-green-fg">2026-03-07 18:10:04.292</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">quantnado.dataset.methylation</span>:<span class="ansi-cyan-fg">_load_existing</span>:<span class="ansi-cyan-fg">178</span> - <span class="ansi-bold">Resuming existing MethylStore at multiomics_run/dataset/methylation.zarr</span>
-<span class="ansi-green-fg">2026-03-07 18:10:04.294</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">quantnado.dataset.variants</span>:<span class="ansi-cyan-fg">_load_existing</span>:<span class="ansi-cyan-fg">228</span> - <span class="ansi-bold">Resuming existing VariantStore at multiomics_run/dataset/variants.zarr</span>
+<span class="ansi-green-fg">2026-03-07 18:10:04.294</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">quantnado.dataset.store_variants</span>:<span class="ansi-cyan-fg">_load_existing</span>:<span class="ansi-cyan-fg">228</span> - <span class="ansi-bold">Resuming existing VariantStore at multiomics_run/dataset/variants.zarr</span>
 </pre>
 </div>
 </div>
@@ -5214,7 +5304,7 @@ plt.show()</div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
 <hr/>
-<h2 id="variant-analysis">Variant Analysis<a class="anchor-link" href="#variant-analysis">¶</a></h2><p><code>ms.variants</code> is a <code>VariantStore</code> — a sparse Zarr store where each chromosome has:</p>
+<h2 id="variant-analysis">Variant Analysis<a class="anchor-link" href="#variant-analysis">¶</a></h2><p><code>msstore_variants</code> is a <code>VariantStore</code> — a sparse Zarr store where each chromosome has:</p>
 <ul>
 <li><code>positions</code> — 1-based variant positions (union across all samples)</li>
 <li><code>genotype</code> — integer encoded: <code>-1</code> missing, <code>0</code> hom-ref, <code>1</code> het, <code>2</code> hom-alt</li>
@@ -5243,7 +5333,7 @@ plt.show()</div>
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">var</span> <span class="o">=</span> <span class="n">ms</span><span class="o">.</span><span class="n">variants</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">var</span> <span class="o">=</span> <span class="n">msstore_variants</span>
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Samples : </span><span class="si">{</span><span class="n">var</span><span class="o">.</span><span class="n">sample_names</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 <span class="k">for</span> <span class="n">chrom</span> <span class="ow">in</span> <span class="n">var</span><span class="o">.</span><span class="n">chromosomes</span><span class="p">:</span>
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  </span><span class="si">{</span><span class="n">chrom</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">var</span><span class="o">.</span><span class="n">get_positions</span><span class="p">(</span><span class="n">chrom</span><span class="p">))</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2"> variant sites"</span><span class="p">)</span>
@@ -5253,7 +5343,7 @@ plt.show()</div>
 <span class="nb">print</span><span class="p">()</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">gt_xr</span><span class="p">[</span><span class="s2">"chr21"</span><span class="p">])</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-31">var = ms.variants
+<div class="clipboard-copy-txt" id="cell-31">var = msstore_variants
 print(f"Samples : {var.sample_names}")
 for chrom in var.chromosomes:
     print(f"  {chrom}: {len(var.get_positions(chrom)):,} variant sites")

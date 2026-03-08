@@ -496,10 +496,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#key-features" class="md-nav__link">
+  <a href="#quick-example" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key Features
+        Quick Example
       
     </span>
   </a>
@@ -507,41 +507,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#common-workflows" class="md-nav__link">
+  <a href="#key-features" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Common Workflows
+        Key Features
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Common Workflows">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#process-aligned-bam-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Process Aligned BAM Files
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#call-peaks-from-signal-tracks" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Call Peaks from Signal Tracks
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -718,7 +690,7 @@
   <span class="md-ellipsis">
     
   
-    Basics
+    Workflows
   
 
     
@@ -838,6 +810,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -920,6 +898,34 @@
   
   
     <li class="md-nav__item">
+      <a href="api/multiomicsstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MultiomicsStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="api/bamstore/" class="md-nav__link">
         
   
@@ -928,6 +934,62 @@
     
   
     BamStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="api/methylstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MethylStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="api/variantstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    VariantStore
   
 
     
@@ -1232,10 +1294,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#key-features" class="md-nav__link">
+  <a href="#quick-example" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key Features
+        Quick Example
       
     </span>
   </a>
@@ -1243,41 +1305,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#common-workflows" class="md-nav__link">
+  <a href="#key-features" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Common Workflows
+        Key Features
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Common Workflows">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#process-aligned-bam-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Process Aligned BAM Files
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#call-peaks-from-signal-tracks" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Call Peaks from Signal Tracks
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1345,50 +1379,94 @@
 
 
 <h1 id="quantnado">QuantNado<a class="headerlink" href="#quantnado" title="Anchor link to this section">&para;</a></h1>
-<p><strong>Fast, efficient processing of multi-modal NGS data into genomic datasets</strong></p>
-<p>QuantNado streamlines the processing of ChIP-seq, ATAC-seq, CUT&amp;Tag, and other sequencing experiments. Convert aligned BAM files into indexed Zarr datasets for downstream analysis, or call peaks directly from alignment tracks.</p>
+<p><strong>Multi-modal genomic signal storage and analysis</strong></p>
 <p><img alt="logo" src="assets/images/logo.png" style="display: block; margin: 0 auto; width: 200px;" /></p>
+<p>QuantNado converts aligned genomic files (BAM, bedGraph, VCF) into efficient Zarr-backed stores and provides a unified Python API for signal extraction, methylation analysis, variant handling, and visualisation.</p>
 <h2 id="what-quantnado-does">What QuantNado Does<a class="headerlink" href="#what-quantnado-does" title="Anchor link to this section">&para;</a></h2>
-<ul>
-<li><strong>BAM → Zarr conversion</strong>: Transform BAM files into efficient, queryable genomic datasets</li>
-<li><strong>Quantile-based peak calling</strong>: Detect enriched regions from bigWig tracks</li>
-<li><strong>Parallel processing</strong>: Process multiple samples efficiently with multi-threading</li>
-<li><strong>Zarr-backed storage</strong>: Space-efficient storage with lazy loading capabilities</li>
-</ul>
+<table>
+<thead>
+<tr>
+<th>Modality</th>
+<th>Input</th>
+<th>Stored data</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Coverage</strong></td>
+<td>BAM files</td>
+<td>per-base read depth, dense (sample × position)</td>
+</tr>
+<tr>
+<td><strong>Methylation</strong></td>
+<td>MethylDackel bedGraph</td>
+<td>CpG methylation %, counts, sparse</td>
+</tr>
+<tr>
+<td><strong>Variants</strong></td>
+<td>VCF.gz files</td>
+<td>genotype, allele depths, quality, sparse</td>
+</tr>
+</tbody>
+</table>
+<p>All modalities live in a single directory (<code>MultiomicsStore</code>) and are accessed through one Python object.</p>
+<h2 id="quick-example">Quick Example<a class="headerlink" href="#quick-example" title="Anchor link to this section">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">quantnado</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">qn</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># Create a multi-modal dataset</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">qn</span><span class="o">.</span><span class="n">create_dataset</span><span class="p">(</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">store_dir</span><span class="o">=</span><span class="s2">&quot;dataset/&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">bam_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;atac.bam&quot;</span><span class="p">,</span> <span class="s2">&quot;chip.bam&quot;</span><span class="p">],</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">bedgraph_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;meth-rep1.bedGraph&quot;</span><span class="p">,</span> <span class="s2">&quot;meth-rep2.bedGraph&quot;</span><span class="p">],</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">vcf_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;snp.vcf.gz&quot;</span><span class="p">],</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">bedgraph_sample_names</span><span class="o">=</span><span class="k">lambda</span> <span class="n">p</span><span class="p">:</span> <span class="n">p</span><span class="o">.</span><span class="n">stem</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;_hg38&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">],</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="c1"># Open and explore</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;dataset/&quot;</span><span class="p">)</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="nb">print</span><span class="p">(</span><span class="n">ds</span><span class="o">.</span><span class="n">modalities</span><span class="p">)</span>   <span class="c1"># [&#39;coverage&#39;, &#39;methylation&#39;, &#39;variants&#39;]</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="c1"># Coverage analysis</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="n">reduced</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="s2">&quot;promoters.bed&quot;</span><span class="p">,</span> <span class="n">reduction</span><span class="o">=</span><span class="s2">&quot;mean&quot;</span><span class="p">)</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="n">pca_obj</span><span class="p">,</span> <span class="n">pca_result</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">pca</span><span class="p">(</span><span class="n">reduced</span><span class="p">[</span><span class="s2">&quot;mean&quot;</span><span class="p">])</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="n">counts</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">count_features</span><span class="p">(</span><span class="s2">&quot;genes.gtf&quot;</span><span class="p">,</span> <span class="n">feature_type</span><span class="o">=</span><span class="s2">&quot;gene&quot;</span><span class="p">)</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="c1"># Visualise</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="n">binned</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">extract</span><span class="p">(</span><span class="n">feature_type</span><span class="o">=</span><span class="s2">&quot;transcript&quot;</span><span class="p">,</span> <span class="n">gtf_path</span><span class="o">=</span><span class="s2">&quot;genes.gtf&quot;</span><span class="p">,</span>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>                    <span class="n">upstream</span><span class="o">=</span><span class="mi">2000</span><span class="p">,</span> <span class="n">downstream</span><span class="o">=</span><span class="mi">2000</span><span class="p">,</span> <span class="n">anchor</span><span class="o">=</span><span class="s2">&quot;start&quot;</span><span class="p">,</span> <span class="n">bin_size</span><span class="o">=</span><span class="mi">50</span><span class="p">)</span>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="n">ds</span><span class="o">.</span><span class="n">metaplot</span><span class="p">(</span><span class="n">binned</span><span class="p">,</span> <span class="n">modality</span><span class="o">=</span><span class="s2">&quot;coverage&quot;</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">&quot;Metagene profile&quot;</span><span class="p">)</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="c1"># Methylation</span>
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="n">binned_meth</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">extract</span><span class="p">(</span><span class="n">modality</span><span class="o">=</span><span class="s2">&quot;methylation&quot;</span><span class="p">,</span> <span class="n">feature_type</span><span class="o">=</span><span class="s2">&quot;transcript&quot;</span><span class="p">,</span>
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>                         <span class="n">gtf_path</span><span class="o">=</span><span class="s2">&quot;genes.gtf&quot;</span><span class="p">,</span> <span class="n">upstream</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">downstream</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>                         <span class="n">anchor</span><span class="o">=</span><span class="s2">&quot;start&quot;</span><span class="p">,</span> <span class="n">bin_size</span><span class="o">=</span><span class="mi">50</span><span class="p">)</span>
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="n">ds</span><span class="o">.</span><span class="n">metaplot</span><span class="p">(</span><span class="n">binned_meth</span><span class="p">,</span> <span class="n">modality</span><span class="o">=</span><span class="s2">&quot;methylation&quot;</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">&quot;CpG methylation at TSS&quot;</span><span class="p">)</span>
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="c1"># Sub-store access</span>
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="n">ds</span><span class="o">.</span><span class="n">coverage</span>    <span class="c1"># BamStore</span>
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a><span class="n">ds</span><span class="o">.</span><span class="n">methylation</span> <span class="c1"># MethylStore</span>
+</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a><span class="n">ds</span><span class="o">.</span><span class="n">variants</span>    <span class="c1"># VariantStore</span>
+</span></code></pre></div>
 <h2 id="key-features">Key Features<a class="headerlink" href="#key-features" title="Anchor link to this section">&para;</a></h2>
-<p>✓ <strong>Fast</strong>: Multi-threaded BAM processing<br />
-✓ <strong>Efficient</strong>: Zarr storage compresses and streams data efficiently<br />
-✓ <strong>Flexible</strong>: Works with any organism and any genome build<br />
-✓ <strong>Reproducible</strong>: Full metadata tracking and resume support<br />
-✓ <strong>Accessible</strong>: Simple CLI or full Python API  </p>
-<h2 id="common-workflows">Common Workflows<a class="headerlink" href="#common-workflows" title="Anchor link to this section">&para;</a></h2>
-<h3 id="process-aligned-bam-files">Process Aligned BAM Files<a class="headerlink" href="#process-aligned-bam-files" title="Anchor link to this section">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>--output<span class="w"> </span>my_dataset.zarr<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--max-workers<span class="w"> </span><span class="m">8</span>
-</span></code></pre></div>
-<h3 id="call-peaks-from-signal-tracks">Call Peaks from Signal Tracks<a class="headerlink" href="#call-peaks-from-signal-tracks" title="Anchor link to this section">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./signal_tracks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.98
-</span></code></pre></div>
+<ul>
+<li><strong>Unified entry point</strong> — <code>qn.open()</code> / <code>qn.create_dataset()</code> for all modalities</li>
+<li><strong>Lazy loading</strong> — Zarr + Dask; only reads what you ask for</li>
+<li><strong>Multi-modal</strong> — coverage, methylation, and variant data in one store</li>
+<li><strong>Analysis built-in</strong> — reduce, PCA, feature counts, metaplots, tornado plots</li>
+<li><strong>Resumable</strong> — skip completed samples when re-running</li>
+</ul>
 <h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Anchor link to this section">&para;</a></h2>
 <ul>
-<li><strong><a href="installation/">Installation</a></strong> - Setup and installation</li>
-<li><strong><a href="quick_start/">Quick Start</a></strong> - First analysis in 10 minutes</li>
-<li><strong><a href="basic_usage/">Basic Usage</a></strong> - Common analysis patterns</li>
-<li><strong><a href="cli/">CLI Reference</a></strong> - All command-line options</li>
-<li><strong><a href="api/quantnado/">API Reference</a></strong> - Python API documentation</li>
-<li><strong><a href="faq/">FAQ</a></strong> - Common questions</li>
-<li><strong><a href="troubleshooting/">Troubleshooting</a></strong> - Solving common issues</li>
+<li><strong><a href="installation/">Installation</a></strong> — Setup and dependencies</li>
+<li><strong><a href="quick_start/">Quick Start</a></strong> — First analysis in minutes</li>
+<li><strong><a href="basic_usage/">Usage Guide</a></strong> — Coverage, methylation, and variant workflows</li>
+<li><strong><a href="cli/create_dataset/">CLI Reference</a></strong> — Command-line interface</li>
+<li><strong><a href="api/quantnado/">API Reference</a></strong> — Full Python API</li>
 </ul>
 <h2 id="citation">Citation<a class="headerlink" href="#citation" title="Anchor link to this section">&para;</a></h2>
 <p>If you use QuantNado, please cite:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>QuantNado: Efficient genomic signal quantification and peak calling
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>Milne Group, University of Oxford
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>QuantNado: Efficient genomic signal quantification and analysis
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>Milne Group, University of Oxford
 </span></code></pre></div>
 
 

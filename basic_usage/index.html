@@ -29,7 +29,7 @@
     
     
       
-        <title>Basics - QuantNado</title>
+        <title>Workflows - QuantNado</title>
       
     
     
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#basic-usage" class="md-skip">
+        <a href="#usage-guide" class="md-skip">
           Skip to content
         </a>
       
@@ -117,7 +117,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Basics
+              Workflows
             
           </span>
         </div>
@@ -602,7 +602,7 @@
   <span class="md-ellipsis">
     
   
-    Basics
+    Workflows
   
 
     
@@ -620,7 +620,7 @@
   <span class="md-ellipsis">
     
   
-    Basics
+    Workflows
   
 
     
@@ -646,6 +646,200 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#opening-a-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening a Dataset
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coverage-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Coverage Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reduce-signal-over-regions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reduce Signal Over Regions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pca" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PCA
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feature-counts-deseq2-compatible" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature Counts (DESeq2-compatible)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metagene-and-tornado-plots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metagene and Tornado Plots
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#methylation-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methylation Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Methylation Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#inspect-the-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect the Store
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#available-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Available Variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metagene-and-tornado-plots_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metagene and Tornado Plots
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feature-level-methylation-stats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature-level Methylation Stats
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#variant-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Variant Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Variant Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#inspect-the-store_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect the Store
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#available-variables_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Available Variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extract-as-xarray" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extract as xarray
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#creating-datasets" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -658,83 +852,6 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#from-single-bam-file" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        From Single BAM File
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#from-multiple-bam-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        From Multiple BAM Files
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#with-sample-metadata" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        With Sample Metadata
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#peak-calling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Peak Calling
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Peak Calling">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#basic-peak-calling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic Peak Calling
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#filtering-and-merging" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Filtering and Merging
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#python-api" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -743,36 +860,13 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Python API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#loading-a-dataset" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Loading a Dataset
-      
-    </span>
-  </a>
-  
 </li>
         
           <li class="md-nav__item">
-  <a href="#accessing-data" class="md-nav__link">
+  <a href="#command-line" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Accessing Data
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#creating-datasets-programmatically" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Creating Datasets Programmatically
+        Command Line
       
     </span>
   </a>
@@ -785,10 +879,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#common-issues" class="md-nav__link">
+  <a href="#metadata-management" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Common Issues
+        Metadata Management
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Questions
       
     </span>
   </a>
@@ -910,6 +1015,12 @@
       
         
       
+        
+      
+        
+      
+        
+      
     
     
     
@@ -992,6 +1103,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../api/multiomicsstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MultiomicsStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../api/bamstore/" class="md-nav__link">
         
   
@@ -1000,6 +1139,62 @@
     
   
     BamStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/methylstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MethylStore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/variantstore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    VariantStore
   
 
     
@@ -1293,6 +1488,200 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#opening-a-dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening a Dataset
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coverage-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Coverage Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reduce-signal-over-regions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reduce Signal Over Regions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pca" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PCA
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feature-counts-deseq2-compatible" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature Counts (DESeq2-compatible)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metagene-and-tornado-plots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metagene and Tornado Plots
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#methylation-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methylation Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Methylation Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#inspect-the-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect the Store
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#available-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Available Variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metagene-and-tornado-plots_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metagene and Tornado Plots
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feature-level-methylation-stats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature-level Methylation Stats
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#variant-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Variant Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Variant Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#inspect-the-store_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspect the Store
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#available-variables_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Available Variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extract-as-xarray" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extract as xarray
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#creating-datasets" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1305,83 +1694,6 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#from-single-bam-file" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        From Single BAM File
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#from-multiple-bam-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        From Multiple BAM Files
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#with-sample-metadata" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        With Sample Metadata
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#peak-calling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Peak Calling
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Peak Calling">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#basic-peak-calling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic Peak Calling
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#filtering-and-merging" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Filtering and Merging
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#python-api" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1390,36 +1702,13 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Python API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#loading-a-dataset" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Loading a Dataset
-      
-    </span>
-  </a>
-  
 </li>
         
           <li class="md-nav__item">
-  <a href="#accessing-data" class="md-nav__link">
+  <a href="#command-line" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Accessing Data
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#creating-datasets-programmatically" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Creating Datasets Programmatically
+        Command Line
       
     </span>
   </a>
@@ -1432,10 +1721,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#common-issues" class="md-nav__link">
+  <a href="#metadata-management" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Common Issues
+        Metadata Management
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Questions
       
     </span>
   </a>
@@ -1523,100 +1823,250 @@
   
 
 
-<h1 id="basic-usage">Basic Usage<a class="headerlink" href="#basic-usage" title="Anchor link to this section">&para;</a></h1>
-<p>Common workflows and analysis patterns with QuantNado.</p>
+<h1 id="usage-guide">Usage Guide<a class="headerlink" href="#usage-guide" title="Anchor link to this section">&para;</a></h1>
+<p>Detailed workflows for each modality — coverage, methylation, and variants.</p>
+<h2 id="opening-a-dataset">Opening a Dataset<a class="headerlink" href="#opening-a-dataset" title="Anchor link to this section">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">quantnado</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">qn</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">ds</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;dataset/&quot;</span><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">print</span><span class="p">(</span><span class="n">ds</span><span class="p">)</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># MultiomicsStore at &#39;dataset/&#39;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1">#   modalities : [&#39;coverage&#39;, &#39;methylation&#39;, &#39;variants&#39;]</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1">#   coverage   : 3 samples, 24 chrom(s)</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1">#   methylation: 1 samples, 24 chrom(s)</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="c1">#   variants   : 1 samples, 24 chrom(s)</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="nb">print</span><span class="p">(</span><span class="n">ds</span><span class="o">.</span><span class="n">modalities</span><span class="p">)</span>   <span class="c1"># [&#39;coverage&#39;, &#39;methylation&#39;, &#39;variants&#39;]</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="nb">print</span><span class="p">(</span><span class="n">ds</span><span class="o">.</span><span class="n">chromosomes</span><span class="p">)</span>  <span class="c1"># [&#39;chr1&#39;, &#39;chr2&#39;, ..., &#39;chrX&#39;]</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="nb">print</span><span class="p">(</span><span class="n">ds</span><span class="o">.</span><span class="n">samples</span><span class="p">)</span>      <span class="c1"># list of coverage sample IDs (if coverage available)</span>
+</span></code></pre></div>
+<p>Sub-stores are accessed as properties:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">ds</span><span class="o">.</span><span class="n">coverage</span>    <span class="c1"># BamStore  (or None if not present)</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">ds</span><span class="o">.</span><span class="n">methylation</span> <span class="c1"># MethylStore (or None if not present)</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">ds</span><span class="o">.</span><span class="n">variants</span>    <span class="c1"># VariantStore (or None if not present)</span>
+</span></code></pre></div>
+<hr />
+<h2 id="coverage-analysis">Coverage Analysis<a class="headerlink" href="#coverage-analysis" title="Anchor link to this section">&para;</a></h2>
+<p>Coverage is stored as dense per-base read depth (sample × position) in Zarr.</p>
+<h3 id="metadata">Metadata<a class="headerlink" href="#metadata" title="Anchor link to this section">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">metadata</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">get_metadata</span><span class="p">()</span>    <span class="c1"># combined metadata across all modalities</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">print</span><span class="p">(</span><span class="n">metadata</span><span class="o">.</span><span class="n">columns</span><span class="p">)</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Update or extend</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">ds</span><span class="o">.</span><span class="n">set_metadata</span><span class="p">(</span><span class="n">new_df</span><span class="p">)</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">ds</span><span class="o">.</span><span class="n">update_metadata</span><span class="p">({</span><span class="s2">&quot;batch&quot;</span><span class="p">:</span> <span class="s2">&quot;batch1&quot;</span><span class="p">})</span>
+</span></code></pre></div>
+<h3 id="reduce-signal-over-regions">Reduce Signal Over Regions<a class="headerlink" href="#reduce-signal-over-regions" title="Anchor link to this section">&para;</a></h3>
+<p>Collapse per-base signal over a BED file of regions into a (regions × samples) matrix:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Returns an xarray Dataset with variables: sum, count, mean</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">reduced</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="s2">&quot;promoters.bed&quot;</span><span class="p">,</span> <span class="n">reduction</span><span class="o">=</span><span class="s2">&quot;mean&quot;</span><span class="p">)</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">mat</span> <span class="o">=</span> <span class="n">reduced</span><span class="p">[</span><span class="s2">&quot;mean&quot;</span><span class="p">]</span>          <span class="c1"># DataArray: (n_regions, n_samples)</span>
+</span></code></pre></div>
+<h3 id="pca">PCA<a class="headerlink" href="#pca" title="Anchor link to this section">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">pca_obj</span><span class="p">,</span> <span class="n">pca_result</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">pca</span><span class="p">(</span><span class="n">reduced</span><span class="p">[</span><span class="s2">&quot;mean&quot;</span><span class="p">],</span> <span class="n">n_components</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># Scree plot</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">qn</span><span class="o">.</span><span class="n">plot_pca_scree</span><span class="p">(</span><span class="n">pca_obj</span><span class="p">)</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="c1"># Scatter coloured by a metadata column</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">qn</span><span class="o">.</span><span class="n">plot_pca_scatter</span><span class="p">(</span><span class="n">pca_obj</span><span class="p">,</span> <span class="n">pca_result</span><span class="p">,</span> <span class="n">colour_by</span><span class="o">=</span><span class="s2">&quot;assay&quot;</span><span class="p">,</span> <span class="n">metadata_df</span><span class="o">=</span><span class="n">metadata</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="feature-counts-deseq2-compatible">Feature Counts (DESeq2-compatible)<a class="headerlink" href="#feature-counts-deseq2-compatible" title="Anchor link to this section">&para;</a></h3>
+<p>Count reads over genomic features from a GTF:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">counts</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">count_features</span><span class="p">(</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="s2">&quot;genes.gtf&quot;</span><span class="p">,</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">feature_type</span><span class="o">=</span><span class="s2">&quot;gene&quot;</span><span class="p">,</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">integerize</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>   <span class="c1"># round to integers for DESeq2</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="p">)</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="c1"># counts: (n_genes, n_samples) array</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># features: DataFrame with chr, start, end, gene_id, ...</span>
+</span></code></pre></div>
+<h3 id="metagene-and-tornado-plots">Metagene and Tornado Plots<a class="headerlink" href="#metagene-and-tornado-plots" title="Anchor link to this section">&para;</a></h3>
+<p>Extract binned signal over windows anchored to genomic features:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">binned</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">extract</span><span class="p">(</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="n">feature_type</span><span class="o">=</span><span class="s2">&quot;transcript&quot;</span><span class="p">,</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">gtf_path</span><span class="o">=</span><span class="s2">&quot;genes.gtf&quot;</span><span class="p">,</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">upstream</span><span class="o">=</span><span class="mi">2000</span><span class="p">,</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">downstream</span><span class="o">=</span><span class="mi">2000</span><span class="p">,</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">anchor</span><span class="o">=</span><span class="s2">&quot;start&quot;</span><span class="p">,</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="n">bin_size</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="p">)</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="c1"># Metagene (average profile across all features)</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="n">ds</span><span class="o">.</span><span class="n">metaplot</span><span class="p">(</span><span class="n">binned</span><span class="p">,</span> <span class="n">modality</span><span class="o">=</span><span class="s2">&quot;coverage&quot;</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">&quot;Coverage at TSS&quot;</span><span class="p">)</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="c1"># Tornado (per-feature heatmap)</span>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="n">ds</span><span class="o">.</span><span class="n">tornadoplot</span><span class="p">(</span><span class="n">binned</span><span class="p">,</span> <span class="n">modality</span><span class="o">=</span><span class="s2">&quot;coverage&quot;</span><span class="p">,</span> <span class="n">sort_by</span><span class="o">=</span><span class="s2">&quot;mean&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<p>You can also supply a BED file or a pre-built DataFrame of ranges:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">binned</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">extract</span><span class="p">(</span><span class="n">intervals_path</span><span class="o">=</span><span class="s2">&quot;peaks.bed&quot;</span><span class="p">,</span> <span class="n">upstream</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span> <span class="n">downstream</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span> <span class="n">bin_size</span><span class="o">=</span><span class="mi">25</span><span class="p">)</span>
+</span></code></pre></div>
+<hr />
+<h2 id="methylation-analysis">Methylation Analysis<a class="headerlink" href="#methylation-analysis" title="Anchor link to this section">&para;</a></h2>
+<p>Methylation is stored sparsely: only covered CpG positions are kept per chromosome.</p>
+<h3 id="inspect-the-store">Inspect the Store<a class="headerlink" href="#inspect-the-store" title="Anchor link to this section">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">meth</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">methylation</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="nb">print</span><span class="p">(</span><span class="n">meth</span><span class="o">.</span><span class="n">chromosomes</span><span class="p">)</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="nb">print</span><span class="p">(</span><span class="n">meth</span><span class="o">.</span><span class="n">samples</span><span class="p">)</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># Number of CpG sites per chromosome</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="k">for</span> <span class="n">chrom</span> <span class="ow">in</span> <span class="n">meth</span><span class="o">.</span><span class="n">chromosomes</span><span class="p">:</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">chrom</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">meth</span><span class="o">.</span><span class="n">get_positions</span><span class="p">(</span><span class="n">chrom</span><span class="p">))</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2"> CpG sites&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="available-variables">Available Variables<a class="headerlink" href="#available-variables" title="Anchor link to this section">&para;</a></h3>
+<p>Each CpG site stores five variables:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>methylation_pct</code></td>
+<td>Methylation percentage (0–100)</td>
+</tr>
+<tr>
+<td><code>methylation_ratio</code></td>
+<td>Methylation ratio (0–1)</td>
+</tr>
+<tr>
+<td><code>n_methylated</code></td>
+<td>Count of methylated reads</td>
+</tr>
+<tr>
+<td><code>n_unmethylated</code></td>
+<td>Count of unmethylated reads</td>
+</tr>
+<tr>
+<td><code>n_cpg_covered</code></td>
+<td>Total reads covering this site</td>
+</tr>
+</tbody>
+</table>
+<h3 id="metagene-and-tornado-plots_1">Metagene and Tornado Plots<a class="headerlink" href="#metagene-and-tornado-plots_1" title="Anchor link to this section">&para;</a></h3>
+<p>Use <code>ds.extract()</code> with <code>modality="methylation"</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">binned_meth</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">extract</span><span class="p">(</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="n">modality</span><span class="o">=</span><span class="s2">&quot;methylation&quot;</span><span class="p">,</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">variable</span><span class="o">=</span><span class="s2">&quot;methylation_pct&quot;</span><span class="p">,</span>   <span class="c1"># default</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="n">feature_type</span><span class="o">=</span><span class="s2">&quot;transcript&quot;</span><span class="p">,</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="n">gtf_path</span><span class="o">=</span><span class="s2">&quot;genes.gtf&quot;</span><span class="p">,</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="n">upstream</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>    <span class="n">downstream</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="n">anchor</span><span class="o">=</span><span class="s2">&quot;start&quot;</span><span class="p">,</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="n">bin_size</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="p">)</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="n">ds</span><span class="o">.</span><span class="n">metaplot</span><span class="p">(</span><span class="n">binned_meth</span><span class="p">,</span> <span class="n">modality</span><span class="o">=</span><span class="s2">&quot;methylation&quot;</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">&quot;CpG methylation at TSS&quot;</span><span class="p">)</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="n">ds</span><span class="o">.</span><span class="n">tornadoplot</span><span class="p">(</span><span class="n">binned_meth</span><span class="p">,</span> <span class="n">modality</span><span class="o">=</span><span class="s2">&quot;methylation&quot;</span><span class="p">,</span> <span class="n">sort_by</span><span class="o">=</span><span class="s2">&quot;mean&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="feature-level-methylation-stats">Feature-level Methylation Stats<a class="headerlink" href="#feature-level-methylation-stats" title="Anchor link to this section">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">stats</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">methylation</span><span class="o">.</span><span class="n">count_features</span><span class="p">(</span><span class="n">gtf_file</span><span class="o">=</span><span class="s2">&quot;genes.gtf&quot;</span><span class="p">,</span> <span class="n">feature_type</span><span class="o">=</span><span class="s2">&quot;gene&quot;</span><span class="p">)</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="c1"># stats is a dict with keys:</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="c1">#   n_methylated, n_unmethylated, n_cpg_covered,</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1">#   methylation_ratio, methylation_pct</span>
+</span></code></pre></div>
+<hr />
+<h2 id="variant-analysis">Variant Analysis<a class="headerlink" href="#variant-analysis" title="Anchor link to this section">&para;</a></h2>
+<p>Variants are stored sparsely from VCF.gz files, indexed per chromosome.</p>
+<h3 id="inspect-the-store_1">Inspect the Store<a class="headerlink" href="#inspect-the-store_1" title="Anchor link to this section">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">var</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">variants</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="nb">print</span><span class="p">(</span><span class="n">var</span><span class="o">.</span><span class="n">chromosomes</span><span class="p">)</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="nb">print</span><span class="p">(</span><span class="n">var</span><span class="o">.</span><span class="n">samples</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="available-variables_1">Available Variables<a class="headerlink" href="#available-variables_1" title="Anchor link to this section">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>genotype</code></td>
+<td>Integer-encoded genotype (0=hom-ref, 1=het, 2=hom-alt)</td>
+</tr>
+<tr>
+<td><code>allele_depth</code></td>
+<td>Read depth per allele</td>
+</tr>
+<tr>
+<td><code>quality</code></td>
+<td>Variant quality score</td>
+</tr>
+</tbody>
+</table>
+<h3 id="extract-as-xarray">Extract as xarray<a class="headerlink" href="#extract-as-xarray" title="Anchor link to this section">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Full chromosome as a DataArray (lazy)</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="n">gt_xr</span> <span class="o">=</span> <span class="n">var</span><span class="o">.</span><span class="n">to_xarray</span><span class="p">(</span><span class="n">variable</span><span class="o">=</span><span class="s2">&quot;genotype&quot;</span><span class="p">)</span>     <span class="c1"># dict[chrom → DataArray]</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># Specific region</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="n">region_gt</span> <span class="o">=</span> <span class="n">var</span><span class="o">.</span><span class="n">extract_region</span><span class="p">(</span><span class="s2">&quot;chr21:5000000-6000000&quot;</span><span class="p">,</span> <span class="n">variable</span><span class="o">=</span><span class="s2">&quot;genotype&quot;</span><span class="p">)</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="c1"># Allele information</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="n">refs</span><span class="p">,</span> <span class="n">alts</span> <span class="o">=</span> <span class="n">var</span><span class="o">.</span><span class="n">get_alleles</span><span class="p">(</span><span class="s2">&quot;chr21&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<hr />
 <h2 id="creating-datasets">Creating Datasets<a class="headerlink" href="#creating-datasets" title="Anchor link to this section">&para;</a></h2>
-<h3 id="from-single-bam-file">From Single BAM File<a class="headerlink" href="#from-single-bam-file" title="Anchor link to this section">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>sample.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>--output<span class="w"> </span>sample.zarr<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes
+<h3 id="python-api">Python API<a class="headerlink" href="#python-api" title="Anchor link to this section">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">quantnado</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">qn</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="n">qn</span><span class="o">.</span><span class="n">create_dataset</span><span class="p">(</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    <span class="n">store_dir</span><span class="o">=</span><span class="s2">&quot;dataset/&quot;</span><span class="p">,</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    <span class="n">bam_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;atac.bam&quot;</span><span class="p">,</span> <span class="s2">&quot;chip.bam&quot;</span><span class="p">,</span> <span class="s2">&quot;rna.bam&quot;</span><span class="p">],</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>    <span class="n">bedgraph_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;meth-rep1.bedGraph&quot;</span><span class="p">,</span> <span class="s2">&quot;meth-rep2.bedGraph&quot;</span><span class="p">],</span>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>    <span class="n">vcf_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;snp.vcf.gz&quot;</span><span class="p">],</span>
+</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>    <span class="c1"># Callable to derive sample names from file paths</span>
+</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>    <span class="n">bedgraph_sample_names</span><span class="o">=</span><span class="k">lambda</span> <span class="n">p</span><span class="p">:</span> <span class="n">p</span><span class="o">.</span><span class="n">stem</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;_hg38&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">],</span>
+</span><span id="__span-13-10"><a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>    <span class="n">max_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+</span><span id="__span-13-11"><a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="p">)</span>
 </span></code></pre></div>
-<h3 id="from-multiple-bam-files">From Multiple BAM Files<a class="headerlink" href="#from-multiple-bam-files" title="Anchor link to this section">&para;</a></h3>
-<p>Process all BAM files in a directory:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>results/aligned/*.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--output<span class="w"> </span>my_cohort.zarr<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--max-workers<span class="w"> </span><span class="m">8</span>
+<p>All modalities are optional — pass only what you have.</p>
+<h3 id="command-line">Command Line<a class="headerlink" href="#command-line" title="Anchor link to this section">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span>--output<span class="w"> </span>dataset/<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span>--bam<span class="w"> </span>atac.bam,chip.bam,rna.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span>--bedgraph<span class="w"> </span>meth-rep1.bedGraph,meth-rep2.bedGraph<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span>--vcf<span class="w"> </span>snp.vcf.gz<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">  </span>--max-workers<span class="w"> </span><span class="m">4</span>
 </span></code></pre></div>
-<h3 id="with-sample-metadata">With Sample Metadata<a class="headerlink" href="#with-sample-metadata" title="Anchor link to this section">&para;</a></h3>
-<p>Create a CSV with sample information (<code>metadata.csv</code>):</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sample_id,condition,replicate
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>sample1,control,1
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>sample2,control,2
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>sample3,treatment,1
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>sample4,treatment,2
+<hr />
+<h2 id="metadata-management">Metadata Management<a class="headerlink" href="#metadata-management" title="Anchor link to this section">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="c1"># Read current metadata</span>
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="n">meta</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">get_metadata</span><span class="p">()</span>
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>
+</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="c1"># Set metadata from a DataFrame (replaces existing)</span>
+</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="n">new_meta</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">({</span>
+</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>    <span class="s2">&quot;sample_id&quot;</span><span class="p">:</span> <span class="n">ds</span><span class="o">.</span><span class="n">samples</span><span class="p">,</span>
+</span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a>    <span class="s2">&quot;condition&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;control&quot;</span><span class="p">,</span> <span class="s2">&quot;control&quot;</span><span class="p">,</span> <span class="s2">&quot;treatment&quot;</span><span class="p">],</span>
+</span><span id="__span-15-10"><a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a>    <span class="s2">&quot;assay&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;ATAC&quot;</span><span class="p">,</span> <span class="s2">&quot;ChIP&quot;</span><span class="p">,</span> <span class="s2">&quot;RNA&quot;</span><span class="p">],</span>
+</span><span id="__span-15-11"><a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="p">})</span>
+</span><span id="__span-15-12"><a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="n">ds</span><span class="o">.</span><span class="n">set_metadata</span><span class="p">(</span><span class="n">new_meta</span><span class="p">)</span>
+</span><span id="__span-15-13"><a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a>
+</span><span id="__span-15-14"><a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="c1"># Add/update individual columns</span>
+</span><span id="__span-15-15"><a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="n">ds</span><span class="o">.</span><span class="n">update_metadata</span><span class="p">({</span><span class="s2">&quot;batch&quot;</span><span class="p">:</span> <span class="s2">&quot;batch1&quot;</span><span class="p">})</span>
+</span><span id="__span-15-16"><a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a>
+</span><span id="__span-15-17"><a id="__codelineno-15-17" name="__codelineno-15-17" href="#__codelineno-15-17"></a><span class="c1"># Inspect columns</span>
+</span><span id="__span-15-18"><a id="__codelineno-15-18" name="__codelineno-15-18" href="#__codelineno-15-18"></a><span class="nb">print</span><span class="p">(</span><span class="n">ds</span><span class="o">.</span><span class="n">list_metadata_columns</span><span class="p">())</span>
+</span><span id="__span-15-19"><a id="__codelineno-15-19" name="__codelineno-15-19" href="#__codelineno-15-19"></a>
+</span><span id="__span-15-20"><a id="__codelineno-15-20" name="__codelineno-15-20" href="#__codelineno-15-20"></a><span class="c1"># Export / import</span>
+</span><span id="__span-15-21"><a id="__codelineno-15-21" name="__codelineno-15-21" href="#__codelineno-15-21"></a><span class="n">ds</span><span class="o">.</span><span class="n">metadata_to_csv</span><span class="p">(</span><span class="s2">&quot;metadata.csv&quot;</span><span class="p">)</span>
+</span><span id="__span-15-22"><a id="__codelineno-15-22" name="__codelineno-15-22" href="#__codelineno-15-22"></a><span class="n">ds</span><span class="o">.</span><span class="n">metadata_from_csv</span><span class="p">(</span><span class="s2">&quot;updated_metadata.csv&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<p>Then:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>quantnado<span class="w"> </span>create-dataset<span class="w"> </span>*.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--output<span class="w"> </span>dataset.zarr<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--metadata<span class="w"> </span>metadata.csv
-</span></code></pre></div>
-<h2 id="peak-calling">Peak Calling<a class="headerlink" href="#peak-calling" title="Anchor link to this section">&para;</a></h2>
-<h3 id="basic-peak-calling">Basic Peak Calling<a class="headerlink" href="#basic-peak-calling" title="Anchor link to this section">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.98
-</span></code></pre></div>
-<p>Output: One BED file per sample in <code>./peaks/</code></p>
-<h3 id="filtering-and-merging">Filtering and Merging<a class="headerlink" href="#filtering-and-merging" title="Anchor link to this section">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.95<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span>--merge<span class="w">  </span><span class="c1"># Merge overlapping peaks</span>
-</span></code></pre></div>
-<h2 id="python-api">Python API<a class="headerlink" href="#python-api" title="Anchor link to this section">&para;</a></h2>
-<h3 id="loading-a-dataset">Loading a Dataset<a class="headerlink" href="#loading-a-dataset" title="Anchor link to this section">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">quantnado</span><span class="w"> </span><span class="kn">import</span> <span class="n">QuantNado</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="c1"># Open existing dataset</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">qn</span> <span class="o">=</span> <span class="n">QuantNado</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="s2">&quot;my_dataset.zarr&quot;</span><span class="p">)</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># Check samples</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="nb">print</span><span class="p">(</span><span class="n">qn</span><span class="o">.</span><span class="n">samples</span><span class="p">)</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="nb">print</span><span class="p">(</span><span class="n">qn</span><span class="o">.</span><span class="n">metadata</span><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="accessing-data">Accessing Data<a class="headerlink" href="#accessing-data" title="Anchor link to this section">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Get data for a specific region (returns xarray DataArray)</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">region_data</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">extract_region</span><span class="p">(</span><span class="s2">&quot;chr1:1000000-2000000&quot;</span><span class="p">)</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Get all chromosomes as a dict of lazy xarray DataArrays</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">all_chroms</span> <span class="o">=</span> <span class="n">qn</span><span class="o">.</span><span class="n">to_xarray</span><span class="p">()</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="n">chr1_data</span> <span class="o">=</span> <span class="n">all_chroms</span><span class="p">[</span><span class="s2">&quot;chr1&quot;</span><span class="p">]</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1"># Compute and convert to pandas DataFrame</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">df</span> <span class="o">=</span> <span class="n">chr1_data</span><span class="o">.</span><span class="n">to_dataframe</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;signal&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="creating-datasets-programmatically">Creating Datasets Programmatically<a class="headerlink" href="#creating-datasets-programmatically" title="Anchor link to this section">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">quantnado</span><span class="w"> </span><span class="kn">import</span> <span class="n">BamStore</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Create from BAM files</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="n">store</span> <span class="o">=</span> <span class="n">BamStore</span><span class="o">.</span><span class="n">from_bam_files</span><span class="p">(</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="n">bam_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;sample1.bam&quot;</span><span class="p">,</span> <span class="s2">&quot;sample2.bam&quot;</span><span class="p">],</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">chromsizes</span><span class="o">=</span><span class="s2">&quot;hg38.chrom.sizes&quot;</span><span class="p">,</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">store_path</span><span class="o">=</span><span class="s2">&quot;dataset.zarr&quot;</span><span class="p">,</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="n">max_workers</span><span class="o">=</span><span class="mi">8</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="p">)</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="c1"># Add metadata</span>
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="n">metadata</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">({</span>
-</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>    <span class="s2">&quot;sample_id&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;sample1&quot;</span><span class="p">,</span> <span class="s2">&quot;sample2&quot;</span><span class="p">],</span>
-</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>    <span class="s2">&quot;condition&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;control&quot;</span><span class="p">,</span> <span class="s2">&quot;treatment&quot;</span><span class="p">]</span>
-</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a><span class="p">})</span>
-</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a><span class="n">store</span><span class="o">.</span><span class="n">set_metadata</span><span class="p">(</span><span class="n">metadata</span><span class="p">)</span>
-</span></code></pre></div>
-<h2 id="common-issues">Common Issues<a class="headerlink" href="#common-issues" title="Anchor link to this section">&para;</a></h2>
-<p><strong>Q: How long does dataset creation take?</strong><br />
-A: Depends on BAM file size (typically 20 min - 2 hours for whole-genome). Use <code>--max-workers</code> to parallelize.</p>
-<p><strong>Q: Can I resume interrupted dataset creation?</strong>
-A: Yes. Pass <code>--resume</code> to the CLI (or <code>resume=True</code> in Python) and QuantNado will skip already-completed samples. Without this flag the default behaviour is <code>--overwrite</code>, which deletes any existing store at that path.</p>
-<p><strong>Q: What genomic coordinates are supported?</strong><br />
-A: Any coordinates in your chromsizes file. Supports human, mouse, yeast, etc.</p>
+<hr />
+<h2 id="common-questions">Common Questions<a class="headerlink" href="#common-questions" title="Anchor link to this section">&para;</a></h2>
+<p><strong>Can I resume an interrupted dataset creation?</strong>
+Yes — pass <code>resume=True</code> (Python) or <code>--resume</code> (CLI). QuantNado skips samples that are already written.</p>
+<p><strong>How long does creation take?</strong>
+Coverage stores are the slowest (20 min – 2 h per whole-genome BAM). Use <code>max_workers</code> to parallelise. Methylation and variant stores are typically much faster.</p>
+<p><strong>What if I only have one modality?</strong>
+<code>qn.open()</code> works with any combination. If you only have BAM files, pass them directly to <code>BamStore.from_bam_files()</code> or use <code>qn.create_dataset(bam_files=...)</code>.</p>
 <p>See <a href="../troubleshooting/">Troubleshooting</a> for more help.</p>
 
 
