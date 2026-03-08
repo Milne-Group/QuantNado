@@ -14,6 +14,34 @@ NETWORK_FS = {
     "afs", "davfs"
 }
 
+def classify_methylation_files(
+    files: list[str | Path],
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """
+    Classify methylation files by filename pattern.
+
+    Returns (methyldackel_files, cxreport_files, mc_files, hmc_files).
+
+    Rules (checked in order):
+      - ``*num_hmc_cxreport*`` → hmc_files
+      - ``*num_mc_cxreport*``  → mc_files
+      - ``*CXreport*``         → cxreport_files (whole-molecule evoC)
+      - everything else        → methyldackel_files (bedGraph)
+    """
+    methyldackel, cxreport, mc, hmc = [], [], [], []
+    for f in files:
+        name = Path(f).name
+        if "num_hmc_cxreport" in name:
+            hmc.append(str(f))
+        elif "num_mc_cxreport" in name:
+            mc.append(str(f))
+        elif "CXreport" in name:
+            cxreport.append(str(f))
+        else:
+            methyldackel.append(str(f))
+    return methyldackel, cxreport, mc, hmc
+
+
 def setup_logging(log_path: Path, verbose: bool):
     logger.remove()
     log_format = "{time:YYYY-MM-DD HH:mm:ss} [{level: <8}] {message}"

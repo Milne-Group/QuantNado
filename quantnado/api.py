@@ -10,7 +10,7 @@ Example:
     qn = QuantNado.from_files(
         store_dir="dataset/",
         bam_files=["sample1.bam", "sample2.bam"],
-        methyldackel_files=["sample1.bedGraph"],
+        methylation_files=["sample1.bedGraph"],
         vcf_files=["sample1.vcf.gz"],
     )
 
@@ -37,6 +37,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
+from quantnado.utils import classify_methylation_files
 from quantnado.analysis.counts import count_features as _feature_counts
 from quantnado.analysis.pca import run_pca as _run_pca
 from quantnado.analysis.plot import locus_plot, metaplot, tornadoplot
@@ -68,7 +69,7 @@ class QuantNado:
     >>> qn = QuantNado.create_dataset(              # multi-omics dataset
     ...     store_dir="dataset/",
     ...     bam_files=["s1.bam"],
-    ...     methyldackel_files=["s1.bedGraph"],
+    ...     methylation_files=["s1.bedGraph"],
     ... )
 
     Modality access
@@ -159,18 +160,13 @@ class QuantNado:
         cls,
         store_dir: str | Path,
         bam_files: list[str | Path] | None = None,
-        methyldackel_files: list[str | Path] | None = None,
-        cxreport_files: list[str | Path] | None = None,
-        mc_files: list[str | Path] | None = None,
-        hmc_files: list[str | Path] | None = None,
+        methylation_files: list[str | Path] | None = None,
         vcf_files: list[str | Path] | None = None,
         chromsizes: str | Path | dict[str, int] | None = None,
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         bam_sample_names: list[str] | callable | None = None,
-        methyldackel_sample_names: list[str] | callable | None = None,
-        cxreport_sample_names: list[str] | callable | None = None,
-        mc_hmc_sample_names: list[str] | callable | None = None,
+        methylation_sample_names: list[str] | None = None,
         vcf_sample_names: list[str] | callable | None = None,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
@@ -188,9 +184,8 @@ class QuantNado:
         """
         Create a new QuantNado dataset from genomic files.
 
-        At least one of ``bam_files``, ``methyldackel_files``, ``cxreport_files``,
-        or ``vcf_files`` must be provided. ``methyldackel_files`` and
-        ``cxreport_files`` are mutually exclusive.
+        At least one of ``bam_files``, ``methylation_files``, or ``vcf_files``
+        must be provided.
 
         Parameters
         ----------
@@ -198,12 +193,11 @@ class QuantNado:
             Output directory. Created if it does not exist.
         bam_files : list of Path, optional
             BAM files for per-base coverage storage.
-        methyldackel_files : list of Path, optional
-            MethylDackel CpG bedGraph files for methylation storage.
-        cxreport_files : list of Path, optional
-            biomodal evoC ``.CXreport.txt.gz`` files for methylation storage.
-            Stores separate mC and hmC arrays. Mutually exclusive with
-            ``methyldackel_files``.
+        methylation_files : list of Path, optional
+            Methylation files of any supported type. File type is detected from
+            the filename: ``*num_mc_cxreport*`` → mC, ``*num_hmc_cxreport*`` →
+            hmC, ``*CXreport*`` → evoC whole-molecule, everything else →
+            MethylDackel bedGraph.
         vcf_files : list of Path, optional
             VCF.gz files (one per sample) for variant storage.
         chromsizes : str, Path, or dict, optional
@@ -213,10 +207,10 @@ class QuantNado:
         bam_sample_names : list of str or callable, optional
             Override sample names for BAM files. A callable receives each
             ``Path`` and returns a ``str`` (e.g. ``lambda p: p.stem``).
-        methyldackel_sample_names : list of str or callable, optional
-            Override sample names for bedGraph files. A callable receives each
-            ``Path`` and returns a ``str``
-            (e.g. ``lambda p: p.stem.split("_hg38")[0]``).
+        methylation_sample_names : list of str, optional
+            Override sample names for methylation files, in classification
+            order: bedGraph names first, then CXreport, then mC/hmC (one name
+            per sample pair).
         vcf_sample_names : list of str or callable, optional
             Override sample names for VCF files. A callable receives each
             ``Path`` and returns a ``str``.
@@ -253,43 +247,51 @@ class QuantNado:
         QuantNado
         """
 
-        def _resolve_names(names, files):
-            if callable(names) and files is not None:
-                return [names(Path(f)) for f in files]
-            return names
+        # Classify methylation files by filename pattern
+        methyldackel_files, cxreport_files, mc_files, hmc_files = classify_methylation_files(
+            [str(f) for f in (methylation_files or [])]
+        )
+        n_bg = len(methyldackel_files)
+        n_cx = len(cxreport_files)
+        n_mchmc = max(len(mc_files), len(hmc_files))
+        meth_names = methylation_sample_names or []
+        methyldackel_sample_names = meth_names[:n_bg] or None
+        cxreport_sample_names = meth_names[n_bg:n_bg + n_cx] or None
+        mc_hmc_sample_names = meth_names[n_bg + n_cx:n_bg + n_cx + n_mchmc] or None
 
-        bam_sample_names = _resolve_names(bam_sample_names, bam_files)
-        methyldackel_sample_names = _resolve_names(methyldackel_sample_names, methyldackel_files)
-        cxreport_sample_names = _resolve_names(cxreport_sample_names, cxreport_files)
-        mc_hmc_sample_names = _resolve_names(mc_hmc_sample_names, mc_files)
-        vcf_sample_names = _resolve_names(vcf_sample_names, vcf_files)
+        if callable(bam_sample_names) and bam_files is not None:
+            bam_sample_names = [bam_sample_names(Path(f)) for f in bam_files]
+        if callable(vcf_sample_names) and vcf_files is not None:
+            vcf_sample_names = [vcf_sample_names(Path(f)) for f in vcf_files]
 
-        # Upfront summary of all work to be done
-        summary_lines = [f"Creating QuantNado dataset at '{store_dir}'"]
+        # Upfront summary of all work to be done, grouped by sample
+        sample_modalities: dict[str, list[str]] = {}
+
+        def _register(names, modality):
+            for n in names:
+                sample_modalities.setdefault(n, []).append(modality)
+
         if bam_files:
-            names = bam_sample_names or [Path(f).stem for f in bam_files]
-            summary_lines.append(f"  coverage    ({len(bam_files)} BAM): {names}")
+            _register(bam_sample_names or [Path(f).stem for f in bam_files], "coverage")
         if methyldackel_files and (mc_files or hmc_files):
-            bg_names = methyldackel_sample_names or [Path(f).stem for f in methyldackel_files]
-            cx_names = mc_hmc_sample_names or [Path(f).stem for f in (mc_files or hmc_files)]
-            summary_lines.append(
-                f"  methylation ({len(methyldackel_files)} bedGraph + "
-                f"{len(mc_files or hmc_files)} CXreport, mixed): "
-                f"{bg_names + cx_names}"
+            _register(
+                (methyldackel_sample_names or [Path(f).stem for f in methyldackel_files])
+                + (mc_hmc_sample_names or [Path(f).stem for f in (mc_files or hmc_files)]),
+                "methylation",
             )
         elif methyldackel_files:
-            names = methyldackel_sample_names or [Path(f).stem for f in methyldackel_files]
-            summary_lines.append(f"  methylation ({len(methyldackel_files)} bedGraph): {names}")
+            _register(methyldackel_sample_names or [Path(f).stem for f in methyldackel_files], "methylation")
         elif cxreport_files:
-            names = cxreport_sample_names or [Path(f).stem for f in cxreport_files]
-            summary_lines.append(f"  methylation ({len(cxreport_files)} CXreport): {names}")
+            _register(cxreport_sample_names or [Path(f).stem for f in cxreport_files], "methylation")
         elif mc_files or hmc_files:
-            n = len(mc_files or hmc_files)
-            names = mc_hmc_sample_names or [Path(f).stem for f in (mc_files or hmc_files)]
-            summary_lines.append(f"  methylation ({n} split CXreport): {names}")
+            _register(mc_hmc_sample_names or [Path(f).stem for f in (mc_files or hmc_files)], "methylation")
         if vcf_files:
-            names = vcf_sample_names or [Path(f).stem for f in vcf_files]
-            summary_lines.append(f"  variants    ({len(vcf_files)} VCF): {names}")
+            _register(vcf_sample_names or [Path(f).stem for f in vcf_files], "variants")
+
+        col_width = max(len(s) for s in sample_modalities) if sample_modalities else 0
+        summary_lines = [f"Creating QuantNado dataset at '{store_dir}'"]
+        for sample, mods in sample_modalities.items():
+            summary_lines.append(f"  {sample:<{col_width}}  [{', '.join(mods)}]")
         logger.info("\n".join(summary_lines))
 
         ms = MultiomicsStore.from_files(

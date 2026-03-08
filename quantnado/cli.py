@@ -15,7 +15,7 @@ import traceback
 from pathlib import Path
 
 from quantnado.dataset.store_bam import BamStore
-from quantnado.utils import setup_logging
+from quantnado.utils import classify_methylation_files, setup_logging
 from quantnado._version import __version__
 
 app = typer.Typer(
@@ -92,14 +92,29 @@ def call_peaks(
 def create_dataset(
     output: Path = typer.Option(..., "--output", "-o", help="Output directory for the multiomics store."),
     bam: str | None = typer.Option(None, "--bam", help="Comma-separated BAM files for coverage."),
-    bedgraph: str | None = typer.Option(None, "--bedgraph", help="Comma-separated bedGraph files for methylation."),
+    methylation: str | None = typer.Option(
+        None,
+        "--methylation",
+        help=(
+            "Comma-separated methylation files. File type is detected from the filename: "
+            "*num_mc_cxreport* → mC, *num_hmc_cxreport* → hmC, *CXreport* → evoC whole-molecule, "
+            "everything else → MethylDackel bedGraph."
+        ),
+    ),
     vcf: str | None = typer.Option(None, "--vcf", help="Comma-separated VCF.gz files for variants."),
     chromsizes: Path | None = typer.Option(
         None, "--chromsizes", help="Path to chromsizes. If omitted, extracted from first BAM."
     ),
     metadata: Path | None = typer.Option(None, "--metadata", help="Path to metadata CSV file."),
     bam_sample_names: str | None = typer.Option(None, "--bam-sample-names", help="Comma-separated sample name overrides for BAM files."),
-    methyldackel_sample_names: str | None = typer.Option(None, "--bedgraph-sample-names", help="Comma-separated sample name overrides for bedGraph files."),
+    methylation_sample_names: str | None = typer.Option(
+        None,
+        "--methylation-sample-names",
+        help=(
+            "Comma-separated sample name overrides for methylation files, in the same order as --methylation "
+            "after classification: bedGraph names first, then CXreport names, then mC/hmC names (one per sample pair)."
+        ),
+    ),
     vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
     sample_column: str = typer.Option("sample_id", "--sample-column", help="Column in metadata matching sample names."),
     filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
@@ -129,13 +144,14 @@ def create_dataset(
     ),
     max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for BAM processing (one per sample)."),
     chr_workers: int = typer.Option(1, "--chr-workers", help="Parallel threads per sample for chromosome-level processing. Total reads = max-workers * chr-workers."),
+    test: bool = typer.Option(False, "--test", help="Restrict coverage to chr21/chr22/chrY (for testing)."),
     log_file: Path = typer.Option("quantnado_processing.log", "--log-file", help="Path to the log file."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
 ):
     """
-    Create a multiomics store from BAM, bedGraph, and/or VCF files.
+    Create a multiomics store from BAM, methylation, and/or VCF files.
 
-    At least one of --bam, --bedgraph, or --vcf must be provided.
+    At least one of --bam, --methylation, or --vcf must be provided.
     Multiple files can be passed as a comma-separated list, e.g. --bam a.bam,b.bam
     """
     _setup_cli_logging(log_file, verbose)
@@ -144,19 +160,32 @@ def create_dataset(
         return [v.strip() for v in s.split(",") if v.strip()] if s else []
 
     bam_files = _split(bam)
-    methyldackel_files = _split(bedgraph)
+    all_meth_files = _split(methylation)
     vcf_files = _split(vcf)
     bam_names = _split(bam_sample_names)
-    bedgraph_names = _split(methyldackel_sample_names)
+    all_meth_names = _split(methylation_sample_names)
     vcf_names = _split(vcf_sample_names)
 
-    if not any([bam_files, methyldackel_files, vcf_files]):
-        logger.error("Provide at least one of --bam, --bedgraph, or --vcf.")
+    methyldackel_files, cxreport_files, mc_files, hmc_files = classify_methylation_files(all_meth_files)
+
+    # Slice sample names to match each classified group in order:
+    # [bedgraph names][cxreport names][mc/hmc names (one per sample pair)]
+    n_bg = len(methyldackel_files)
+    n_cx = len(cxreport_files)
+    n_mchmc = max(len(mc_files), len(hmc_files))
+    bedgraph_names = all_meth_names[:n_bg] if all_meth_names else []
+    cxreport_names = all_meth_names[n_bg:n_bg + n_cx] if all_meth_names else []
+    mc_hmc_names = all_meth_names[n_bg + n_cx:n_bg + n_cx + n_mchmc] if all_meth_names else []
+
+    if not any([bam_files, methyldackel_files, cxreport_files, mc_files, hmc_files, vcf_files]):
+        logger.error("Provide at least one of --bam, --methylation, or --vcf.")
         raise typer.Exit(code=1)
 
     modality_counts = [
         f"{len(bam_files)} BAM" if bam_files else None,
         f"{len(methyldackel_files)} bedGraph" if methyldackel_files else None,
+        f"{len(cxreport_files)} CXreport" if cxreport_files else None,
+        f"{len(mc_files)} mC / {len(hmc_files)} hmC" if mc_files or hmc_files else None,
         f"{len(vcf_files)} VCF" if vcf_files else None,
     ]
     logger.info(f"Building multiomics store at {output}: {', '.join(m for m in modality_counts if m)}")
@@ -168,11 +197,16 @@ def create_dataset(
             store_dir=output,
             bam_files=bam_files or None,
             methyldackel_files=methyldackel_files or None,
+            cxreport_files=cxreport_files or None,
+            mc_files=mc_files or None,
+            hmc_files=hmc_files or None,
             vcf_files=vcf_files or None,
             chromsizes=chromsizes,
             metadata=metadata,
             bam_sample_names=bam_names or None,
             methyldackel_sample_names=bedgraph_names or None,
+            cxreport_sample_names=cxreport_names or None,
+            mc_hmc_sample_names=mc_hmc_names or None,
             vcf_sample_names=vcf_names or None,
             sample_column=sample_column,
             chunk_len=chunk_len,
@@ -185,6 +219,7 @@ def create_dataset(
             resume=resume,
             max_workers=max_workers,
             chr_workers=chr_workers,
+            test=test,
         )
         logger.success(f"Multiomics store created: {output}")
     except Exception as e:
