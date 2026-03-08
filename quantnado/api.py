@@ -159,12 +159,14 @@ class QuantNado:
         store_dir: str | Path,
         bam_files: list[str | Path] | None = None,
         bedgraph_files: list[str | Path] | None = None,
+        cxreport_files: list[str | Path] | None = None,
         vcf_files: list[str | Path] | None = None,
         chromsizes: str | Path | dict[str, int] | None = None,
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         bam_sample_names: list[str] | callable | None = None,
         bedgraph_sample_names: list[str] | callable | None = None,
+        cxreport_sample_names: list[str] | callable | None = None,
         vcf_sample_names: list[str] | callable | None = None,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
@@ -182,8 +184,9 @@ class QuantNado:
         """
         Create a new QuantNado dataset from genomic files.
 
-        At least one of ``bam_files``, ``bedgraph_files``, or ``vcf_files``
-        must be provided.
+        At least one of ``bam_files``, ``bedgraph_files``, ``cxreport_files``,
+        or ``vcf_files`` must be provided. ``bedgraph_files`` and
+        ``cxreport_files`` are mutually exclusive.
 
         Parameters
         ----------
@@ -193,6 +196,10 @@ class QuantNado:
             BAM files for per-base coverage storage.
         bedgraph_files : list of Path, optional
             MethylDackel CpG bedGraph files for methylation storage.
+        cxreport_files : list of Path, optional
+            biomodal evoC ``.CXreport.txt.gz`` files for methylation storage.
+            Stores separate mC and hmC arrays. Mutually exclusive with
+            ``bedgraph_files``.
         vcf_files : list of Path, optional
             VCF.gz files (one per sample) for variant storage.
         chromsizes : str, Path, or dict, optional
@@ -249,17 +256,20 @@ class QuantNado:
 
         bam_sample_names = _resolve_names(bam_sample_names, bam_files)
         bedgraph_sample_names = _resolve_names(bedgraph_sample_names, bedgraph_files)
+        cxreport_sample_names = _resolve_names(cxreport_sample_names, cxreport_files)
         vcf_sample_names = _resolve_names(vcf_sample_names, vcf_files)
 
         ms = MultiomicsStore.from_files(
             store_dir=store_dir,
             bam_files=bam_files,
             bedgraph_files=bedgraph_files,
+            cxreport_files=cxreport_files,
             vcf_files=vcf_files,
             chromsizes=chromsizes,
             metadata=metadata,
             bam_sample_names=bam_sample_names,
             bedgraph_sample_names=bedgraph_sample_names,
+            cxreport_sample_names=cxreport_sample_names,
             vcf_sample_names=vcf_sample_names,
             filter_chromosomes=filter_chromosomes,
             overwrite=overwrite,

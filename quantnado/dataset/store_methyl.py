@@ -51,8 +51,8 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
 
     result = pd.DataFrame()
     result["chrom"] = df[0].astype(str)
-    result["start"] = df[1].astype(np.int64)
-    result["end"] = df[2].astype(np.int64)
+    result["start"] = pd.to_numeric(df[1]).astype(np.int64)
+    result["end"] = pd.to_numeric(df[2]).astype(np.int64)
     result["methylation_pct"] = pd.to_numeric(df[3], errors="coerce").astype(np.float32)
 
     if n_cols >= 6:
@@ -72,6 +72,69 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
         result = result[result["chrom"].str.startswith("chr") & ~result["chrom"].str.contains("_")]
 
     return {chrom: grp.reset_index(drop=True) for chrom, grp in result.groupby("chrom")}
+
+
+def _read_cxreport(path: Path | str, filter_chromosomes: bool = True) -> dict[str, pd.DataFrame]:
+    """
+    Read a biomodal evoC CXreport file, merging forward and reverse strand per CpG.
+
+    Format (no header): chrom, pos(0-based), strand, n_mc, n_hmc, n_c, context,
+    trinucleotide, total_coverage
+
+    The + and - strand rows for each CpG are merged by summing their counts.
+    The canonical position is the + strand C position.
+
+    Returns
+    -------
+    dict mapping chromosome name -> DataFrame with columns:
+        start (int64, 0-based), n_mc (uint16), n_hmc (uint16), n_c (uint16),
+        methylation_pct (float32, NaN where total=0)
+    """
+    path = Path(path)
+    df = pd.read_csv(
+        path,
+        sep="\t",
+        header=None,
+        names=["chrom", "pos", "strand", "n_mc", "n_hmc", "n_c", "context", "trinuc", "total"],
+        dtype={
+            "chrom": str,
+            "pos": np.int64,
+            "strand": str,
+            "n_mc": np.int32,
+            "n_hmc": np.int32,
+            "n_c": np.int32,
+            "context": str,
+            "trinuc": str,
+            "total": np.int32,
+        },
+    )
+
+    if filter_chromosomes:
+        df = df[df["chrom"].str.startswith("chr") & ~df["chrom"].str.contains("_")]
+
+    # Canonical CpG position: + strand pos as-is, - strand pos - 1
+    df["canonical_pos"] = np.where(df["strand"] == "+", df["pos"], df["pos"] - 1)
+
+    # Merge both strands by summing counts
+    agg = (
+        df.groupby(["chrom", "canonical_pos"], sort=True)[["n_mc", "n_hmc", "n_c", "total"]]
+        .sum()
+        .reset_index()
+    )
+    agg = agg.rename(columns={"canonical_pos": "start"})
+    agg["start"] = agg["start"].astype(np.int64)
+
+    total = agg["total"].to_numpy(dtype=np.float32)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        meth_pct = np.where(total > 0, (agg["n_mc"] + agg["n_hmc"]) / total * 100.0, np.nan)
+    agg["methylation_pct"] = meth_pct.astype(np.float32)
+
+    agg["n_mc"] = agg["n_mc"].clip(0, 65535).astype(np.uint16)
+    agg["n_hmc"] = agg["n_hmc"].clip(0, 65535).astype(np.uint16)
+    agg["n_c"] = agg["n_c"].clip(0, 65535).astype(np.uint16)
+
+    cols = ["start", "n_mc", "n_hmc", "n_c", "methylation_pct"]
+    return {chrom: grp[cols].reset_index(drop=True) for chrom, grp in agg.groupby("chrom")}
 
 
 class MethylStore:
@@ -106,6 +169,7 @@ class MethylStore:
         overwrite: bool = True,
         resume: bool = False,
         read_only: bool = False,
+        mc_hmc_split: bool = False,
     ) -> None:
         self.store_path = self._normalize_path(store_path)
         self.sample_names = [str(s) for s in sample_names]
@@ -113,6 +177,7 @@ class MethylStore:
         self.sample_hash = _compute_sample_hash(self.sample_names)
         self.compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
         self.read_only = read_only
+        self._mc_hmc_split_init = mc_hmc_split  # stored before _init_store is called
 
         if self.n_samples == 0:
             raise ValueError("sample_names must not be empty")
@@ -190,6 +255,7 @@ class MethylStore:
                 "sample_names_hash": self.sample_hash,
                 "n_samples": self.n_samples,
                 "store_type": "methylation",
+                "has_mc_hmc_split": self._mc_hmc_split_init,
             }
         )
         logger.info(f"Initialized MethylStore at {self.store_path}")
@@ -215,6 +281,11 @@ class MethylStore:
     def chromosomes(self) -> list[str]:
         return [k for k in self.root.keys() if k != "metadata"]
 
+    @property
+    def has_mc_hmc_split(self) -> bool:
+        """True if this store was built from evoC CXreport files (separate mC/hmC arrays)."""
+        return bool(self.root.attrs.get("has_mc_hmc_split", False))
+
     def _init_chrom_arrays(self, chrom: str, positions: np.ndarray) -> None:
         """Create zarr arrays for a chromosome given the union of CpG positions."""
         n_pos = len(positions)
@@ -225,11 +296,22 @@ class MethylStore:
         grp["positions"][:] = positions
 
         chunk_len = min(DEFAULT_CHUNK_LEN, max(1, n_pos))
-        for name, dtype, fill in [
-            ("methylation_pct", np.float32, np.nan),
-            ("n_methylated", np.uint16, 0),
-            ("n_unmethylated", np.uint16, 0),
-        ]:
+
+        if self.has_mc_hmc_split:
+            arrays = [
+                ("methylation_pct", np.float32, np.nan),
+                ("n_mc", np.uint16, 0),
+                ("n_hmc", np.uint16, 0),
+                ("n_c", np.uint16, 0),
+            ]
+        else:
+            arrays = [
+                ("methylation_pct", np.float32, np.nan),
+                ("n_methylated", np.uint16, 0),
+                ("n_unmethylated", np.uint16, 0),
+            ]
+
+        for name, dtype, fill in arrays:
             grp.create_array(
                 name=name,
                 shape=(self.n_samples, n_pos),
@@ -345,6 +427,106 @@ class MethylStore:
 
         return store
 
+    @classmethod
+    def from_cxreport_files(
+        cls,
+        cxreport_files: list[str | Path],
+        store_path: Path | str,
+        sample_names: list[str] | None = None,
+        metadata: pd.DataFrame | Path | str | None = None,
+        *,
+        filter_chromosomes: bool = True,
+        overwrite: bool = True,
+        resume: bool = False,
+        sample_column: str = "sample_id",
+    ) -> "MethylStore":
+        """
+        Create a MethylStore from biomodal evoC CXreport files.
+
+        Each file corresponds to one sample. The + and - strand rows for each
+        CpG are merged by summing read counts. Stores separate mC and hmC
+        arrays (``n_mc``, ``n_hmc``, ``n_c``) alongside ``methylation_pct``
+        ((mC + hmC) / total coverage).
+
+        Parameters
+        ----------
+        cxreport_files : list of str or Path
+            Paths to ``.CXreport.txt.gz`` files from the biomodal pipeline.
+        store_path : Path or str
+            Output Zarr store path.
+        sample_names : list of str, optional
+            Sample names aligned with ``cxreport_files``. Defaults to file stems
+            up to the first ``.``.
+        metadata : DataFrame, Path, or str, optional
+            Sample metadata CSV to attach.
+        filter_chromosomes : bool, default True
+            Keep only canonical chromosomes (``chr*`` without underscores).
+        overwrite : bool, default True
+            Overwrite existing store.
+        resume : bool, default False
+            Resume an existing store.
+        sample_column : str, default "sample_id"
+            Column in ``metadata`` matching sample names.
+        """
+        cxreport_files = [Path(f) for f in cxreport_files]
+        if sample_names is None:
+            sample_names = [f.name.split(".")[0] for f in cxreport_files]
+        if len(sample_names) != len(cxreport_files):
+            raise ValueError("sample_names length must match cxreport_files length")
+
+        store = cls(
+            store_path=store_path,
+            sample_names=sample_names,
+            overwrite=overwrite,
+            resume=resume,
+            mc_hmc_split=True,
+        )
+
+        logger.info("Reading CXreport files...")
+        all_file_data: list[dict[str, pd.DataFrame]] = []
+        for path in cxreport_files:
+            logger.info(f"  {path.name}")
+            all_file_data.append(_read_cxreport(path, filter_chromosomes=filter_chromosomes))
+
+        all_chroms: set[str] = set()
+        for fd in all_file_data:
+            all_chroms.update(fd.keys())
+
+        logger.info(f"Building union positions and writing store ({len(all_chroms)} chroms)...")
+        for chrom in sorted(all_chroms):
+            chrom_samples = [
+                (i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd
+            ]
+            all_positions = np.unique(
+                np.concatenate([df["start"].values for _, df in chrom_samples])
+            )
+            store._init_chrom_arrays(chrom, all_positions)
+
+            pos_to_idx: dict[int, int] = {int(p): i for i, p in enumerate(all_positions)}
+
+            for sample_idx, df in chrom_samples:
+                indices = np.array([pos_to_idx[int(p)] for p in df["start"].values])
+                store.root[chrom]["methylation_pct"][sample_idx, indices] = (
+                    df["methylation_pct"].values
+                )
+                store.root[chrom]["n_mc"][sample_idx, indices] = df["n_mc"].values
+                store.root[chrom]["n_hmc"][sample_idx, indices] = df["n_hmc"].values
+                store.root[chrom]["n_c"][sample_idx, indices] = df["n_c"].values
+
+            logger.info(f"  {chrom}: {len(all_positions)} CpG sites")
+
+        store.meta["completed"][:] = True
+        store.root.attrs["chromosomes"] = sorted(all_chroms)
+
+        if metadata is not None:
+            if isinstance(metadata, (str, Path)):
+                metadata_df = pd.read_csv(metadata)
+            else:
+                metadata_df = metadata
+            store.set_metadata(metadata_df, sample_column=sample_column)
+
+        return store
+
     # ---- Metadata ----
 
     def set_metadata(
@@ -396,7 +578,10 @@ class MethylStore:
             Each DataArray has dims ``(sample, position)`` where ``position``
             holds the actual genomic coordinates (0-based CpG starts).
         """
-        valid = {"methylation_pct", "n_methylated", "n_unmethylated"}
+        if self.has_mc_hmc_split:
+            valid = {"methylation_pct", "n_mc", "n_hmc", "n_c"}
+        else:
+            valid = {"methylation_pct", "n_methylated", "n_unmethylated"}
         if variable not in valid:
             raise ValueError(f"variable must be one of {valid}, got {variable!r}")
 
@@ -515,10 +700,19 @@ class MethylStore:
         if contig_col is not None:
             for chrom in ranges_df[contig_col].unique():
                 if chrom in self.chromosomes:
+                    if self.has_mc_hmc_split:
+                        n_meth = (
+                            self.root[chrom]["n_mc"][:].astype(np.float64)
+                            + self.root[chrom]["n_hmc"][:].astype(np.float64)
+                        )
+                        n_unmeth = self.root[chrom]["n_c"][:].astype(np.float64)
+                    else:
+                        n_meth = self.root[chrom]["n_methylated"][:].astype(np.float64)
+                        n_unmeth = self.root[chrom]["n_unmethylated"][:].astype(np.float64)
                     chrom_data[chrom] = (
                         self.get_positions(chrom),
-                        self.root[chrom]["n_methylated"][:].astype(np.float64),
-                        self.root[chrom]["n_unmethylated"][:].astype(np.float64),
+                        n_meth,
+                        n_unmeth,
                         self.root[chrom]["methylation_pct"][:].astype(np.float64),
                     )
 

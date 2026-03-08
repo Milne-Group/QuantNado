@@ -76,12 +76,14 @@ class MultiomicsStore:
         store_dir: Path | str,
         bam_files: list[str | Path] | None = None,
         bedgraph_files: list[str | Path] | None = None,
+        cxreport_files: list[str | Path] | None = None,
         vcf_files: list[str | Path] | None = None,
         chromsizes: str | Path | dict[str, int] | None = None,
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         bam_sample_names: list[str] | None = None,
         bedgraph_sample_names: list[str] | None = None,
+        cxreport_sample_names: list[str] | None = None,
         vcf_sample_names: list[str] | None = None,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
@@ -152,8 +154,12 @@ class MultiomicsStore:
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
         """
-        if not any([bam_files, bedgraph_files, vcf_files]):
-            raise ValueError("Provide at least one of bam_files, bedgraph_files, or vcf_files")
+        if not any([bam_files, bedgraph_files, cxreport_files, vcf_files]):
+            raise ValueError(
+                "Provide at least one of bam_files, bedgraph_files, cxreport_files, or vcf_files"
+            )
+        if bedgraph_files and cxreport_files:
+            raise ValueError("Provide either bedgraph_files or cxreport_files, not both")
 
         store_dir = Path(store_dir)
         store_dir.mkdir(parents=True, exist_ok=True)
@@ -185,6 +191,19 @@ class MultiomicsStore:
                 bedgraph_files=[str(f) for f in bedgraph_files],
                 store_path=store_dir / "methylation.zarr",
                 sample_names=bedgraph_sample_names,
+                metadata=metadata,
+                filter_chromosomes=filter_chromosomes,
+                overwrite=overwrite,
+                resume=resume,
+                sample_column=sample_column,
+            )
+
+        if cxreport_files:
+            logger.info(f"Building methylation store from {len(cxreport_files)} CXreport file(s)...")
+            MethylStore.from_cxreport_files(
+                cxreport_files=[str(f) for f in cxreport_files],
+                store_path=store_dir / "methylation.zarr",
+                sample_names=cxreport_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
                 overwrite=overwrite,
