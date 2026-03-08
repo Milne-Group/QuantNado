@@ -59,7 +59,7 @@ def two_sample_store(tmp_path, monkeypatch):
     monkeypatch.setattr("quantnado.dataset.store_methyl._read_bedgraph", _make_fake_reader(fake_data))
 
     store = MethylStore.from_bedgraph_files(
-        bedgraph_files=[tmp_path / "s1.bedGraph", tmp_path / "s2.bedGraph"],
+        methyldackel_files=[tmp_path / "s1.bedGraph", tmp_path / "s2.bedGraph"],
         store_path=tmp_path / "methyl",
         sample_names=["s1", "s2"],
     )
@@ -149,13 +149,13 @@ class TestMethylStoreConstruction:
             lambda *a, **k: {"chr1": _fake_bedgraph_data("chr1", [100])},
         )
         MethylStore.from_bedgraph_files(
-            bedgraph_files=[tmp_path / "s1.bedGraph"],
+            methyldackel_files=[tmp_path / "s1.bedGraph"],
             store_path=tmp_path / "m",
             sample_names=["s1"],
         )
         # Overwrite the same path - triggers rmtree + re-init
         store2 = MethylStore.from_bedgraph_files(
-            bedgraph_files=[tmp_path / "s1.bedGraph"],
+            methyldackel_files=[tmp_path / "s1.bedGraph"],
             store_path=tmp_path / "m",
             sample_names=["s1"],
             overwrite=True,
@@ -207,7 +207,7 @@ class TestMethylStoreOpen:
         )
         md = pd.DataFrame({"sample_id": ["s1"], "condition": ["ctrl"]})
         store = MethylStore.from_bedgraph_files(
-            bedgraph_files=[tmp_path / "s1.bedGraph"],
+            methyldackel_files=[tmp_path / "s1.bedGraph"],
             store_path=tmp_path / "m",
             sample_names=["s1"],
             metadata=md,

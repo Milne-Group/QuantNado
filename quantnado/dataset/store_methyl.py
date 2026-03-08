@@ -137,6 +137,100 @@ def _read_cxreport(path: Path | str, filter_chromosomes: bool = True) -> dict[st
     return {chrom: grp[cols].reset_index(drop=True) for chrom, grp in agg.groupby("chrom")}
 
 
+def _read_split_cxreport(
+    mc_path: Path | str | None,
+    hmc_path: Path | str | None,
+    filter_chromosomes: bool = True,
+) -> dict[str, pd.DataFrame]:
+    """
+    Read one or both 7-column split CXreport files (mc and/or hmC) and merge
+    them into per-CpG DataFrames.
+
+    Format (no header): chrom, pos(0-based), strand, n_mod, n_not_mod,
+    context, trinucleotide
+
+    When both files are provided they must have identical row order.
+    total = n_mod_mc + n_not_mod_mc  (same as hmc counterpart).
+    n_c = total - n_mc - n_hmc.
+
+    When only one file is provided the other modification is assumed to be 0:
+    n_c = n_not_mod from the provided file.
+
+    Returns
+    -------
+    dict mapping chromosome name -> DataFrame with columns:
+        start (int64, 0-based), n_mc (uint16), n_hmc (uint16), n_c (uint16),
+        methylation_pct (float32, NaN where total=0)
+    """
+    if mc_path is None and hmc_path is None:
+        raise ValueError("At least one of mc_path or hmc_path must be provided")
+
+    _cols = ["chrom", "pos", "strand", "n_mod", "n_not_mod", "context", "trinuc"]
+    _dtypes = {
+        "chrom": str, "pos": np.int64, "strand": str,
+        "n_mod": np.int32, "n_not_mod": np.int32, "context": str, "trinuc": str,
+    }
+
+    if mc_path is not None and hmc_path is not None:
+        mc = pd.read_csv(Path(mc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
+        hmc = pd.read_csv(Path(hmc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
+        df = pd.DataFrame({
+            "chrom": mc["chrom"],
+            "pos": mc["pos"],
+            "strand": mc["strand"],
+            "n_mc": mc["n_mod"].astype(np.int32),
+            "n_hmc": hmc["n_mod"].astype(np.int32),
+            "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
+        })
+    elif mc_path is not None:
+        mc = pd.read_csv(Path(mc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
+        df = pd.DataFrame({
+            "chrom": mc["chrom"],
+            "pos": mc["pos"],
+            "strand": mc["strand"],
+            "n_mc": mc["n_mod"].astype(np.int32),
+            "n_hmc": np.zeros(len(mc), dtype=np.int32),
+            "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
+        })
+    else:
+        hmc = pd.read_csv(Path(hmc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
+        df = pd.DataFrame({
+            "chrom": hmc["chrom"],
+            "pos": hmc["pos"],
+            "strand": hmc["strand"],
+            "n_mc": np.zeros(len(hmc), dtype=np.int32),
+            "n_hmc": hmc["n_mod"].astype(np.int32),
+            "total": (hmc["n_mod"] + hmc["n_not_mod"]).astype(np.int32),
+        })
+
+    df["n_c"] = (df["total"] - df["n_mc"] - df["n_hmc"]).clip(lower=0).astype(np.int32)
+
+    if filter_chromosomes:
+        df = df[df["chrom"].str.startswith("chr") & ~df["chrom"].str.contains("_")]
+
+    df["canonical_pos"] = np.where(df["strand"] == "+", df["pos"], df["pos"] - 1)
+
+    agg = (
+        df.groupby(["chrom", "canonical_pos"], sort=True)[["n_mc", "n_hmc", "n_c", "total"]]
+        .sum()
+        .reset_index()
+        .rename(columns={"canonical_pos": "start"})
+    )
+    agg["start"] = agg["start"].astype(np.int64)
+
+    total = agg["total"].to_numpy(dtype=np.float32)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        meth_pct = np.where(total > 0, (agg["n_mc"] + agg["n_hmc"]) / total * 100.0, np.nan)
+    agg["methylation_pct"] = meth_pct.astype(np.float32)
+
+    agg["n_mc"] = agg["n_mc"].clip(0, 65535).astype(np.uint16)
+    agg["n_hmc"] = agg["n_hmc"].clip(0, 65535).astype(np.uint16)
+    agg["n_c"] = agg["n_c"].clip(0, 65535).astype(np.uint16)
+
+    cols = ["start", "n_mc", "n_hmc", "n_c", "methylation_pct"]
+    return {chrom: grp[cols].reset_index(drop=True) for chrom, grp in agg.groupby("chrom")}
+
+
 class MethylStore:
     """
     Zarr-backed methylation store for CpG-level data from MethylDackel bedGraph files.
@@ -154,7 +248,7 @@ class MethylStore:
     Example
     -------
     >>> store = MethylStore.from_bedgraph_files(
-    ...     bedgraph_files=["sample1.bedGraph", "sample2.bedGraph"],
+    ...     methyldackel_files=["sample1.bedGraph", "sample2.bedGraph"],
     ...     store_path="methylation.zarr",
     ... )
     >>> xr_dict = store.to_xarray(variable="methylation_pct")
@@ -325,7 +419,7 @@ class MethylStore:
     @classmethod
     def from_bedgraph_files(
         cls,
-        bedgraph_files: list[str | Path],
+        methyldackel_files: list[str | Path],
         store_path: Path | str,
         sample_names: list[str] | None = None,
         metadata: pd.DataFrame | Path | str | None = None,
@@ -344,12 +438,12 @@ class MethylStore:
 
         Parameters
         ----------
-        bedgraph_files : list of str or Path
+        methyldackel_files : list of str or Path
             Paths to MethylDackel bedGraph files.
         store_path : Path or str
             Output Zarr store path.
         sample_names : list of str, optional
-            Sample names aligned with ``bedgraph_files``. Defaults to file stems.
+            Sample names aligned with ``methyldackel_files``. Defaults to file stems.
         metadata : DataFrame, Path, or str, optional
             Sample metadata CSV to attach.
         filter_chromosomes : bool, default True
@@ -361,11 +455,11 @@ class MethylStore:
         sample_column : str, default "sample_id"
             Column in metadata matching sample names.
         """
-        bedgraph_files = [Path(f) for f in bedgraph_files]
+        methyldackel_files = [Path(f) for f in methyldackel_files]
         if sample_names is None:
-            sample_names = [f.stem for f in bedgraph_files]
-        if len(sample_names) != len(bedgraph_files):
-            raise ValueError("sample_names length must match bedgraph_files length")
+            sample_names = [f.stem for f in methyldackel_files]
+        if len(sample_names) != len(methyldackel_files):
+            raise ValueError("sample_names length must match methyldackel_files length")
 
         store = cls(
             store_path=store_path,
@@ -377,7 +471,7 @@ class MethylStore:
         # Read all files into memory (single pass)
         logger.info("Reading bedGraph files...")
         all_file_data: list[dict[str, pd.DataFrame]] = []
-        for path in bedgraph_files:
+        for path in methyldackel_files:
             logger.info(f"  {path.name}")
             all_file_data.append(_read_bedgraph(path, filter_chromosomes=filter_chromosomes))
 
@@ -503,6 +597,246 @@ class MethylStore:
             store._init_chrom_arrays(chrom, all_positions)
 
             pos_to_idx: dict[int, int] = {int(p): i for i, p in enumerate(all_positions)}
+
+            for sample_idx, df in chrom_samples:
+                indices = np.array([pos_to_idx[int(p)] for p in df["start"].values])
+                store.root[chrom]["methylation_pct"][sample_idx, indices] = (
+                    df["methylation_pct"].values
+                )
+                store.root[chrom]["n_mc"][sample_idx, indices] = df["n_mc"].values
+                store.root[chrom]["n_hmc"][sample_idx, indices] = df["n_hmc"].values
+                store.root[chrom]["n_c"][sample_idx, indices] = df["n_c"].values
+
+            logger.info(f"  {chrom}: {len(all_positions)} CpG sites")
+
+        store.meta["completed"][:] = True
+        store.root.attrs["chromosomes"] = sorted(all_chroms)
+
+        if metadata is not None:
+            if isinstance(metadata, (str, Path)):
+                metadata_df = pd.read_csv(metadata)
+            else:
+                metadata_df = metadata
+            store.set_metadata(metadata_df, sample_column=sample_column)
+
+        return store
+
+    @classmethod
+    def from_split_cxreport_files(
+        cls,
+        mc_files: list[str | Path] | None = None,
+        hmc_files: list[str | Path] | None = None,
+        store_path: Path | str = "methylation.zarr",
+        sample_names: list[str] | None = None,
+        metadata: pd.DataFrame | Path | str | None = None,
+        *,
+        filter_chromosomes: bool = True,
+        overwrite: bool = True,
+        resume: bool = False,
+        sample_column: str = "sample_id",
+    ) -> "MethylStore":
+        """
+        Create a MethylStore from 7-column split CXreport files.
+
+        At least one of ``mc_files`` or ``hmc_files`` must be provided. When
+        both are given they must be the same length and aligned per sample.
+        This format is produced by seqnado and newer biomodal pipeline outputs
+        (``*.num_mc_cxreport.txt.gz`` / ``*.num_hmc_cxreport.txt.gz``).
+
+        Parameters
+        ----------
+        mc_files : list of str or Path, optional
+            Paths to ``num_mc_cxreport.txt.gz`` files, one per sample.
+        hmc_files : list of str or Path, optional
+            Paths to ``num_hmc_cxreport.txt.gz`` files, same order as mc_files.
+        store_path : Path or str
+            Output Zarr store path.
+        sample_names : list of str, optional
+            Sample names. Defaults to filename prefix up to first ``.``.
+        metadata : DataFrame, Path, or str, optional
+            Sample metadata CSV to attach.
+        filter_chromosomes : bool, default True
+            Keep only canonical chromosomes (``chr*`` without underscores).
+        overwrite : bool, default True
+            Overwrite existing store.
+        resume : bool, default False
+            Resume an existing store.
+        sample_column : str, default "sample_id"
+            Column in ``metadata`` matching sample names.
+        """
+        mc_files = [Path(f) for f in (mc_files or [])]
+        hmc_files = [Path(f) for f in (hmc_files or [])]
+        if not mc_files and not hmc_files:
+            raise ValueError("Provide at least one of mc_files or hmc_files")
+        if mc_files and hmc_files and len(mc_files) != len(hmc_files):
+            raise ValueError("mc_files and hmc_files must have the same length when both provided")
+
+        # Determine sample count and default names from whichever list is non-empty
+        ref_files = mc_files if mc_files else hmc_files
+        n_samples = len(ref_files)
+        if sample_names is None:
+            sample_names = [f.name.split(".")[0] for f in ref_files]
+        if len(sample_names) != n_samples:
+            raise ValueError("sample_names length must match number of samples")
+
+        store = cls(
+            store_path=store_path,
+            sample_names=sample_names,
+            overwrite=overwrite,
+            resume=resume,
+            mc_hmc_split=True,
+        )
+
+        logger.info("Reading split CXreport files...")
+        all_file_data: list[dict[str, pd.DataFrame]] = []
+        mc_iter = mc_files if mc_files else [None] * n_samples
+        hmc_iter = hmc_files if hmc_files else [None] * n_samples
+        for mc_path, hmc_path in zip(mc_iter, hmc_iter):
+            label = " + ".join(p.name for p in [mc_path, hmc_path] if p is not None)
+            logger.info(f"  {label}")
+            all_file_data.append(
+                _read_split_cxreport(mc_path, hmc_path, filter_chromosomes=filter_chromosomes)
+            )
+
+        all_chroms: set[str] = set()
+        for fd in all_file_data:
+            all_chroms.update(fd.keys())
+
+        logger.info(f"Building union positions and writing store ({len(all_chroms)} chroms)...")
+        for chrom in sorted(all_chroms):
+            chrom_samples = [
+                (i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd
+            ]
+            all_positions = np.unique(
+                np.concatenate([df["start"].values for _, df in chrom_samples])
+            )
+            store._init_chrom_arrays(chrom, all_positions)
+
+            pos_to_idx: dict[int, int] = {int(p): i for i, p in enumerate(all_positions)}
+
+            for sample_idx, df in chrom_samples:
+                indices = np.array([pos_to_idx[int(p)] for p in df["start"].values])
+                store.root[chrom]["methylation_pct"][sample_idx, indices] = (
+                    df["methylation_pct"].values
+                )
+                store.root[chrom]["n_mc"][sample_idx, indices] = df["n_mc"].values
+                store.root[chrom]["n_hmc"][sample_idx, indices] = df["n_hmc"].values
+                store.root[chrom]["n_c"][sample_idx, indices] = df["n_c"].values
+
+            logger.info(f"  {chrom}: {len(all_positions)} CpG sites")
+
+        store.meta["completed"][:] = True
+        store.root.attrs["chromosomes"] = sorted(all_chroms)
+
+        if metadata is not None:
+            if isinstance(metadata, (str, Path)):
+                metadata_df = pd.read_csv(metadata)
+            else:
+                metadata_df = metadata
+            store.set_metadata(metadata_df, sample_column=sample_column)
+
+        return store
+
+    @classmethod
+    def from_mixed_files(
+        cls,
+        methyldackel_files: list[str | Path] | None = None,
+        mc_files: list[str | Path] | None = None,
+        hmc_files: list[str | Path] | None = None,
+        store_path: Path | str = "methylation.zarr",
+        bedgraph_sample_names: list[str] | None = None,
+        mc_hmc_sample_names: list[str] | None = None,
+        metadata: pd.DataFrame | Path | str | None = None,
+        *,
+        filter_chromosomes: bool = True,
+        overwrite: bool = True,
+        resume: bool = False,
+        sample_column: str = "sample_id",
+    ) -> "MethylStore":
+        """
+        Create a MethylStore combining bedGraph (e.g. TAPS) and split CXreport
+        (e.g. evoC) samples into a single store using the extended mC/hmC schema.
+
+        Bedgraph samples are treated as undifferentiated modC:
+        ``n_mc = n_methylated``, ``n_hmc = 0``, ``n_c = n_unmethylated``.
+        """
+        methyldackel_files = [Path(f) for f in (methyldackel_files or [])]
+        mc_files = [Path(f) for f in (mc_files or [])]
+        hmc_files = [Path(f) for f in (hmc_files or [])]
+
+        if not methyldackel_files and not mc_files and not hmc_files:
+            raise ValueError("Provide methyldackel_files and/or mc_files/hmc_files")
+        if mc_files and hmc_files and len(mc_files) != len(hmc_files):
+            raise ValueError("mc_files and hmc_files must have the same length when both provided")
+
+        if bedgraph_sample_names is None:
+            bedgraph_sample_names = [f.stem for f in methyldackel_files]
+        # Default sample names from whichever cx list is non-empty
+        ref_cx = mc_files if mc_files else hmc_files
+        if mc_hmc_sample_names is None:
+            mc_hmc_sample_names = [f.name.split(".")[0] for f in ref_cx]
+
+        all_sample_names = list(bedgraph_sample_names) + list(mc_hmc_sample_names)
+        if len(set(all_sample_names)) != len(all_sample_names):
+            raise ValueError(f"Duplicate sample names across bedgraph and CXreport files")
+
+        store = cls(
+            store_path=store_path,
+            sample_names=all_sample_names,
+            overwrite=overwrite,
+            resume=resume,
+            mc_hmc_split=True,
+        )
+
+        # Read all files
+        logger.info("Reading bedGraph files (as undifferentiated modC)...")
+        bg_data: list[dict[str, pd.DataFrame]] = []
+        for path in methyldackel_files:
+            logger.info(f"  {path.name}")
+            raw = _read_bedgraph(path, filter_chromosomes=filter_chromosomes)
+            # Convert to extended schema: n_mc = n_methylated, n_hmc = 0, n_c = n_unmethylated
+            converted: dict[str, pd.DataFrame] = {}
+            for chrom, df in raw.items():
+                ext = pd.DataFrame({
+                    "start": df["start"],
+                    "n_mc": df["n_methylated"],
+                    "n_hmc": np.zeros(len(df), dtype=np.uint16),
+                    "n_c": df["n_unmethylated"],
+                    "methylation_pct": df["methylation_pct"],
+                })
+                converted[chrom] = ext
+            bg_data.append(converted)
+
+        logger.info("Reading split CXreport files...")
+        cx_data: list[dict[str, pd.DataFrame]] = []
+        n_cx = len(ref_cx)
+        mc_iter = mc_files if mc_files else [None] * n_cx
+        hmc_iter = hmc_files if hmc_files else [None] * n_cx
+        for mc_path, hmc_path in zip(mc_iter, hmc_iter):
+            label = " + ".join(p.name for p in [mc_path, hmc_path] if p is not None)
+            logger.info(f"  {label}")
+            cx_data.append(
+                _read_split_cxreport(mc_path, hmc_path, filter_chromosomes=filter_chromosomes)
+            )
+
+        # bg samples are indices 0..n_bg-1; cx samples are n_bg..n_bg+n_cx-1
+        n_bg = len(bg_data)
+        all_file_data = [(i, fd) for i, fd in enumerate(bg_data)] + [
+            (n_bg + i, fd) for i, fd in enumerate(cx_data)
+        ]
+
+        all_chroms: set[str] = set()
+        for _, fd in all_file_data:
+            all_chroms.update(fd.keys())
+
+        logger.info(f"Building union positions and writing store ({len(all_chroms)} chroms)...")
+        for chrom in sorted(all_chroms):
+            chrom_samples = [(idx, fd[chrom]) for idx, fd in all_file_data if chrom in fd]
+            all_positions = np.unique(
+                np.concatenate([df["start"].values for _, df in chrom_samples])
+            )
+            store._init_chrom_arrays(chrom, all_positions)
+            pos_to_idx = {int(p): i for i, p in enumerate(all_positions)}
 
             for sample_idx, df in chrom_samples:
                 indices = np.array([pos_to_idx[int(p)] for p in df["start"].values])

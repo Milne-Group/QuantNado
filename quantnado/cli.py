@@ -144,19 +144,19 @@ def create_dataset(
         return [v.strip() for v in s.split(",") if v.strip()] if s else []
 
     bam_files = _split(bam)
-    bedgraph_files = _split(bedgraph)
+    methyldackel_files = _split(bedgraph)
     vcf_files = _split(vcf)
     bam_names = _split(bam_sample_names)
     bedgraph_names = _split(bedgraph_sample_names)
     vcf_names = _split(vcf_sample_names)
 
-    if not any([bam_files, bedgraph_files, vcf_files]):
+    if not any([bam_files, methyldackel_files, vcf_files]):
         logger.error("Provide at least one of --bam, --bedgraph, or --vcf.")
         raise typer.Exit(code=1)
 
     modality_counts = [
         f"{len(bam_files)} BAM" if bam_files else None,
-        f"{len(bedgraph_files)} bedGraph" if bedgraph_files else None,
+        f"{len(methyldackel_files)} bedGraph" if methyldackel_files else None,
         f"{len(vcf_files)} VCF" if vcf_files else None,
     ]
     logger.info(f"Building multiomics store at {output}: {', '.join(m for m in modality_counts if m)}")
@@ -167,7 +167,7 @@ def create_dataset(
         MultiomicsStore.from_files(
             store_dir=output,
             bam_files=bam_files or None,
-            bedgraph_files=bedgraph_files or None,
+            methyldackel_files=methyldackel_files or None,
             vcf_files=vcf_files or None,
             chromsizes=chromsizes,
             metadata=metadata,

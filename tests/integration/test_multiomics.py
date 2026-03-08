@@ -65,7 +65,7 @@ def meth_only_store(tmp_path, monkeypatch):
     )
     store = MultiomicsStore.from_files(
         store_dir=tmp_path / "ms",
-        bedgraph_files=[tmp_path / "s1.bedGraph"],
+        methyldackel_files=[tmp_path / "s1.bedGraph"],
         bedgraph_sample_names=["s1"],
     )
     return store
@@ -84,7 +84,7 @@ def meth_and_variant_store(tmp_path, monkeypatch):
     )
     store = MultiomicsStore.from_files(
         store_dir=tmp_path / "ms",
-        bedgraph_files=[tmp_path / "s1.bedGraph"],
+        methyldackel_files=[tmp_path / "s1.bedGraph"],
         bedgraph_sample_names=["s1"],
         vcf_files=[tmp_path / "v1.vcf.gz"],
         vcf_sample_names=["v1"],
@@ -110,7 +110,7 @@ class TestMultiomicsConstruction:
         assert not store_dir.exists()
         MultiomicsStore.from_files(
             store_dir=store_dir,
-            bedgraph_files=[tmp_path / "s1.bedGraph"],
+            methyldackel_files=[tmp_path / "s1.bedGraph"],
             bedgraph_sample_names=["s1"],
         )
         assert store_dir.exists()
