@@ -27,7 +27,7 @@ qn.create_dataset(
     bam_files=["atac.bam", "chip.bam"],
     methyldackel_files=["meth-rep1.bedGraph", "meth-rep2.bedGraph"],
     vcf_files=["snp.vcf.gz"],
-    bedgraph_sample_names=lambda p: p.stem.split("_hg38")[0],
+    methyldackel_sample_names=lambda p: p.stem.split("_hg38")[0],
 )
 
 # Open and explore

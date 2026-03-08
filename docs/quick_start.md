@@ -19,7 +19,7 @@ qn.create_dataset(
     bam_files=["atac.bam", "chip.bam", "rna.bam"],      # coverage
     methyldackel_files=["meth-rep1.bedGraph"],                # methylation
     vcf_files=["snp.vcf.gz"],                            # variants
-    bedgraph_sample_names=lambda p: p.stem.split("_hg38")[0],
+    methyldackel_sample_names=lambda p: p.stem.split("_hg38")[0],
     max_workers=4,
 )
 ```

@@ -84,7 +84,7 @@ class MultiomicsStore:
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         bam_sample_names: list[str] | None = None,
-        bedgraph_sample_names: list[str] | None = None,
+        methyldackel_sample_names: list[str] | None = None,
         cxreport_sample_names: list[str] | None = None,
         mc_hmc_sample_names: list[str] | None = None,
         vcf_sample_names: list[str] | None = None,
@@ -125,7 +125,7 @@ class MultiomicsStore:
             sample names are used to subset the metadata automatically.
         bam_sample_names : list of str, optional
             Override sample names for BAM files (default: file stems).
-        bedgraph_sample_names : list of str, optional
+        methyldackel_sample_names : list of str, optional
             Override sample names for bedGraph files (default: file stems).
             Useful when MethylDackel embeds genome/suffix in the filename,
             e.g. ``meth-rep1_hg38_CpG_inverted.bedGraph`` → ``"meth-rep1"``.
@@ -206,7 +206,7 @@ class MultiomicsStore:
                 mc_files=[str(f) for f in mc_files] if mc_files else None,
                 hmc_files=[str(f) for f in hmc_files] if hmc_files else None,
                 store_path=store_dir / "methylation.zarr",
-                bedgraph_sample_names=bedgraph_sample_names,
+                methyldackel_sample_names=methyldackel_sample_names,
                 mc_hmc_sample_names=mc_hmc_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
@@ -219,7 +219,7 @@ class MultiomicsStore:
             MethylStore.from_bedgraph_files(
                 methyldackel_files=[str(f) for f in methyldackel_files],
                 store_path=store_dir / "methylation.zarr",
-                sample_names=bedgraph_sample_names,
+                sample_names=methyldackel_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
                 overwrite=overwrite,

@@ -744,7 +744,7 @@ class MethylStore:
         mc_files: list[str | Path] | None = None,
         hmc_files: list[str | Path] | None = None,
         store_path: Path | str = "methylation.zarr",
-        bedgraph_sample_names: list[str] | None = None,
+        methyldackel_sample_names: list[str] | None = None,
         mc_hmc_sample_names: list[str] | None = None,
         metadata: pd.DataFrame | Path | str | None = None,
         *,
@@ -769,14 +769,14 @@ class MethylStore:
         if mc_files and hmc_files and len(mc_files) != len(hmc_files):
             raise ValueError("mc_files and hmc_files must have the same length when both provided")
 
-        if bedgraph_sample_names is None:
-            bedgraph_sample_names = [f.stem for f in methyldackel_files]
+        if methyldackel_sample_names is None:
+            methyldackel_sample_names = [f.stem for f in methyldackel_files]
         # Default sample names from whichever cx list is non-empty
         ref_cx = mc_files if mc_files else hmc_files
         if mc_hmc_sample_names is None:
             mc_hmc_sample_names = [f.name.split(".")[0] for f in ref_cx]
 
-        all_sample_names = list(bedgraph_sample_names) + list(mc_hmc_sample_names)
+        all_sample_names = list(methyldackel_sample_names) + list(mc_hmc_sample_names)
         if len(set(all_sample_names)) != len(all_sample_names):
             raise ValueError(f"Duplicate sample names across bedgraph and CXreport files")
 

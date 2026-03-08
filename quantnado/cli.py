@@ -99,7 +99,7 @@ def create_dataset(
     ),
     metadata: Path | None = typer.Option(None, "--metadata", help="Path to metadata CSV file."),
     bam_sample_names: str | None = typer.Option(None, "--bam-sample-names", help="Comma-separated sample name overrides for BAM files."),
-    bedgraph_sample_names: str | None = typer.Option(None, "--bedgraph-sample-names", help="Comma-separated sample name overrides for bedGraph files."),
+    methyldackel_sample_names: str | None = typer.Option(None, "--bedgraph-sample-names", help="Comma-separated sample name overrides for bedGraph files."),
     vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
     sample_column: str = typer.Option("sample_id", "--sample-column", help="Column in metadata matching sample names."),
     filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
@@ -147,7 +147,7 @@ def create_dataset(
     methyldackel_files = _split(bedgraph)
     vcf_files = _split(vcf)
     bam_names = _split(bam_sample_names)
-    bedgraph_names = _split(bedgraph_sample_names)
+    bedgraph_names = _split(methyldackel_sample_names)
     vcf_names = _split(vcf_sample_names)
 
     if not any([bam_files, methyldackel_files, vcf_files]):
@@ -172,7 +172,7 @@ def create_dataset(
             chromsizes=chromsizes,
             metadata=metadata,
             bam_sample_names=bam_names or None,
-            bedgraph_sample_names=bedgraph_names or None,
+            methyldackel_sample_names=bedgraph_names or None,
             vcf_sample_names=vcf_names or None,
             sample_column=sample_column,
             chunk_len=chunk_len,

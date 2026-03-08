@@ -35,6 +35,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 import xarray as xr
+from loguru import logger
 
 from quantnado.analysis.counts import count_features as _feature_counts
 from quantnado.analysis.pca import run_pca as _run_pca
@@ -167,7 +168,7 @@ class QuantNado:
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         bam_sample_names: list[str] | callable | None = None,
-        bedgraph_sample_names: list[str] | callable | None = None,
+        methyldackel_sample_names: list[str] | callable | None = None,
         cxreport_sample_names: list[str] | callable | None = None,
         mc_hmc_sample_names: list[str] | callable | None = None,
         vcf_sample_names: list[str] | callable | None = None,
@@ -212,7 +213,7 @@ class QuantNado:
         bam_sample_names : list of str or callable, optional
             Override sample names for BAM files. A callable receives each
             ``Path`` and returns a ``str`` (e.g. ``lambda p: p.stem``).
-        bedgraph_sample_names : list of str or callable, optional
+        methyldackel_sample_names : list of str or callable, optional
             Override sample names for bedGraph files. A callable receives each
             ``Path`` and returns a ``str``
             (e.g. ``lambda p: p.stem.split("_hg38")[0]``).
@@ -258,10 +259,38 @@ class QuantNado:
             return names
 
         bam_sample_names = _resolve_names(bam_sample_names, bam_files)
-        bedgraph_sample_names = _resolve_names(bedgraph_sample_names, methyldackel_files)
+        methyldackel_sample_names = _resolve_names(methyldackel_sample_names, methyldackel_files)
         cxreport_sample_names = _resolve_names(cxreport_sample_names, cxreport_files)
         mc_hmc_sample_names = _resolve_names(mc_hmc_sample_names, mc_files)
         vcf_sample_names = _resolve_names(vcf_sample_names, vcf_files)
+
+        # Upfront summary of all work to be done
+        summary_lines = [f"Creating QuantNado dataset at '{store_dir}'"]
+        if bam_files:
+            names = bam_sample_names or [Path(f).stem for f in bam_files]
+            summary_lines.append(f"  coverage    ({len(bam_files)} BAM): {names}")
+        if methyldackel_files and (mc_files or hmc_files):
+            bg_names = methyldackel_sample_names or [Path(f).stem for f in methyldackel_files]
+            cx_names = mc_hmc_sample_names or [Path(f).stem for f in (mc_files or hmc_files)]
+            summary_lines.append(
+                f"  methylation ({len(methyldackel_files)} bedGraph + "
+                f"{len(mc_files or hmc_files)} CXreport, mixed): "
+                f"{bg_names + cx_names}"
+            )
+        elif methyldackel_files:
+            names = methyldackel_sample_names or [Path(f).stem for f in methyldackel_files]
+            summary_lines.append(f"  methylation ({len(methyldackel_files)} bedGraph): {names}")
+        elif cxreport_files:
+            names = cxreport_sample_names or [Path(f).stem for f in cxreport_files]
+            summary_lines.append(f"  methylation ({len(cxreport_files)} CXreport): {names}")
+        elif mc_files or hmc_files:
+            n = len(mc_files or hmc_files)
+            names = mc_hmc_sample_names or [Path(f).stem for f in (mc_files or hmc_files)]
+            summary_lines.append(f"  methylation ({n} split CXreport): {names}")
+        if vcf_files:
+            names = vcf_sample_names or [Path(f).stem for f in vcf_files]
+            summary_lines.append(f"  variants    ({len(vcf_files)} VCF): {names}")
+        logger.info("\n".join(summary_lines))
 
         ms = MultiomicsStore.from_files(
             store_dir=store_dir,
@@ -274,7 +303,7 @@ class QuantNado:
             chromsizes=chromsizes,
             metadata=metadata,
             bam_sample_names=bam_sample_names,
-            bedgraph_sample_names=bedgraph_sample_names,
+            methyldackel_sample_names=methyldackel_sample_names,
             cxreport_sample_names=cxreport_sample_names,
             mc_hmc_sample_names=mc_hmc_sample_names,
             vcf_sample_names=vcf_sample_names,
