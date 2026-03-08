@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantnado.dataset.methylation import MethylStore
-from quantnado.dataset.multiomics import MultiomicsStore
-from quantnado.dataset.variants import VariantStore
+from quantnado.dataset.store_methyl import MethylStore
+from quantnado.dataset.store_multiomics import MultiomicsStore
+from quantnado.dataset.store_variants import VariantStore
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ def _make_vcf_reader(chrom="chr1", positions=None):
 def meth_only_store(tmp_path, monkeypatch):
     """MultiomicsStore with only a methylation sub-store."""
     monkeypatch.setattr(
-        "quantnado.dataset.methylation._read_bedgraph",
+        "quantnado.dataset.store_methyl._read_bedgraph",
         _make_bg_reader(),
     )
     store = MultiomicsStore.from_files(
@@ -75,11 +75,11 @@ def meth_only_store(tmp_path, monkeypatch):
 def meth_and_variant_store(tmp_path, monkeypatch):
     """MultiomicsStore with methylation and variants sub-stores."""
     monkeypatch.setattr(
-        "quantnado.dataset.methylation._read_bedgraph",
+        "quantnado.dataset.store_methyl._read_bedgraph",
         _make_bg_reader(),
     )
     monkeypatch.setattr(
-        "quantnado.dataset.variants._read_vcf",
+        "quantnado.dataset.store_variants._read_vcf",
         _make_vcf_reader(),
     )
     store = MultiomicsStore.from_files(
@@ -103,7 +103,7 @@ class TestMultiomicsConstruction:
 
     def test_store_dir_created(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "quantnado.dataset.methylation._read_bedgraph",
+            "quantnado.dataset.store_methyl._read_bedgraph",
             _make_bg_reader(),
         )
         store_dir = tmp_path / "new_dir"

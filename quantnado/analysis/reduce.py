@@ -10,7 +10,7 @@ import pyranges1 as pr
 from typing import TYPE_CHECKING, Iterable
 from loguru import logger
 
-from .enums import ReductionMethod, FeatureType, AnchorPoint
+from ..dataset.enums import ReductionMethod, FeatureType, AnchorPoint
 from .features import (
 	extract_feature_ranges,
 	extract_promoters,

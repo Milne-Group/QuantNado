@@ -8,8 +8,8 @@ import pytest
 from typer.testing import CliRunner
 
 from quantnado.cli import app, combine_metadata_main, make_zarr_main
-from quantnado.dataset.bam import BamStore
-from quantnado.dataset.multiomics import MultiomicsStore
+from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_multiomics import MultiomicsStore
 
 
 runner = CliRunner()
@@ -60,7 +60,7 @@ def test_create_dataset_basic(tmp_path, monkeypatch):
     def fake_from_files(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "sample1.bam"
     bam.write_text("dummy")
@@ -95,7 +95,7 @@ def test_create_dataset_with_metadata(tmp_path, monkeypatch):
     def fake_from_files(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "sample1.bam"
     bam.write_text("dummy")
@@ -117,7 +117,7 @@ def test_create_dataset_overwrite_flag(tmp_path, monkeypatch):
     def fake_from_files(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
@@ -138,7 +138,7 @@ def test_create_dataset_resume_flag(tmp_path, monkeypatch):
     def fake_from_files(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
@@ -156,17 +156,17 @@ def test_create_dataset_resume_flag(tmp_path, monkeypatch):
 def test_create_dataset_chunk_len_flag(tmp_path, monkeypatch):
     calls = []
 
-    def fake_from_bam_files(**kwargs):
+    def fake_from_files(**kwargs):
         calls.append(kwargs)
-        return BamStore(kwargs["store_path"], {"chr1": 4}, ["s"])
 
-    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
 
     result = runner.invoke(app, [
-        "create-dataset", str(bam),
+        "create-dataset",
+        "--bam", str(bam),
         "--output", str(tmp_path / "out.zarr"),
         "--chunk-len", "131072",
         "--log-file", str(tmp_path / "log.log"),
@@ -178,18 +178,18 @@ def test_create_dataset_chunk_len_flag(tmp_path, monkeypatch):
 def test_create_dataset_local_staging_flags(tmp_path, monkeypatch):
     calls = []
 
-    def fake_from_bam_files(**kwargs):
+    def fake_from_files(**kwargs):
         calls.append(kwargs)
-        return BamStore(kwargs["store_path"], {"chr1": 4}, ["s"])
 
-    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
     staging_dir = tmp_path / "scratch"
 
     result = runner.invoke(app, [
-        "create-dataset", str(bam),
+        "create-dataset",
+        "--bam", str(bam),
         "--output", str(tmp_path / "out.zarr"),
         "--local-staging",
         "--staging-dir", str(staging_dir),
@@ -203,17 +203,17 @@ def test_create_dataset_local_staging_flags(tmp_path, monkeypatch):
 def test_create_dataset_construction_compression_flag(tmp_path, monkeypatch):
     calls = []
 
-    def fake_from_bam_files(**kwargs):
+    def fake_from_files(**kwargs):
         calls.append(kwargs)
-        return BamStore(kwargs["store_path"], {"chr1": 4}, ["s"])
 
-    monkeypatch.setattr("quantnado.cli.BamStore.from_bam_files", fake_from_bam_files)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
 
     result = runner.invoke(app, [
-        "create-dataset", str(bam),
+        "create-dataset",
+        "--bam", str(bam),
         "--output", str(tmp_path / "out.zarr"),
         "--construction-compression", "fast",
         "--log-file", str(tmp_path / "log.log"),
@@ -226,7 +226,7 @@ def test_create_dataset_propagates_exception(tmp_path, monkeypatch):
     def fake_from_files(**kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("quantnado.dataset.multiomics.MultiomicsStore.from_files", fake_from_files)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
 
     bam = tmp_path / "s.bam"
     bam.write_text("dummy")
@@ -321,7 +321,7 @@ def test_combine_metadata_main_merges_csvs(tmp_path):
 
     # combine_metadata_main() creates a new app internally; invoke it directly
     # by calling BamStore._combine_metadata_files (the underlying logic is tested here)
-    from quantnado.dataset.bam import BamStore
+    from quantnado.dataset.store_bam import BamStore
     combined = BamStore._combine_metadata_files([str(f1), str(f2)])
     combined.to_csv(out, index=False)
 

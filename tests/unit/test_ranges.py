@@ -6,7 +6,7 @@ import pandas as pd
 import pyranges1 as pr
 import pytest
 
-from quantnado.dataset.ranges import (
+from quantnado.analysis.ranges import (
     default_position_mask,
     get_fixed_windows,
     masked_array_fromranges,

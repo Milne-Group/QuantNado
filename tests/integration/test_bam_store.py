@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantnado.dataset.bam import BamStore
-from quantnado.dataset.core import QuantNadoDataset
+from quantnado.dataset.store_bam import BamStore
+from quantnado.analysis.core import QuantNadoDataset
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ def test_bamstore_hash_validation_on_resume(tmp_path, monkeypatch):
 
 def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.dataset.bam._get_chromsizes_from_bam",
+        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
         lambda path: {"chr1": 100, "chr2": 200},
     )
     monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))

@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantnado.dataset.methylation import MethylStore, _read_bedgraph
+from quantnado.dataset.store_methyl import MethylStore, _read_bedgraph
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ def two_sample_store(tmp_path, monkeypatch):
         "s2": {c: _fake_bedgraph_data(c, ps, pct=50.0) for c, ps in positions_s2.items()},
     }
 
-    monkeypatch.setattr("quantnado.dataset.methylation._read_bedgraph", _make_fake_reader(fake_data))
+    monkeypatch.setattr("quantnado.dataset.store_methyl._read_bedgraph", _make_fake_reader(fake_data))
 
     store = MethylStore.from_bedgraph_files(
         bedgraph_files=[tmp_path / "s1.bedGraph", tmp_path / "s2.bedGraph"],
@@ -145,7 +145,7 @@ class TestMethylStoreConstruction:
     def test_overwrite_existing_store(self, tmp_path, monkeypatch):
         # Covers lines 101-106: delete dir + reinit when overwrite=True on existing store
         monkeypatch.setattr(
-            "quantnado.dataset.methylation._read_bedgraph",
+            "quantnado.dataset.store_methyl._read_bedgraph",
             lambda *a, **k: {"chr1": _fake_bedgraph_data("chr1", [100])},
         )
         MethylStore.from_bedgraph_files(
@@ -202,7 +202,7 @@ class TestMethylStoreOpen:
     def test_from_bedgraph_with_metadata_df(self, tmp_path, monkeypatch):
         # Covers lines 317-321: passing metadata DataFrame to from_bedgraph_files
         monkeypatch.setattr(
-            "quantnado.dataset.methylation._read_bedgraph",
+            "quantnado.dataset.store_methyl._read_bedgraph",
             lambda *a, **k: {"chr1": _fake_bedgraph_data("chr1", [100])},
         )
         md = pd.DataFrame({"sample_id": ["s1"], "condition": ["ctrl"]})

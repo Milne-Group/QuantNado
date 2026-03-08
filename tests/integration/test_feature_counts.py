@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantnado.dataset.counts import count_features
+from quantnado.analysis.counts import count_features
 
 
 class TestFeatureCounts:

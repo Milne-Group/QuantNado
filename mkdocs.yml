@@ -124,14 +124,17 @@ nav:
   - Installation: installation.md
   - Quick Start: quick_start.md
   - Usage:
-    - Basics: basic_usage.md
+    - Workflows: basic_usage.md
     - CLI Overview: cli/index.md
     - Create Dataset: cli/create_dataset.md
     - Call Peaks: cli/call_peaks.md
     - CLI Reference: cli.md
   - API Reference:
     - QuantNado: api/quantnado.md
+    - MultiomicsStore: api/multiomicsstore.md
     - BamStore: api/bamstore.md
+    - MethylStore: api/methylstore.md
+    - VariantStore: api/variantstore.md
   - Examples:
     - Overview: examples.md
     - Example Notebook: example_dataset.ipynb

@@ -8,7 +8,7 @@ import pandas as pd
 import pyranges1 as pr
 import pytest
 
-from quantnado.dataset.features import (
+from quantnado.analysis.features import (
     _parse_attributes,
     _to_pyranges,
     annotate_intervals,

@@ -7,8 +7,8 @@ import zarr
 import xarray as xr
 import dask.array as da
 
-from .bamstore import DEFAULT_CHUNK_LEN
-from .metadata import extract_metadata
+from ..dataset.store_bam import DEFAULT_CHUNK_LEN
+from ..dataset.metadata import extract_metadata
 
 
 class QuantNadoDataset:

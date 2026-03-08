@@ -6,7 +6,7 @@ import numpy as np
 from typing import Iterable
 from loguru import logger
 
-from .enums import FeatureType
+from ..dataset.enums import FeatureType
 
 
 """GTF utilities using PyRanges to extract feature ranges (genes/transcripts)

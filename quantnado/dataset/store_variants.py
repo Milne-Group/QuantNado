@@ -13,7 +13,7 @@ import xarray as xr
 import dask.array as da
 
 from .metadata import extract_metadata
-from .bam import _compute_sample_hash, _to_str_list
+from .store_bam import _compute_sample_hash, _to_str_list
 
 DEFAULT_CHUNK_LEN = 65536
 

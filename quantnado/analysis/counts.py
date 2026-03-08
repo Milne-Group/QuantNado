@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .enums import FeatureType
+from ..dataset.enums import FeatureType
 from .features import extract_feature_ranges, load_gtf
 from .reduce import reduce_byranges_signal
 
