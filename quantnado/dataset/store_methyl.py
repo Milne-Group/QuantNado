@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
+import dask.array as da
 import numpy as np
 import pandas as pd
-import zarr
-from zarr.storage import LocalStore
-from zarr.codecs import BloscCodec
-from loguru import logger
 import xarray as xr
-import dask.array as da
+import zarr
+from loguru import logger
+from zarr.codecs import BloscCodec
+from zarr.storage import LocalStore
 
 from .metadata import extract_metadata
 from .store_bam import _compute_sample_hash, _to_str_list
@@ -44,7 +44,9 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
 
     n_cols = df.shape[1]
     if n_cols < 4:
-        raise ValueError(f"bedGraph file {path.name} has only {n_cols} columns; expected at least 4")
+        raise ValueError(
+            f"bedGraph file {path.name} has only {n_cols} columns; expected at least 4"
+        )
 
     df = df.iloc[:, :6]  # ignore extra columns beyond 6
     df.columns = range(df.shape[1])
@@ -167,41 +169,52 @@ def _read_split_cxreport(
 
     _cols = ["chrom", "pos", "strand", "n_mod", "n_not_mod", "context", "trinuc"]
     _dtypes = {
-        "chrom": str, "pos": np.int64, "strand": str,
-        "n_mod": np.int32, "n_not_mod": np.int32, "context": str, "trinuc": str,
+        "chrom": str,
+        "pos": np.int64,
+        "strand": str,
+        "n_mod": np.int32,
+        "n_not_mod": np.int32,
+        "context": str,
+        "trinuc": str,
     }
 
     if mc_path is not None and hmc_path is not None:
         mc = pd.read_csv(Path(mc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
         hmc = pd.read_csv(Path(hmc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
-        df = pd.DataFrame({
-            "chrom": mc["chrom"],
-            "pos": mc["pos"],
-            "strand": mc["strand"],
-            "n_mc": mc["n_mod"].astype(np.int32),
-            "n_hmc": hmc["n_mod"].astype(np.int32),
-            "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
-        })
+        df = pd.DataFrame(
+            {
+                "chrom": mc["chrom"],
+                "pos": mc["pos"],
+                "strand": mc["strand"],
+                "n_mc": mc["n_mod"].astype(np.int32),
+                "n_hmc": hmc["n_mod"].astype(np.int32),
+                "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
+            }
+        )
     elif mc_path is not None:
         mc = pd.read_csv(Path(mc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
-        df = pd.DataFrame({
-            "chrom": mc["chrom"],
-            "pos": mc["pos"],
-            "strand": mc["strand"],
-            "n_mc": mc["n_mod"].astype(np.int32),
-            "n_hmc": np.zeros(len(mc), dtype=np.int32),
-            "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
-        })
+        df = pd.DataFrame(
+            {
+                "chrom": mc["chrom"],
+                "pos": mc["pos"],
+                "strand": mc["strand"],
+                "n_mc": mc["n_mod"].astype(np.int32),
+                "n_hmc": np.zeros(len(mc), dtype=np.int32),
+                "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
+            }
+        )
     else:
         hmc = pd.read_csv(Path(hmc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
-        df = pd.DataFrame({
-            "chrom": hmc["chrom"],
-            "pos": hmc["pos"],
-            "strand": hmc["strand"],
-            "n_mc": np.zeros(len(hmc), dtype=np.int32),
-            "n_hmc": hmc["n_mod"].astype(np.int32),
-            "total": (hmc["n_mod"] + hmc["n_not_mod"]).astype(np.int32),
-        })
+        df = pd.DataFrame(
+            {
+                "chrom": hmc["chrom"],
+                "pos": hmc["pos"],
+                "strand": hmc["strand"],
+                "n_mc": np.zeros(len(hmc), dtype=np.int32),
+                "n_hmc": hmc["n_mod"].astype(np.int32),
+                "total": (hmc["n_mod"] + hmc["n_not_mod"]).astype(np.int32),
+            }
+        )
 
     df["n_c"] = (df["total"] - df["n_mc"] - df["n_hmc"]).clip(lower=0).astype(np.int32)
 
@@ -483,9 +496,7 @@ class MethylStore:
         logger.info(f"Building union positions and writing store ({len(all_chroms)} chroms)...")
         for chrom in sorted(all_chroms):
             # (sample_idx, DataFrame) pairs for this chromosome
-            chrom_samples = [
-                (i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd
-            ]
+            chrom_samples = [(i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd]
             # Union of CpG start positions across all samples
             all_positions = np.unique(
                 np.concatenate([df["start"].values for _, df in chrom_samples])
@@ -496,15 +507,13 @@ class MethylStore:
 
             for sample_idx, df in chrom_samples:
                 indices = np.array([pos_to_idx[int(p)] for p in df["start"].values])
-                store.root[chrom]["methylation_pct"][sample_idx, indices] = (
-                    df["methylation_pct"].values
-                )
-                store.root[chrom]["n_methylated"][sample_idx, indices] = (
-                    df["n_methylated"].values
-                )
-                store.root[chrom]["n_unmethylated"][sample_idx, indices] = (
-                    df["n_unmethylated"].values
-                )
+                store.root[chrom]["methylation_pct"][sample_idx, indices] = df[
+                    "methylation_pct"
+                ].values
+                store.root[chrom]["n_methylated"][sample_idx, indices] = df["n_methylated"].values
+                store.root[chrom]["n_unmethylated"][sample_idx, indices] = df[
+                    "n_unmethylated"
+                ].values
 
             logger.info(f"  {chrom}: {len(all_positions)} CpG sites")
 
@@ -588,9 +597,7 @@ class MethylStore:
 
         logger.info(f"Building union positions and writing store ({len(all_chroms)} chroms)...")
         for chrom in sorted(all_chroms):
-            chrom_samples = [
-                (i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd
-            ]
+            chrom_samples = [(i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd]
             all_positions = np.unique(
                 np.concatenate([df["start"].values for _, df in chrom_samples])
             )
@@ -600,9 +607,9 @@ class MethylStore:
 
             for sample_idx, df in chrom_samples:
                 indices = np.array([pos_to_idx[int(p)] for p in df["start"].values])
-                store.root[chrom]["methylation_pct"][sample_idx, indices] = (
-                    df["methylation_pct"].values
-                )
+                store.root[chrom]["methylation_pct"][sample_idx, indices] = df[
+                    "methylation_pct"
+                ].values
                 store.root[chrom]["n_mc"][sample_idx, indices] = df["n_mc"].values
                 store.root[chrom]["n_hmc"][sample_idx, indices] = df["n_hmc"].values
                 store.root[chrom]["n_c"][sample_idx, indices] = df["n_c"].values
@@ -704,9 +711,7 @@ class MethylStore:
 
         logger.info(f"Building union positions and writing store ({len(all_chroms)} chroms)...")
         for chrom in sorted(all_chroms):
-            chrom_samples = [
-                (i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd
-            ]
+            chrom_samples = [(i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd]
             all_positions = np.unique(
                 np.concatenate([df["start"].values for _, df in chrom_samples])
             )
@@ -716,9 +721,9 @@ class MethylStore:
 
             for sample_idx, df in chrom_samples:
                 indices = np.array([pos_to_idx[int(p)] for p in df["start"].values])
-                store.root[chrom]["methylation_pct"][sample_idx, indices] = (
-                    df["methylation_pct"].values
-                )
+                store.root[chrom]["methylation_pct"][sample_idx, indices] = df[
+                    "methylation_pct"
+                ].values
                 store.root[chrom]["n_mc"][sample_idx, indices] = df["n_mc"].values
                 store.root[chrom]["n_hmc"][sample_idx, indices] = df["n_hmc"].values
                 store.root[chrom]["n_c"][sample_idx, indices] = df["n_c"].values
@@ -797,13 +802,15 @@ class MethylStore:
             # Convert to extended schema: n_mc = n_methylated, n_hmc = 0, n_c = n_unmethylated
             converted: dict[str, pd.DataFrame] = {}
             for chrom, df in raw.items():
-                ext = pd.DataFrame({
-                    "start": df["start"],
-                    "n_mc": df["n_methylated"],
-                    "n_hmc": np.zeros(len(df), dtype=np.uint16),
-                    "n_c": df["n_unmethylated"],
-                    "methylation_pct": df["methylation_pct"],
-                })
+                ext = pd.DataFrame(
+                    {
+                        "start": df["start"],
+                        "n_mc": df["n_methylated"],
+                        "n_hmc": np.zeros(len(df), dtype=np.uint16),
+                        "n_c": df["n_unmethylated"],
+                        "methylation_pct": df["methylation_pct"],
+                    }
+                )
                 converted[chrom] = ext
             bg_data.append(converted)
 
@@ -840,9 +847,9 @@ class MethylStore:
 
             for sample_idx, df in chrom_samples:
                 indices = np.array([pos_to_idx[int(p)] for p in df["start"].values])
-                store.root[chrom]["methylation_pct"][sample_idx, indices] = (
-                    df["methylation_pct"].values
-                )
+                store.root[chrom]["methylation_pct"][sample_idx, indices] = df[
+                    "methylation_pct"
+                ].values
                 store.root[chrom]["n_mc"][sample_idx, indices] = df["n_mc"].values
                 store.root[chrom]["n_hmc"][sample_idx, indices] = df["n_hmc"].values
                 store.root[chrom]["n_c"][sample_idx, indices] = df["n_c"].values
@@ -863,9 +870,7 @@ class MethylStore:
 
     # ---- Metadata ----
 
-    def set_metadata(
-        self, metadata: pd.DataFrame, sample_column: str = "sample_id"
-    ) -> None:
+    def set_metadata(self, metadata: pd.DataFrame, sample_column: str = "sample_id") -> None:
         """Store metadata columns from a DataFrame."""
         self._check_writable()
         if sample_column not in metadata.columns:
@@ -1004,7 +1009,9 @@ class MethylStore:
                 raise TypeError("Provide ranges_df, bed_file, or gtf_file")
             gtf_source = load_gtf(gtf_file, feature_types=None)
             ranges_df = pd.DataFrame(extract_feature_ranges(gtf_source, feature_type=feature_type))
-            ranges_df = ranges_df.rename(columns={"Chromosome": "contig", "Start": "start", "End": "end"})
+            ranges_df = ranges_df.rename(
+                columns={"Chromosome": "contig", "Start": "start", "End": "end"}
+            )
             if feature_id_col is None:
                 for candidate in ("gene_id", "transcript_id", "gene_name", "transcript_name"):
                     if candidate in ranges_df.columns:
@@ -1012,7 +1019,10 @@ class MethylStore:
                         break
         elif bed_file is not None:
             ranges_df = pd.read_csv(
-                bed_file, sep="\t", header=None, usecols=[0, 1, 2],
+                bed_file,
+                sep="\t",
+                header=None,
+                usecols=[0, 1, 2],
                 names=["contig", "start", "end"],
             )
 
@@ -1024,7 +1034,9 @@ class MethylStore:
         if strand is not None and "strand" in ranges_df.columns:
             ranges_df = ranges_df[ranges_df["strand"] == strand].reset_index(drop=True)
 
-        contig_col = next((c for c in ("contig", "Chromosome", "chrom") if c in ranges_df.columns), None)
+        contig_col = next(
+            (c for c in ("contig", "Chromosome", "chrom") if c in ranges_df.columns), None
+        )
         start_col = next((c for c in ("start", "Start") if c in ranges_df.columns), "start")
         end_col = next((c for c in ("end", "End") if c in ranges_df.columns), "end")
 
@@ -1035,10 +1047,9 @@ class MethylStore:
             for chrom in ranges_df[contig_col].unique():
                 if chrom in self.chromosomes:
                     if self.has_mc_hmc_split:
-                        n_meth = (
-                            self.root[chrom]["n_mc"][:].astype(np.float64)
-                            + self.root[chrom]["n_hmc"][:].astype(np.float64)
-                        )
+                        n_meth = self.root[chrom]["n_mc"][:].astype(np.float64) + self.root[chrom][
+                            "n_hmc"
+                        ][:].astype(np.float64)
                         n_unmeth = self.root[chrom]["n_c"][:].astype(np.float64)
                     else:
                         n_meth = self.root[chrom]["n_methylated"][:].astype(np.float64)
@@ -1084,7 +1095,7 @@ class MethylStore:
                 rows_pct.append(np.full(self.n_samples, np.nan))
                 continue
 
-            s_meth = n_meth[:, lo:hi]       # (n_samples, n_sites)
+            s_meth = n_meth[:, lo:hi]  # (n_samples, n_sites)
             s_unmeth = n_unmeth[:, lo:hi]
             s_pct = meth_pct[:, lo:hi]
 
@@ -1118,16 +1129,21 @@ class MethylStore:
         }
 
         # ── Build feature metadata ────────────────────────────────────────────
-        feature_metadata = pd.DataFrame({
-            "start": ranges_df[start_col].values,
-            "end": ranges_df[end_col].values,
-            "range_length": (ranges_df[end_col] - ranges_df[start_col]).values,
-            "n_cpg_total": n_cpg_total,
-        }, index=idx)
+        feature_metadata = pd.DataFrame(
+            {
+                "start": ranges_df[start_col].values,
+                "end": ranges_df[end_col].values,
+                "range_length": (ranges_df[end_col] - ranges_df[start_col]).values,
+                "n_cpg_total": n_cpg_total,
+            },
+            index=idx,
+        )
         if contig_col is not None:
             feature_metadata.insert(0, "contig", ranges_df[contig_col].values)
         if "strand" in ranges_df.columns:
-            feature_metadata.insert(feature_metadata.columns.get_loc("start"), "strand", ranges_df["strand"].values)
+            feature_metadata.insert(
+                feature_metadata.columns.get_loc("start"), "strand", ranges_df["strand"].values
+            )
 
         # Apply feature_id_col as shared index across all outputs
         id_cols = [feature_id_col] if isinstance(feature_id_col, str) else (feature_id_col or [])
@@ -1310,7 +1326,7 @@ class MethylStore:
         ... )
         >>> ax = metaplot(binned_meth, modality="methylation", title="CpG methylation at TSS")
         """
-        from quantnado.analysis.reduce import _resolve_ranges, _log_chromosome_overlap
+        from quantnado.analysis.reduce import _log_chromosome_overlap, _resolve_ranges
         from quantnado.dataset.enums import AnchorPoint
 
         # Resolve window
@@ -1437,5 +1453,10 @@ class MethylStore:
             data_arr,
             dims=("interval", pos_dim, "sample"),
             coords=coords,
-            attrs={"variable": variable, "upstream": _upstream, "downstream": _downstream, "bin_size": bin_size},
+            attrs={
+                "variable": variable,
+                "upstream": _upstream,
+                "downstream": _downstream,
+                "bin_size": bin_size,
+            },
         )

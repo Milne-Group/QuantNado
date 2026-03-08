@@ -37,7 +37,6 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantnado.utils import classify_methylation_files
 from quantnado.analysis.counts import count_features as _feature_counts
 from quantnado.analysis.pca import run_pca as _run_pca
 from quantnado.analysis.plot import locus_plot, metaplot, tornadoplot
@@ -247,22 +246,143 @@ class QuantNado:
         QuantNado
         """
 
-        # Classify methylation files by filename pattern
-        methyldackel_files, cxreport_files, mc_files, hmc_files = classify_methylation_files(
-            [str(f) for f in (methylation_files or [])]
+        # Classify methylation files by filename pattern, tracking names alongside files
+        # so name assignment follows type-based reordering rather than alphabetical position.
+        _meth_files = [str(f) for f in (methylation_files or [])]
+        _meth_names = (
+            list(methylation_sample_names)
+            if methylation_sample_names
+            else [None] * len(_meth_files)
         )
-        n_bg = len(methyldackel_files)
-        n_cx = len(cxreport_files)
-        n_mchmc = max(len(mc_files), len(hmc_files))
-        meth_names = methylation_sample_names or []
-        methyldackel_sample_names = meth_names[:n_bg] or None
-        cxreport_sample_names = meth_names[n_bg:n_bg + n_cx] or None
-        mc_hmc_sample_names = meth_names[n_bg + n_cx:n_bg + n_cx + n_mchmc] or None
+        methyldackel_files, methyldackel_names = [], []
+        cxreport_files, cxreport_names = [], []
+        mc_files, mc_names = [], []
+        hmc_files, hmc_names = [], []
+        for _f, _n in zip(_meth_files, _meth_names):
+            _fname = Path(_f).name
+            if "num_hmc_cxreport" in _fname:
+                hmc_files.append(_f)
+                hmc_names.append(_n)
+            elif "num_mc_cxreport" in _fname:
+                mc_files.append(_f)
+                mc_names.append(_n)
+            elif "CXreport" in _fname:
+                cxreport_files.append(_f)
+                cxreport_names.append(_n)
+            else:
+                methyldackel_files.append(_f)
+                methyldackel_names.append(_n)
+        methyldackel_sample_names = [
+            n or Path(f).stem for n, f in zip(methyldackel_names, methyldackel_files)
+        ] or None
+        cxreport_sample_names = [
+            n or Path(f).name.split(".")[0] for n, f in zip(cxreport_names, cxreport_files)
+        ] or None
+        _cx_names = mc_names or hmc_names
+        _cx_files = mc_files or hmc_files
+        mc_hmc_sample_names = [
+            n or Path(f).name.split(".")[0] for n, f in zip(_cx_names, _cx_files)
+        ] or None
 
         if callable(bam_sample_names) and bam_files is not None:
             bam_sample_names = [bam_sample_names(Path(f)) for f in bam_files]
         if callable(vcf_sample_names) and vcf_files is not None:
             vcf_sample_names = [vcf_sample_names(Path(f)) for f in vcf_files]
+
+        # Pre-flight validation: check files and names before any work starts
+        def _require_file(p: str | Path, label: str) -> Path:
+            p = Path(p)
+            if not p.exists():
+                raise FileNotFoundError(f"{label}: file not found: {p}")
+            if p.stat().st_size == 0:
+                raise ValueError(f"{label}: file is empty: {p}")
+            return p
+
+        if bam_files:
+            for f in bam_files:
+                p = _require_file(f, "BAM")
+                if p.suffix.lower() != ".bam":
+                    raise ValueError(f"BAM: expected .bam extension, got: {p.name}")
+                if not (
+                    p.with_suffix(".bam.bai").exists()
+                    or Path(str(p) + ".bai").exists()
+                    or Path(str(p) + ".csi").exists()
+                ):
+                    raise FileNotFoundError(f"BAM: missing index (.bai/.csi) for: {p}")
+
+        for f in methyldackel_files + cxreport_files + mc_files + hmc_files:
+            _require_file(f, "methylation")
+
+        if methylation_sample_names and len(methylation_sample_names) != len(_meth_files):
+            raise ValueError(
+                f"methylation_sample_names length ({len(methylation_sample_names)}) "
+                f"!= methylation_files length ({len(_meth_files)})"
+            )
+
+        if vcf_files:
+            for f in vcf_files:
+                p = _require_file(f, "VCF")
+                name = p.name.lower()
+                if not name.endswith(".vcf.gz"):
+                    raise ValueError(f"VCF: expected .vcf.gz file, got: {p.name}")
+                if not (Path(str(p) + ".tbi").exists() or Path(str(p) + ".csi").exists()):
+                    raise FileNotFoundError(f"VCF: missing tabix index (.tbi/.csi) for: {p}")
+
+        def _check_dupes(names: list[str], label: str) -> None:
+            seen, dupes = set(), set()
+            for n in names:
+                (dupes if n in seen else seen).add(n)
+            if dupes:
+                raise ValueError(f"Duplicate sample names in {label}: {sorted(dupes)}")
+
+        if bam_files:
+            _bam_names = bam_sample_names or [Path(f).stem for f in bam_files]
+            if len(_bam_names) != len(bam_files):
+                raise ValueError(
+                    f"bam_sample_names length ({len(_bam_names)}) != bam_files length ({len(bam_files)})"
+                )
+            _check_dupes(_bam_names, "bam_sample_names")
+
+        if methyldackel_files or cxreport_files or mc_files or hmc_files:
+            _bg = methyldackel_sample_names or []
+            _cx = cxreport_sample_names or []
+            _mchmc = mc_hmc_sample_names or []
+            _check_dupes(_bg, "methylation bedGraph sample names")
+            _check_dupes(_cx, "methylation CXreport sample names")
+            _check_dupes(_mchmc, "methylation mc/hmc sample names")
+            # Cross-category duplicate check with per-name diagnostics
+            _tagged: list[tuple[str, str, str]] = (  # (name, category, file)
+                [(n, "bedGraph", f) for n, f in zip(_bg, methyldackel_files)]
+                + [(n, "CXreport", f) for n, f in zip(_cx, cxreport_files)]
+                + [(n, "mc/hmc", f) for n, f in zip(_mchmc, (mc_files or hmc_files))]
+            )
+            _seen: dict[str, tuple[str, str]] = {}
+            _cross_dupes: dict[str, list[str]] = {}
+            for _name, _cat, _file in _tagged:
+                if _name in _seen:
+                    _cross_dupes.setdefault(_name, [
+                        f"{_seen[_name][0]}: {Path(_seen[_name][1]).name}"
+                    ]).append(f"{_cat}: {Path(_file).name}")
+                else:
+                    _seen[_name] = (_cat, _file)
+            if _cross_dupes:
+                _lines = "\n".join(
+                    f"  '{n}':\n" + "\n".join(f"    - {loc}" for loc in locs)
+                    for n, locs in sorted(_cross_dupes.items())
+                )
+                raise ValueError(
+                    f"Duplicate methylation sample names across file types:\n{_lines}\n"
+                    "Check that each sample appears in only one methylation file type, "
+                    "or supply explicit methylation_sample_names to disambiguate."
+                )
+
+        if vcf_files:
+            _vcf_names = vcf_sample_names or [Path(f).name.split(".")[0] for f in vcf_files]
+            if len(_vcf_names) != len(vcf_files):
+                raise ValueError(
+                    f"vcf_sample_names length ({len(_vcf_names)}) != vcf_files length ({len(vcf_files)})"
+                )
+            _check_dupes(_vcf_names, "vcf_sample_names")
 
         # Upfront summary of all work to be done, grouped by sample
         sample_modalities: dict[str, list[str]] = {}
@@ -280,11 +400,19 @@ class QuantNado:
                 "methylation",
             )
         elif methyldackel_files:
-            _register(methyldackel_sample_names or [Path(f).stem for f in methyldackel_files], "methylation")
+            _register(
+                methyldackel_sample_names or [Path(f).stem for f in methyldackel_files],
+                "methylation",
+            )
         elif cxreport_files:
-            _register(cxreport_sample_names or [Path(f).stem for f in cxreport_files], "methylation")
+            _register(
+                cxreport_sample_names or [Path(f).stem for f in cxreport_files], "methylation"
+            )
         elif mc_files or hmc_files:
-            _register(mc_hmc_sample_names or [Path(f).stem for f in (mc_files or hmc_files)], "methylation")
+            _register(
+                mc_hmc_sample_names or [Path(f).stem for f in (mc_files or hmc_files)],
+                "methylation",
+            )
         if vcf_files:
             _register(vcf_sample_names or [Path(f).stem for f in vcf_files], "variants")
 
@@ -932,9 +1060,7 @@ class QuantNado:
         if methylation is None and any(m == "methylation" for m in modality):
             if self.methylation is None:
                 raise RuntimeError("No methylation store available for auto-fetch.")
-            methylation = self.methylation.extract_region(
-                locus, variable="methylation_pct"
-            )
+            methylation = self.methylation.extract_region(locus, variable="methylation_pct")
 
         return locus_plot(
             locus,
