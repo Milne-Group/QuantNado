@@ -442,6 +442,8 @@ def tornadoplot(
     )
     if n_panels == 1:
         axes = [axes]
+    else:
+        axes = list(axes)
 
     n_intervals = panels[0][1].shape[0]
     extent = [float(x[0]), float(x[-1]), n_intervals, 0]

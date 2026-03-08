@@ -57,6 +57,8 @@ def count_features(
         Optional column to aggregate counts/metadata by (e.g., gene_id when feature_type="exon").
         When set, counts are summed over that key and metadata are aggregated (start min, end max,
         length summed) grouped by the key.
+    strand : str, optional
+        If set to "+" or "-", filter features to that strand. Requires a "strand" or "Strand" column in the input ranges.
     min_count : int
         Minimum count threshold passed to reduction (affects mean masking only; sums unaffected).
     integerize : bool
@@ -220,7 +222,7 @@ def count_features(
                 f"aggregate_by column '{resolved_aggregate_by}' not found in feature metadata"
             )
 
-        counts_df = counts_df.groupby(feature_metadata[resolved_aggregate_by]).sum()
+        counts_df = counts_df.groupby(feature_metadata[resolved_aggregate_by].values).sum()
 
         agg_meta = feature_metadata.copy()
         agg_meta[resolved_aggregate_by] = feature_metadata[resolved_aggregate_by].values

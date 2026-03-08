@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import shutil
 from pathlib import Path
 
@@ -36,10 +37,11 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
         chrom, start, end, methylation_pct, n_unmethylated, n_methylated
     """
     path = Path(path)
-    df = pd.read_csv(path, sep="\t", header=None, dtype=str)
-
-    # Drop track/browser header rows (non-numeric second column)
-    df = df[pd.to_numeric(df.iloc[:, 1], errors="coerce").notna()].copy()
+    with open(path) as _fh:
+        _data = "".join(
+            l for l in _fh if not l.startswith(("track ", "browser "))
+        )
+    df = pd.read_csv(io.StringIO(_data), sep="\t", header=None, dtype=str)
     df = df.reset_index(drop=True)
 
     n_cols = df.shape[1]

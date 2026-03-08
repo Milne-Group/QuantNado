@@ -1,12 +1,16 @@
 """Integration tests for the QuantNado high-level facade."""
 from __future__ import annotations
 
+import dask.array as da
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 from quantnado.dataset.store_bam import BamStore
 from quantnado import QuantNado
+from quantnado.analysis.pca import run_pca
+from quantnado.analysis.reduce import reduce_byranges_signal
 
 
 @pytest.fixture
@@ -206,11 +210,94 @@ def test_feature_counts_from_ranges(qn):
 
 
 def test_pca_returns_object_and_transformed(qn):
-    import xarray as xr
-    import dask.array as da
-
     ranges = pd.DataFrame({"contig": ["chr1", "chr2"], "start": [0, 0], "end": [4, 3]})
     reduced = qn.reduce(ranges_df=ranges)
     pca_obj, transformed = qn.pca(reduced["mean"].transpose(), n_components=1)
     assert transformed.compute().shape[0] == 2  # 2 samples
     assert transformed.compute().shape[1] == 1  # 1 component
+
+
+# ---------------------------------------------------------------------------
+# PCA standalone helpers (from test_dataset_flow)
+# ---------------------------------------------------------------------------
+
+
+def test_run_pca_nan_imputation_and_standardize():
+    data = np.array(
+        [
+            [1.0, np.nan, 3.0],
+            [1.0, 2.0, np.nan],
+            [2.0, 2.0, 2.0],
+        ]
+    )
+    darr = xr.DataArray(da.from_array(data, chunks=(2, 3)), dims=("sample", "feature"))
+
+    pca_obj, transformed = run_pca(
+        darr,
+        n_components=2,
+        nan_handling_strategy="mean_value_imputation",
+        standardize=True,
+        random_state=0,
+    )
+
+    transformed_arr = transformed.compute()
+    assert transformed_arr.shape == (3, 2)
+    assert np.all(np.isfinite(transformed_arr))
+    assert np.allclose(transformed_arr.mean(axis=0), 0.0, atol=1e-6)
+
+
+def test_run_pca_drops_nan_columns():
+    data = np.array([[1.0, np.nan], [2.0, 3.0]])
+    darr = xr.DataArray(da.from_array(data, chunks=(2, 2)), dims=("sample", "feature"))
+
+    pca_obj, transformed = run_pca(
+        darr,
+        n_components=1,
+        nan_handling_strategy="drop",
+        random_state=1,
+    )
+
+    transformed_arr = transformed.compute()
+    assert transformed_arr.shape == (2, 1)
+    assert pca_obj.n_components == 1
+
+
+# ---------------------------------------------------------------------------
+# reduce helpers (from test_dataset_flow)
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_with_bed_file_max(simple_store, tmp_path):
+    bed_path = tmp_path / "ranges.bed"
+    pd.DataFrame({"contig": ["chr1"], "start": [0], "end": [4]}).to_csv(
+        bed_path, sep="\t", header=False, index=False
+    )
+
+    reduced = reduce_byranges_signal(
+        simple_store,
+        intervals_path=str(bed_path),
+        reduction="max",
+        include_incomplete=True,
+    )
+
+    assert list(reduced.sample.values) == ["s1", "s2"]
+    assert reduced["max"].shape == (1, 2)
+    assert reduced["max"].values.tolist() == [[1, 2]]
+
+
+def test_reduce_respects_completed_mask(simple_store):
+    simple_store.meta["completed"][:] = False
+    with pytest.raises(ValueError):
+        reduce_byranges_signal(
+            simple_store,
+            ranges_df=pd.DataFrame({"contig": ["chr1"], "start": [0], "end": [2]}),
+            include_incomplete=False,
+        )
+
+
+def test_reduce_invalid_contig_raises(simple_store):
+    with pytest.raises(ValueError):
+        reduce_byranges_signal(
+            simple_store,
+            ranges_df=pd.DataFrame({"contig": ["chrX"], "start": [0], "end": [2]}),
+        )

@@ -305,6 +305,200 @@ def test_make_zarr_main_is_callable():
 # ---------------------------------------------------------------------------
 
 
+def test_create_dataset_methylation_files_passed_through(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_files(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
+
+    meth = tmp_path / "sample1_CpG.bedGraph"
+    meth.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--methylation", str(meth),
+        "--output", str(tmp_path / "out.zarr"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["methyldackel_files"] == [str(meth)]
+
+
+def test_create_dataset_vcf_files_passed_through(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_files(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
+
+    vcf = tmp_path / "sample1.vcf.gz"
+    vcf.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--vcf", str(vcf),
+        "--output", str(tmp_path / "out.zarr"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["vcf_files"] == [str(vcf)]
+
+
+def test_create_dataset_no_inputs_exits_with_error(tmp_path, monkeypatch):
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", lambda **kw: None)
+
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--output", str(tmp_path / "out.zarr"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 1
+
+
+def test_create_dataset_methylation_sample_names_passed_through(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_files(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
+
+    meth = tmp_path / "sample1_CpG.bedGraph"
+    meth.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--methylation", str(meth),
+        "--methylation-sample-names", "my_sample",
+        "--output", str(tmp_path / "out.zarr"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["methyldackel_sample_names"] == ["my_sample"]
+
+
+def test_create_dataset_vcf_sample_names_passed_through(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_files(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
+
+    vcf = tmp_path / "sample1.vcf.gz"
+    vcf.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--vcf", str(vcf),
+        "--vcf-sample-names", "vcf_sample",
+        "--output", str(tmp_path / "out.zarr"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["vcf_sample_names"] == ["vcf_sample"]
+
+
+def test_create_dataset_max_workers_flag(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_files(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
+
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--bam", str(bam),
+        "--output", str(tmp_path / "out.zarr"),
+        "--max-workers", "4",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["max_workers"] == 4
+
+
+def test_create_dataset_test_flag(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_from_files(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
+
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--bam", str(bam),
+        "--output", str(tmp_path / "out.zarr"),
+        "--test",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["test"] is True
+
+
+def test_create_dataset_multiomics_error_propagation(tmp_path, monkeypatch):
+    def fake_from_files(**kwargs):
+        raise ValueError("multiomics store error")
+
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake_from_files)
+
+    meth = tmp_path / "sample1_CpG.bedGraph"
+    meth.write_text("dummy")
+
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--methylation", str(meth),
+        "--output", str(tmp_path / "out.zarr"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 1
+
+
+def test_call_peaks_blacklist_and_merge_flags(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_call_peaks(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_bigwig_dir",
+        fake_call_peaks,
+    )
+
+    bw_dir = tmp_path / "bigwigs"
+    bw_dir.mkdir()
+    chromsizes = tmp_path / "hg38.sizes"
+    chromsizes.write_text("chr1\t248956422\n")
+    blacklist = tmp_path / "blacklist.bed"
+    blacklist.write_text("")
+    out_dir = tmp_path / "peaks"
+
+    result = runner.invoke(app, [
+        "call-peaks",
+        "--bigwig-dir", str(bw_dir),
+        "--output-dir", str(out_dir),
+        "--chromsizes", str(chromsizes),
+        "--blacklist", str(blacklist),
+        "--merge",
+        "--log-file", str(tmp_path / "peaks.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["merge"] is True
+    assert calls[0]["blacklist_file"] == str(blacklist)
+
+
 def test_combine_metadata_main_merges_csvs(tmp_path):
     f1 = tmp_path / "a.csv"
     f2 = tmp_path / "b.csv"

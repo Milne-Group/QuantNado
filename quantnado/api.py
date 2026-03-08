@@ -799,7 +799,12 @@ class QuantNado:
         self,
         data: xr.DataArray,
         n_components: int = 10,
+        chromosome: str | None = None,
         nan_handling_strategy: str = "drop",
+        standardize: bool = False,
+        random_state: int | None = None,
+        subset_size: int | None = None,
+        subset_strategy: str = "random",
     ) -> tuple[Any, xr.DataArray]:
         """
         Run PCA on reduced genomic signal data.
@@ -811,9 +816,19 @@ class QuantNado:
             from ``.reduce()`` (e.g. ``reduced["mean"]``).
         n_components : int, default 10
             Number of principal components.
+        chromosome : str, optional
+            If set, restrict to features from this chromosome (requires "chrom" coordinate).
         nan_handling_strategy : str, default "drop"
             How to handle NaN values: "drop", "set_to_zero", or
             "mean_value_imputation".
+        standardize : bool, default False
+            Whether to standardize features to zero mean and unit variance before PCA.
+        random_state : int or None, default None
+            Random state for PCA reproducibility.
+        subset_size : int or None, default None
+            If set, randomly subset to this many features before PCA (for speed).
+        subset_strategy : str, default "random"
+            Strategy for subsetting features: "random" or "top_variance".
 
         Returns
         -------
@@ -824,7 +839,12 @@ class QuantNado:
         return _run_pca(
             data,
             n_components=n_components,
+            chromosome=chromosome,
             nan_handling_strategy=nan_handling_strategy,
+            standardize=standardize,
+            random_state=random_state,
+            subset_size=subset_size,
+            subset_strategy=subset_strategy,
         )
 
     def metaplot(

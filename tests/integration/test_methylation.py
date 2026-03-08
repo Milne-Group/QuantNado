@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantnado.dataset.store_methyl import MethylStore, _read_bedgraph
+from quantnado.dataset.store_methyl import MethylStore, _read_bedgraph, _read_split_cxreport
 
 
 # ---------------------------------------------------------------------------
@@ -328,3 +328,296 @@ class TestMethylStoreMetadata:
         md = pd.DataFrame({"sample_id": ["s1", "s2"], "x": [1, 2]})
         with pytest.raises(RuntimeError, match="read-only"):
             store_ro.set_metadata(md)
+
+
+# ---------------------------------------------------------------------------
+# Helpers for split CXreport tests
+# ---------------------------------------------------------------------------
+
+def _write_split_cxreport(path, rows):
+    """Write a 7-column split CXreport file.
+
+    Columns: chrom, pos(0-based), strand, n_mod, n_not_mod, context, trinucleotide
+    """
+    content = "\n".join(
+        "\t".join(str(v) for v in row) for row in rows
+    ) + "\n"
+    path.write_text(content)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# TestReadSplitCXreport
+# ---------------------------------------------------------------------------
+
+
+class TestReadSplitCXreport:
+    """Unit-level tests for the _read_split_cxreport helper."""
+
+    def _make_mc_rows(self):
+        # chrom, pos, strand, n_mod, n_not_mod, context, trinuc
+        return [
+            ("chr1", 100, "+", 5, 5, "CG", "CGT"),
+            ("chr1", 101, "-", 3, 7, "CG", "CGC"),
+            ("chr2", 50,  "+", 2, 8, "CG", "CGG"),
+        ]
+
+    def _make_hmc_rows(self):
+        return [
+            ("chr1", 100, "+", 1, 9, "CG", "CGT"),
+            ("chr1", 101, "-", 2, 8, "CG", "CGC"),
+            ("chr2", 50,  "+", 0, 10, "CG", "CGG"),
+        ]
+
+    def test_both_mc_and_hmc_paths(self, tmp_path):
+        mc_path = _write_split_cxreport(tmp_path / "mc.txt", self._make_mc_rows())
+        hmc_path = _write_split_cxreport(tmp_path / "hmc.txt", self._make_hmc_rows())
+
+        result = _read_split_cxreport(mc_path, hmc_path, filter_chromosomes=False)
+
+        assert "chr1" in result
+        assert "chr2" in result
+        df1 = result["chr1"]
+        assert "n_mc" in df1.columns
+        assert "n_hmc" in df1.columns
+        assert "n_c" in df1.columns
+        assert "methylation_pct" in df1.columns
+        # Both strands for chr1 pos 100 and 101 are merged into one row per canonical pos
+        assert len(df1) == 1  # canonical_pos for both rows is 100
+
+    def test_only_mc_path(self, tmp_path):
+        mc_path = _write_split_cxreport(tmp_path / "mc.txt", self._make_mc_rows())
+
+        result = _read_split_cxreport(mc_path, None, filter_chromosomes=False)
+
+        assert "chr1" in result
+        df1 = result["chr1"]
+        # n_hmc should be all zeros
+        assert (df1["n_hmc"] == 0).all()
+        # n_mc should reflect n_mod from mc file
+        assert df1["n_mc"].sum() > 0
+
+    def test_only_hmc_path(self, tmp_path):
+        hmc_path = _write_split_cxreport(tmp_path / "hmc.txt", self._make_hmc_rows())
+
+        result = _read_split_cxreport(None, hmc_path, filter_chromosomes=False)
+
+        assert "chr1" in result
+        df1 = result["chr1"]
+        # n_mc should be all zeros
+        assert (df1["n_mc"] == 0).all()
+        # n_hmc should reflect n_mod from hmc file
+        assert df1["n_hmc"].sum() > 0
+
+    def test_neither_path_raises(self):
+        with pytest.raises(ValueError):
+            _read_split_cxreport(None, None)
+
+    def test_filter_chromosomes_removes_scaffolds(self, tmp_path):
+        rows = [
+            ("chr1", 100, "+", 5, 5, "CG", "CGT"),
+            ("chr1_alt", 100, "+", 2, 8, "CG", "CGT"),
+            ("scaffold1", 50, "+", 1, 9, "CG", "CGT"),
+        ]
+        mc_path = _write_split_cxreport(tmp_path / "mc.txt", rows)
+
+        result_filtered = _read_split_cxreport(mc_path, None, filter_chromosomes=True)
+        result_all = _read_split_cxreport(mc_path, None, filter_chromosomes=False)
+
+        assert "chr1" in result_filtered
+        assert "chr1_alt" not in result_filtered
+        assert "scaffold1" not in result_filtered
+
+        assert "chr1" in result_all
+        assert "chr1_alt" in result_all
+        assert "scaffold1" in result_all
+
+
+# ---------------------------------------------------------------------------
+# TestFromSplitCXreportFiles
+# ---------------------------------------------------------------------------
+
+
+class TestFromSplitCXreportFiles:
+    """Tests for MethylStore.from_split_cxreport_files."""
+
+    def _mc_rows(self):
+        return [
+            ("chr1", 100, "+", 5, 5, "CG", "CGT"),
+            ("chr1", 101, "-", 3, 7, "CG", "CGC"),
+        ]
+
+    def _hmc_rows(self):
+        return [
+            ("chr1", 100, "+", 1, 9, "CG", "CGT"),
+            ("chr1", 101, "-", 2, 8, "CG", "CGC"),
+        ]
+
+    def test_both_mc_and_hmc_files(self, tmp_path):
+        mc = _write_split_cxreport(tmp_path / "s1.num_mc_cxreport.txt", self._mc_rows())
+        hmc = _write_split_cxreport(tmp_path / "s1.num_hmc_cxreport.txt", self._hmc_rows())
+
+        store = MethylStore.from_split_cxreport_files(
+            mc_files=[mc],
+            hmc_files=[hmc],
+            store_path=tmp_path / "methyl",
+            sample_names=["s1"],
+        )
+
+        assert store.sample_names == ["s1"]
+        assert "chr1" in store.chromosomes
+        df = store.root["chr1"]
+        # n_mc and n_hmc arrays should exist
+        assert "n_mc" in df
+        assert "n_hmc" in df
+
+    def test_mc_files_only(self, tmp_path):
+        mc = _write_split_cxreport(tmp_path / "s1.num_mc_cxreport.txt", self._mc_rows())
+
+        store = MethylStore.from_split_cxreport_files(
+            mc_files=[mc],
+            hmc_files=None,
+            store_path=tmp_path / "methyl",
+            sample_names=["s1"],
+        )
+
+        assert store.sample_names == ["s1"]
+        assert "chr1" in store.chromosomes
+
+    def test_hmc_files_only(self, tmp_path):
+        hmc = _write_split_cxreport(tmp_path / "s1.num_hmc_cxreport.txt", self._hmc_rows())
+
+        store = MethylStore.from_split_cxreport_files(
+            mc_files=None,
+            hmc_files=[hmc],
+            store_path=tmp_path / "methyl",
+            sample_names=["s1"],
+        )
+
+        assert store.sample_names == ["s1"]
+        assert "chr1" in store.chromosomes
+
+    def test_neither_mc_nor_hmc_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            MethylStore.from_split_cxreport_files(
+                mc_files=None,
+                hmc_files=None,
+                store_path=tmp_path / "methyl",
+            )
+
+    def test_length_mismatch_raises(self, tmp_path):
+        mc1 = _write_split_cxreport(tmp_path / "s1.num_mc_cxreport.txt", self._mc_rows())
+        mc2 = _write_split_cxreport(tmp_path / "s2.num_mc_cxreport.txt", self._mc_rows())
+        hmc1 = _write_split_cxreport(tmp_path / "s1.num_hmc_cxreport.txt", self._hmc_rows())
+
+        with pytest.raises(ValueError, match="same length"):
+            MethylStore.from_split_cxreport_files(
+                mc_files=[mc1, mc2],
+                hmc_files=[hmc1],  # length mismatch
+                store_path=tmp_path / "methyl",
+            )
+
+    def test_default_sample_names_from_filename(self, tmp_path):
+        mc = _write_split_cxreport(tmp_path / "mysample.num_mc_cxreport.txt", self._mc_rows())
+
+        store = MethylStore.from_split_cxreport_files(
+            mc_files=[mc],
+            store_path=tmp_path / "methyl",
+            sample_names=None,
+        )
+
+        assert store.sample_names == ["mysample"]
+
+
+# ---------------------------------------------------------------------------
+# TestFromMixedFiles
+# ---------------------------------------------------------------------------
+
+
+class TestFromMixedFiles:
+    """Tests for MethylStore.from_mixed_files."""
+
+    def _bg_rows(self):
+        # bedGraph format: chrom, start, end, methylation_pct, n_unmethylated, n_methylated
+        return "chr1\t100\t102\t75.0\t1\t3\nchr1\t200\t202\t50.0\t2\t2\n"
+
+    def _mc_rows(self):
+        return [
+            ("chr1", 300, "+", 4, 6, "CG", "CGT"),
+            ("chr1", 301, "-", 2, 8, "CG", "CGC"),
+        ]
+
+    def _hmc_rows(self):
+        return [
+            ("chr1", 300, "+", 1, 9, "CG", "CGT"),
+            ("chr1", 301, "-", 0, 10, "CG", "CGC"),
+        ]
+
+    def test_bedgraph_only(self, tmp_path):
+        bg = tmp_path / "s1.bedGraph"
+        bg.write_text(self._bg_rows())
+
+        store = MethylStore.from_mixed_files(
+            methyldackel_files=[bg],
+            store_path=tmp_path / "methyl",
+            methyldackel_sample_names=["s1"],
+        )
+
+        assert store.sample_names == ["s1"]
+        assert "chr1" in store.chromosomes
+
+    def test_mc_hmc_only(self, tmp_path):
+        mc = _write_split_cxreport(tmp_path / "s1.num_mc_cxreport.txt", self._mc_rows())
+        hmc = _write_split_cxreport(tmp_path / "s1.num_hmc_cxreport.txt", self._hmc_rows())
+
+        store = MethylStore.from_mixed_files(
+            mc_files=[mc],
+            hmc_files=[hmc],
+            store_path=tmp_path / "methyl",
+            mc_hmc_sample_names=["s1"],
+        )
+
+        assert store.sample_names == ["s1"]
+        assert "chr1" in store.chromosomes
+
+    def test_bedgraph_and_mc_hmc_combination(self, tmp_path):
+        bg = tmp_path / "bg_sample.bedGraph"
+        bg.write_text(self._bg_rows())
+        mc = _write_split_cxreport(tmp_path / "cx_sample.num_mc_cxreport.txt", self._mc_rows())
+        hmc = _write_split_cxreport(tmp_path / "cx_sample.num_hmc_cxreport.txt", self._hmc_rows())
+
+        store = MethylStore.from_mixed_files(
+            methyldackel_files=[bg],
+            mc_files=[mc],
+            hmc_files=[hmc],
+            store_path=tmp_path / "methyl",
+            methyldackel_sample_names=["bg_sample"],
+            mc_hmc_sample_names=["cx_sample"],
+        )
+
+        assert set(store.sample_names) == {"bg_sample", "cx_sample"}
+        assert "chr1" in store.chromosomes
+        # Both bedGraph and split CXreport positions should be in the union
+        positions = store.get_positions("chr1")
+        assert 100 in positions  # from bedGraph
+        assert 300 in positions  # from CXreport
+
+    def test_neither_provided_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            MethylStore.from_mixed_files(
+                store_path=tmp_path / "methyl",
+            )
+
+    def test_duplicate_sample_name_across_categories_raises(self, tmp_path):
+        bg = tmp_path / "shared.bedGraph"
+        bg.write_text(self._bg_rows())
+        mc = _write_split_cxreport(tmp_path / "shared.num_mc_cxreport.txt", self._mc_rows())
+
+        with pytest.raises(ValueError, match="Duplicate"):
+            MethylStore.from_mixed_files(
+                methyldackel_files=[bg],
+                mc_files=[mc],
+                store_path=tmp_path / "methyl",
+                methyldackel_sample_names=["shared"],
+                mc_hmc_sample_names=["shared"],  # same name as bedGraph sample
+            )
