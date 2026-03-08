@@ -736,6 +736,7 @@ class QuantNado:
         strand: str | None = None,
         assays: list[str] | None = None,
         samples: list[str] | None = None,
+        filter_chromosomes: bool = True,
         integerize: bool = False,
         fillna_value: float | int | None = 0,
         min_count: int = 1,
@@ -759,11 +760,17 @@ class QuantNado:
             Column(s) to use as feature identifiers.
         aggregation : str, optional
             Column to aggregate sub-features by.
+        strand : str or int, optional
+            Feature strand filtering or read counting mode:
+            - "+", "-": filter features by strand annotation
+            - 0/1/2: strand-aware read counting (not yet implemented)
         assays : list of str, optional
             Which assays to include in output.
         samples : list of str, optional
             Specific sample names to include in counts (e.g., ['RNA-SEM-1', 'RNA-SEM-2']).
             If provided, only these samples are processed and returned.
+        filter_chromosomes : bool, default True
+            Keep only canonical chromosomes (``chr*`` without underscores).
         integerize : bool, default False
             Round counts to nearest integer for DESeq2.
         fillna_value : float or int or None, default 0
@@ -793,6 +800,7 @@ class QuantNado:
             strand=strand,
             assay=assays[0] if assays else None,
             samples=samples,
+            filter_chromosomes=filter_chromosomes,
             integerize=integerize,
             fillna_value=fillna_value,
             min_count=min_count,

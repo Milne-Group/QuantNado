@@ -24,6 +24,7 @@ def count_features(
     strand: str | None = None,
     assay: str | None = None,
     samples: list[str] | None = None,
+    filter_chromosomes: bool = True,
     integerize: bool = True,
     fillna_value: float | int | None = 0,
     min_count: int = 1,
@@ -59,13 +60,13 @@ def count_features(
         Optional column to aggregate counts/metadata by (e.g., gene_id when feature_type="exon").
         When set, counts are summed over that key and metadata are aggregated (start min, end max,
         length summed) grouped by the key.
-    strand : int, optional
-        Strand-specific read counting mode:
+    strand : str or int, optional
+        Feature strand filtering or read counting mode:
+        - "+", "-": filter features by strand annotation (requires "strand" column in ranges)
         - 0: unstranded (count all reads, default)
         - 1: stranded (count only forward strand reads)
         - 2: reversely stranded (count only reverse strand reads)
-        Currently treated as 0 (unstranded) when using BAM/coverage data.
-        To filter features by strand annotation, manually filter ranges_df before calling.
+        Note: int modes (0/1/2) for strand-aware read counting are not yet implemented for BAM/coverage data.
     min_count : int
         Minimum count threshold passed to reduction (affects mean masking only; sums unaffected).
     integerize : bool
@@ -75,6 +76,8 @@ def count_features(
     samples : list of str, optional
         If set, count only these specific sample names (e.g., ["RNA-SEM-1", "RNA-SEM-2"]).
         If both assay and samples are provided, samples takes precedence.
+    filter_chromosomes : bool, default True
+        Keep only canonical chromosomes (``chr*`` without underscores).
     integerize : bool
         If True, round sums to int64 for DESeq2 compatibility.
     filter_zero : bool
@@ -136,9 +139,24 @@ def count_features(
     if resolved_ranges is not None and "Strand" in resolved_ranges.columns and "strand" not in resolved_ranges.columns:
         resolved_ranges = resolved_ranges.rename(columns={"Strand": "strand"})
 
-    # Note: strand parameter (0=unstranded, 1=stranded, 2=reversely stranded) is intended for
+    # Apply chromosome filtering if requested
+    if filter_chromosomes and resolved_ranges is not None:
+        contig_name = resolved_contig_col or "contig"
+        if contig_name in resolved_ranges.columns:
+            resolved_ranges = resolved_ranges[
+                resolved_ranges[contig_name].str.startswith("chr") & 
+                ~resolved_ranges[contig_name].str.contains("_")
+            ].reset_index(drop=True)
+
+    # Apply strand filtering if requested
+    # strand can be "+" or "-" to filter by feature annotation, or 0/1/2 for read counting mode
+    if strand is not None and resolved_ranges is not None and "strand" in resolved_ranges.columns:
+        if strand in ("+", "-"):
+            resolved_ranges = resolved_ranges[
+                resolved_ranges["strand"] == strand
+            ].reset_index(drop=True)
+    # Note: strand parameter as int (0=unstranded, 1=stranded, 2=reversely stranded) is intended for
     # strand-aware read counting but is not yet implemented for BAM/coverage data.
-    # To filter by strand annotation, manually filter resolved_ranges before this function call.
 
     # Convert sample names to indices if provided
     sample_indices = None
