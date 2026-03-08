@@ -228,6 +228,9 @@ def _select_samples(
 		)
 	else:
 		sample_indices = np.asarray(sample_indices, dtype=np.int64)
+		# Apply completion filter to explicitly provided sample indices
+		if not include_incomplete:
+			sample_indices = sample_indices[completed_mask[sample_indices]]
 
 	if sample_indices.size == 0:
 		raise ValueError("No samples selected")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from ..dataset.enums import FeatureType
@@ -22,6 +23,7 @@ def count_features(
     aggregate_by: str | None = None,
     strand: str | None = None,
     assay: str | None = None,
+    samples: list[str] | None = None,
     integerize: bool = True,
     fillna_value: float | int | None = 0,
     min_count: int = 1,
@@ -57,16 +59,24 @@ def count_features(
         Optional column to aggregate counts/metadata by (e.g., gene_id when feature_type="exon").
         When set, counts are summed over that key and metadata are aggregated (start min, end max,
         length summed) grouped by the key.
-    strand : str, optional
-        If set to "+" or "-", filter features to that strand. Requires a "strand" or "Strand" column in the input ranges.
+    strand : int, optional
+        Strand-specific read counting mode:
+        - 0: unstranded (count all reads, default)
+        - 1: stranded (count only forward strand reads)
+        - 2: reversely stranded (count only reverse strand reads)
+        Currently treated as 0 (unstranded) when using BAM/coverage data.
+        To filter features by strand annotation, manually filter ranges_df before calling.
     min_count : int
         Minimum count threshold passed to reduction (affects mean masking only; sums unaffected).
     integerize : bool
         If True, round sums to int64 for DESeq2 compatibility.
     assay : str, optional
         If set, limit columns to samples matching this assay using attrs['assay_by_sample'] when available.
-    fillna_value : int | float | None
-        Value to fill NaNs in counts before integerization. Set to None to skip filling.
+    samples : list of str, optional
+        If set, count only these specific sample names (e.g., ["RNA-SEM-1", "RNA-SEM-2"]).
+        If both assay and samples are provided, samples takes precedence.
+    integerize : bool
+        If True, round sums to int64 for DESeq2 compatibility.
     filter_zero : bool
         If True, remove features with zero counts across all samples after filling/aggregation.
     Returns
@@ -126,9 +136,26 @@ def count_features(
     if resolved_ranges is not None and "Strand" in resolved_ranges.columns and "strand" not in resolved_ranges.columns:
         resolved_ranges = resolved_ranges.rename(columns={"Strand": "strand"})
 
-    # Filter by strand if requested.
-    if strand is not None and resolved_ranges is not None and "strand" in resolved_ranges.columns:
-        resolved_ranges = resolved_ranges[resolved_ranges["strand"] == strand].reset_index(drop=True)
+    # Note: strand parameter (0=unstranded, 1=stranded, 2=reversely stranded) is intended for
+    # strand-aware read counting but is not yet implemented for BAM/coverage data.
+    # To filter by strand annotation, manually filter resolved_ranges before this function call.
+
+    # Convert sample names to indices if provided
+    sample_indices = None
+    if samples is not None:
+        all_samples = (
+            getattr(dataset, "samples", None) or 
+            getattr(dataset, "sample_names", None)
+        )
+        if all_samples is None:
+            raise ValueError("Dataset does not expose sample names; cannot filter by samples")
+        sample_indices = np.array(
+            [i for i, s in enumerate(all_samples) if s in samples],
+            dtype=int
+        )
+        if len(sample_indices) == 0:
+            raise ValueError(f"No samples matched. Available: {all_samples}")
+
 
     reduced = reduce_byranges_signal(
         dataset,
@@ -139,6 +166,7 @@ def count_features(
         contig_col=resolved_contig_col or "contig",
         min_count=min_count,
         reduction="mean",
+        sample_indices=sample_indices,
         include_incomplete=include_incomplete,
     )
 

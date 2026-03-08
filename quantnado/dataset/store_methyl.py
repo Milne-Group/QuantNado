@@ -39,7 +39,8 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
     path = Path(path)
     with open(path) as _fh:
         _data = "".join(
-            l for l in _fh if not l.startswith(("track ", "browser "))
+            l for l in _fh 
+            if not (l.startswith(("track ", "browser ")) or "type=" in l)
         )
     df = pd.read_csv(io.StringIO(_data), sep="\t", header=None, dtype=str)
     df = df.reset_index(drop=True)

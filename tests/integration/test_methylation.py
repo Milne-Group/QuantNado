@@ -92,6 +92,19 @@ class TestReadBedgraph:
         result = _read_bedgraph(bg, filter_chromosomes=False)
         assert len(result["chr1"]) == 1
 
+    def test_malformed_track_header_skipped(self, tmp_path):
+        """Test that malformed headers with 'type=' are filtered out."""
+        bg = tmp_path / "sample.bedGraph"
+        bg.write_text(
+            'ltrack\ttype="bedGraph" description="test"\n'
+            "chr1\t100\t102\t75.0\t1\t3\n"
+            "chr1\t200\t202\t50.0\t2\t2\n"
+        )
+        result = _read_bedgraph(bg, filter_chromosomes=False)
+        assert len(result["chr1"]) == 2
+        assert result["chr1"]["start"].iloc[0] == 100
+        assert result["chr1"]["start"].iloc[1] == 200
+
     def test_filter_chromosomes_removes_scaffolds(self, tmp_path):
         bg = tmp_path / "sample.bedGraph"
         bg.write_text(

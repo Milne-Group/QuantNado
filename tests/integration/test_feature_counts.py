@@ -238,3 +238,56 @@ class TestFeatureCounts:
         )
         assert counts_df.shape[1] == 2  # 2 samples
         assert "gene_id" in meta.columns or counts_df.index.name == "gene_id" or True
+
+    def test_samples_parameter_filters_to_specified_samples(self, simple_store):
+        """Test that the samples parameter correctly filters to only the specified samples."""
+        ranges = pd.DataFrame({"contig": ["chr1"], "start": [0], "end": [4]})
+        
+        # Count all samples
+        counts_all, _ = count_features(
+            simple_store,
+            ranges_df=ranges,
+            contig_col="contig",
+        )
+        assert counts_all.shape[1] == 2
+        assert list(counts_all.columns) == ["s1", "s2"]
+        
+        # Count only s1
+        counts_s1, _ = count_features(
+            simple_store,
+            ranges_df=ranges,
+            contig_col="contig",
+            samples=["s1"],
+        )
+        assert counts_s1.shape[1] == 1
+        assert list(counts_s1.columns) == ["s1"]
+
+    def test_samples_parameter_with_incomplete_samples_filtered(self, simple_store):
+        """Test that samples parameter respects include_incomplete flag."""
+        # Mark s2 as incomplete
+        simple_store.meta["completed"][1] = False
+        
+        ranges = pd.DataFrame({"contig": ["chr1"], "start": [0], "end": [4]})
+        
+        # Request both s1 and s2, but s2 is incomplete and include_incomplete=False (default)
+        # Should only return s1
+        counts_df, _ = count_features(
+            simple_store,
+            ranges_df=ranges,
+            contig_col="contig",
+            samples=["s1", "s2"],
+            include_incomplete=False,
+        )
+        assert counts_df.shape[1] == 1
+        assert list(counts_df.columns) == ["s1"]
+        
+        # With include_incomplete=True, both should be included
+        counts_df_all, _ = count_features(
+            simple_store,
+            ranges_df=ranges,
+            contig_col="contig",
+            samples=["s1", "s2"],
+            include_incomplete=True,
+        )
+        assert counts_df_all.shape[1] == 2
+        assert list(counts_df_all.columns) == ["s1", "s2"]

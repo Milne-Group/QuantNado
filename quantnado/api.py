@@ -735,6 +735,7 @@ class QuantNado:
         aggregation: str | None = None,
         strand: str | None = None,
         assays: list[str] | None = None,
+        samples: list[str] | None = None,
         integerize: bool = False,
         fillna_value: float | int | None = 0,
         min_count: int = 1,
@@ -760,6 +761,9 @@ class QuantNado:
             Column to aggregate sub-features by.
         assays : list of str, optional
             Which assays to include in output.
+        samples : list of str, optional
+            Specific sample names to include in counts (e.g., ['RNA-SEM-1', 'RNA-SEM-2']).
+            If provided, only these samples are processed and returned.
         integerize : bool, default False
             Round counts to nearest integer for DESeq2.
         fillna_value : float or int or None, default 0
@@ -788,6 +792,7 @@ class QuantNado:
             aggregate_by=aggregation,
             strand=strand,
             assay=assays[0] if assays else None,
+            samples=samples,
             integerize=integerize,
             fillna_value=fillna_value,
             min_count=min_count,
