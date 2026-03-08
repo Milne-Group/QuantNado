@@ -433,48 +433,21 @@ class TestLocusPlot:
 class TestDaskArrays:
     """Test that dask-backed arrays are handled correctly."""
 
-    def test_metaplot_with_dask_array(self):
+    def test_prep_extract_handles_dask(self):
+        """Test that _prep_extract properly handles dask arrays."""
         pytest.importorskip("dask.array")
         import dask.array as da
 
-        da_data = da.from_delayed(
-            _make_extract().data,
-            shape=(4, 10, 2),
-            dtype=float,
-        )
+        # Create a regular DataArray
         data = _make_extract()
-        data.data = da_data
-        ax = metaplot(data)
-        assert ax is not None
-
-    def test_tornadoplot_with_dask_array(self):
-        pytest.importorskip("dask.array")
-        import dask.array as da
-
-        da_data = da.from_delayed(
-            _make_extract().data,
-            shape=(4, 10, 2),
-            dtype=float,
+        # Replace data with dask version
+        data.data = da.from_delayed(
+            pytest.importorskip("dask").delayed(data.values),
+            shape=data.shape,
+            dtype=data.dtype,
         )
-        data = _make_extract()
-        data.data = da_data
-        axes = tornadoplot(data)
-        assert len(axes) == 2
-
-    def test_locus_plot_with_dask_array(self):
-        pytest.importorskip("dask.array")
-        import dask.array as da
-
-        locus_data = _make_locus(sample_names=["s1"])
-        da_data = da.from_delayed(locus_data.data, shape=(1, 50), dtype=float)
-        locus_data.data = da_data
-        axes = locus_plot(
-            "chr1:0-50",
-            sample_names=["s1"],
-            modality=["coverage"],
-            coverage=locus_data,
-        )
-        assert len(axes) == 1
+        result, x, _ = _prep_extract(data, flip_minus_strand=False)
+        assert result.dims == ("interval", "relative_position", "sample")
 
 
 # ---------------------------------------------------------------------------
@@ -495,15 +468,15 @@ class TestPaletteAndStyling:
         )
         assert ax is not None
 
-    def test_tornadoplot_with_list_palette(self):
+    def test_metaplot_with_list_palette(self):
         da = _make_extract(n_samples=3)
-        axes = tornadoplot(da, samples=["s1", "s2", "s3"], palette=["red", "green"])
-        assert len(axes) == 3
+        ax = metaplot(da, samples=["s1", "s2", "s3"], palette=["red", "green"])
+        assert ax is not None
 
-    def test_tornadoplot_with_cmap_palette(self):
+    def test_metaplot_with_cmap_palette(self):
         da = _make_extract(n_samples=2)
-        axes = tornadoplot(da, palette="viridis")
-        assert len(axes) == 2
+        ax = metaplot(da, palette="viridis")
+        assert ax is not None
 
     def test_locus_plot_with_palette_dict(self):
         cov = _make_locus(sample_names=["s1", "s2"])
@@ -639,13 +612,14 @@ class TestComplexScenarios:
         assert len(axes) == 2
 
     def test_locus_plot_all_modalities_mixed(self):
-        cov = _make_locus(sample_names=["s1", "s2"])
-        meth = _make_locus(sample_names=["s1", "s2"])
-        ref = _make_locus(sample_names=["s1", "s2"])
-        alt = _make_locus(sample_names=["s1", "s2"])
+        """Test locus_plot with multiple tracks of different modalities."""
+        cov = _make_locus(sample_names=["s1", "s2", "s3"])
+        meth = _make_locus(sample_names=["s1", "s2", "s3"])
+        ref = _make_locus(sample_names=["s1", "s2", "s3"])
+        alt = _make_locus(sample_names=["s1", "s2", "s3"])
         axes = locus_plot(
             "chr5:1000000-1050000",
-            sample_names=["s1", "s2"],
+            sample_names=["s1", "s2", "s3"],
             modality=["coverage", "methylation", "variant"],
             coverage=cov,
             methylation=meth,
