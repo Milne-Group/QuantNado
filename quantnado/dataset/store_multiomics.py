@@ -93,6 +93,7 @@ class MultiomicsStore:
         staging_dir: "Path | str | None" = None,
         log_file: "Path | None" = None,
         max_workers: int = 1,
+        chr_workers: int = 1,
         test: bool = False,
     ) -> "MultiomicsStore":
         """
@@ -144,7 +145,10 @@ class MultiomicsStore:
         log_file : Path, optional
             Path to write BAM processing logs.
         max_workers : int, default 1
-            Parallel workers for BAM processing.
+            Sample-level parallel workers for BAM processing.
+        chr_workers : int, default 1
+            Chromosome-level parallel workers within each sample thread.
+            Total concurrent BAM reads = max_workers * chr_workers.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
         """
@@ -171,6 +175,7 @@ class MultiomicsStore:
                 staging_dir=staging_dir,
                 log_file=log_file,
                 max_workers=max_workers,
+                chr_workers=chr_workers,
                 test=test,
             )
 

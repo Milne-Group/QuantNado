@@ -562,19 +562,39 @@ class BamStore:
         chromsizes_dict: dict[str, int],
         max_workers: int,
     ) -> tuple[dict[str, np.ndarray], list[float]]:
-        """Process chromosomes sequentially without Python threading.
+        """Process chromosomes for a single BAM file.
+
+        When max_workers > 1, chromosomes are processed in parallel using a
+        thread pool (bamnado releases the GIL so threads run concurrently).
 
         Returns a dict of contig->data and list of sparsity values, preserving
         the original API for tests that monkeypatch this method.
         """
-        sample_data: dict[str, np.ndarray] = {}
-        sparsity_values: list[float] = []
+        contigs = list(chromsizes_dict.keys())
 
-        for contig, size in chromsizes_dict.items():
-            c, data, sparsity = self._process_chromosome(bam_file, contig, size)
-            sample_data[c] = data
-            sparsity_values.append(sparsity)
+        if max_workers <= 1 or len(contigs) <= 1:
+            sample_data: dict[str, np.ndarray] = {}
+            sparsity_values: list[float] = []
+            for contig, size in chromsizes_dict.items():
+                c, data, sparsity = self._process_chromosome(bam_file, contig, size)
+                sample_data[c] = data
+                sparsity_values.append(sparsity)
+            return sample_data, sparsity_values
 
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(self._process_chromosome, bam_file, contig, chromsizes_dict[contig]): contig
+                for contig in contigs
+            }
+            results: dict[str, tuple[np.ndarray, float]] = {}
+            for future in futures:
+                c, data, sparsity = future.result()
+                results[c] = (data, sparsity)
+
+        sample_data = {c: results[c][0] for c in contigs}
+        sparsity_values = [results[c][1] for c in contigs]
         return sample_data, sparsity_values
 
     def _process_single_sample(
@@ -583,6 +603,7 @@ class BamStore:
         bam_file: str,
         sample_name: str,
         chromsizes_dict: dict[str, int],
+        chr_workers: int = 1,
     ) -> tuple[int, dict[str, Any]]:
         logger.info(
             f"Processing sample {sample_idx + 1}/{self.n_samples}: {sample_name}"
@@ -592,7 +613,7 @@ class BamStore:
         chr_data, sparsity_values = self._process_bam_file(
             bam_file,
             chromsizes_dict,
-            max_workers=1,
+            max_workers=chr_workers,
         )
 
         return sample_idx, {
@@ -622,6 +643,7 @@ class BamStore:
         self,
         bam_files: list[str],
         max_workers: int = 1,
+        chr_workers: int = 1,
     ) -> None:
         if len(bam_files) != self.n_samples:
             raise ValueError("bam_files length must match number of sample_names")
@@ -723,6 +745,7 @@ class BamStore:
                     bam_file,
                     sample_name,
                     chromsizes_dict,
+                    chr_workers,
                 )
                 active_futures[future] = sample_idx
                 return True
@@ -780,6 +803,7 @@ class BamStore:
         local_staging: bool = False,
         staging_dir: Path | str | None = None,
         max_workers: int = 1,
+        chr_workers: int = 1,
         log_file: Path | None = None,
         test: bool = False,
     ) -> "BamStore":
@@ -794,6 +818,10 @@ class BamStore:
 
         construction_compression controls build-time compression only and does
         not affect reader compatibility.
+
+        max_workers controls sample-level parallelism (one thread per sample).
+        chr_workers controls chromosome-level parallelism within each sample thread.
+        Total concurrent BAM reads = max_workers * chr_workers.
         """
 
         if log_file is not None:
@@ -858,7 +886,7 @@ class BamStore:
                 overwrite=True if staging_enabled else overwrite,
                 resume=False if staging_enabled else resume,
             )
-            store.process_samples(bam_files, max_workers=max_workers)
+            store.process_samples(bam_files, max_workers=max_workers, chr_workers=chr_workers)
 
             if metadata is not None:
                 if isinstance(metadata, list):

@@ -20,35 +20,58 @@ DEFAULT_CHUNK_LEN = 65536
 
 def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[str, pd.DataFrame]:
     """
-    Read a MethylDackel CpG bedGraph file.
+    Read a CpG bedGraph file from MethylDackel, Bismark, or similar tools.
 
-    Expected columns (after optional track header):
-        chrom, start (0-based), end, methylation_pct, n_unmethylated, n_methylated
+    Supported column layouts (after optional track/browser header lines):
+        4-col: chrom, start, end, methylation_pct
+        5-col: chrom, start, end, methylation_pct, coverage
+        6-col: chrom, start, end, methylation_pct, n_unmethylated, n_methylated
+
+    For files with fewer than 6 columns, n_unmethylated and n_methylated are
+    inferred where possible (5-col: pct*cov and (1-pct)*cov) or set to 0.
 
     Returns
     -------
-    dict mapping chromosome name -> DataFrame with those columns.
+    dict mapping chromosome name -> DataFrame with columns:
+        chrom, start, end, methylation_pct, n_unmethylated, n_methylated
     """
     path = Path(path)
-    df = pd.read_csv(
-        path,
-        sep="\t",
-        header=None,
-        names=["chrom", "start", "end", "methylation_pct", "n_unmethylated", "n_methylated"],
-        dtype=str,
-    )
-    # Drop track/browser header rows (non-numeric start values)
-    df = df[pd.to_numeric(df["start"], errors="coerce").notna()].copy()
-    df["start"] = df["start"].astype(np.int64)
-    df["end"] = df["end"].astype(np.int64)
-    df["methylation_pct"] = df["methylation_pct"].astype(np.float32)
-    df["n_unmethylated"] = df["n_unmethylated"].astype(np.uint16)
-    df["n_methylated"] = df["n_methylated"].astype(np.uint16)
+    df = pd.read_csv(path, sep="\t", header=None, dtype=str)
+
+    # Drop track/browser header rows (non-numeric second column)
+    df = df[pd.to_numeric(df.iloc[:, 1], errors="coerce").notna()].copy()
+    df = df.reset_index(drop=True)
+
+    n_cols = df.shape[1]
+    if n_cols < 4:
+        raise ValueError(f"bedGraph file {path.name} has only {n_cols} columns; expected at least 4")
+
+    df = df.iloc[:, :6]  # ignore extra columns beyond 6
+    df.columns = range(df.shape[1])
+
+    result = pd.DataFrame()
+    result["chrom"] = df[0].astype(str)
+    result["start"] = df[1].astype(np.int64)
+    result["end"] = df[2].astype(np.int64)
+    result["methylation_pct"] = pd.to_numeric(df[3], errors="coerce").astype(np.float32)
+
+    if n_cols >= 6:
+        result["n_unmethylated"] = pd.to_numeric(df[4], errors="coerce").fillna(0).astype(np.uint16)
+        result["n_methylated"] = pd.to_numeric(df[5], errors="coerce").fillna(0).astype(np.uint16)
+    elif n_cols == 5:
+        # 5th column is total coverage; split by methylation_pct
+        coverage = pd.to_numeric(df[4], errors="coerce").fillna(0)
+        pct = result["methylation_pct"].fillna(0) / 100.0
+        result["n_methylated"] = (pct * coverage).round().astype(np.uint16)
+        result["n_unmethylated"] = ((1 - pct) * coverage).round().astype(np.uint16)
+    else:
+        result["n_unmethylated"] = np.uint16(0)
+        result["n_methylated"] = np.uint16(0)
 
     if filter_chromosomes:
-        df = df[df["chrom"].str.startswith("chr") & ~df["chrom"].str.contains("_")]
+        result = result[result["chrom"].str.startswith("chr") & ~result["chrom"].str.contains("_")]
 
-    return {chrom: grp.reset_index(drop=True) for chrom, grp in df.groupby("chrom")}
+    return {chrom: grp.reset_index(drop=True) for chrom, grp in result.groupby("chrom")}
 
 
 class MethylStore:

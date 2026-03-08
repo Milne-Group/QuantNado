@@ -127,7 +127,8 @@ def create_dataset(
         "--staging-dir",
         help="Scratch directory to use for local staging. Defaults to TMPDIR when local staging is enabled.",
     ),
-    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for BAM processing."),
+    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for BAM processing (one per sample)."),
+    chr_workers: int = typer.Option(1, "--chr-workers", help="Parallel threads per sample for chromosome-level processing. Total reads = max-workers * chr-workers."),
     log_file: Path = typer.Option("quantnado_processing.log", "--log-file", help="Path to the log file."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
 ):
@@ -183,6 +184,7 @@ def create_dataset(
             overwrite=overwrite,
             resume=resume,
             max_workers=max_workers,
+            chr_workers=chr_workers,
         )
         logger.success(f"Multiomics store created: {output}")
     except Exception as e:
