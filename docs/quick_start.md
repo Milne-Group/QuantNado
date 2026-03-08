@@ -100,7 +100,7 @@ binned_meth = ds.extract(
 ds.metaplot(binned_meth, modality="methylation", title="CpG methylation at TSS")
 
 # Feature-level methylation stats
-stats, features = ds.methylation.count_features("genes.gtf", feature_type="gene")
+stats, features = ds.methylation.count_features(gtf_file="genes.gtf", feature_type="gene")
 # stats keys: n_methylated, n_unmethylated, n_cpg_covered, methylation_ratio, methylation_pct
 ```
 

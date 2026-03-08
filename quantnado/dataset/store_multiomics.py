@@ -41,7 +41,7 @@ class MultiomicsStore:
     >>> ms.coverage.sample_names
     ['atac', 'meth-rep1']
     >>> ms.methylation.to_xarray()
-    >>> msstore_variants.extract_region("chr21:5000000-6000000")
+    >>> ms.variants.extract_region("chr21:5000000-6000000")
     """
 
     def __init__(self, store_dir: Path | str) -> None:

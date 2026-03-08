@@ -60,7 +60,11 @@ class QuantNado:
     ------------
     >>> qn = QuantNado.open("dataset/")            # MultiomicsStore directory
     >>> qn = QuantNado.open("coverage.zarr")        # BamStore only
-    >>> qn = QuantNado.from_files(                  # create from raw files
+    >>> qn = QuantNado.from_bam_files(              # BAM-only dataset
+    ...     bam_files=["s1.bam", "s2.bam"],
+    ...     store_path="coverage.zarr",
+    ... )
+    >>> qn = QuantNado.create_dataset(              # multi-omics dataset
     ...     store_dir="dataset/",
     ...     bam_files=["s1.bam"],
     ...     bedgraph_files=["s1.bedGraph"],
@@ -110,7 +114,44 @@ class QuantNado:
         path = Path(path)
         if str(path).endswith(".zarr"):
             return cls(BamStore.open(path, read_only=read_only))
+        zarr_path = path.with_suffix(".zarr")
+        if zarr_path.exists():
+            return cls(BamStore.open(zarr_path, read_only=read_only))
         return cls(MultiomicsStore.open(path))
+
+    @classmethod
+    def from_bam_files(
+        cls,
+        bam_files: list[str],
+        store_path: "str | Path",
+        chromsizes: "str | Path | dict[str, int] | None" = None,
+        **kwargs,
+    ) -> "QuantNado":
+        """
+        Create a QuantNado dataset from BAM files.
+
+        Parameters
+        ----------
+        bam_files : list of str
+            BAM file paths.
+        store_path : str or Path
+            Output Zarr store path.
+        chromsizes : str, Path, dict, or None
+            Chromosome sizes. Extracted from first BAM if not provided.
+        **kwargs
+            Passed through to ``BamStore.from_bam_files``.
+
+        Returns
+        -------
+        QuantNado
+        """
+        store = BamStore.from_bam_files(
+            bam_files=bam_files,
+            store_path=store_path,
+            chromsizes=chromsizes,
+            **kwargs,
+        )
+        return cls(store)
 
     @classmethod
     def create_dataset(

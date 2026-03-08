@@ -42,7 +42,7 @@ print(metadata.columns)
 
 # Update or extend
 ds.set_metadata(new_df)
-ds.update_metadata({"batch": "batch1"}, sample_ids=["sample1", "sample2"])
+ds.update_metadata({"batch": "batch1"})
 ```
 
 ### Reduce Signal Over Regions
@@ -50,12 +50,9 @@ ds.update_metadata({"batch": "batch1"}, sample_ids=["sample1", "sample2"])
 Collapse per-base signal over a BED file of regions into a (regions × samples) matrix:
 
 ```python
-# Returns dict with one key per reduction method
+# Returns an xarray Dataset with variables: sum, count, mean
 reduced = ds.reduce("promoters.bed", reduction="mean")
-mat = reduced["mean"]          # numpy array: (n_regions, n_samples)
-
-# Multiple reductions at once
-reduced = ds.reduce("peaks.bed", reduction=["mean", "max", "sum"])
+mat = reduced["mean"]          # DataArray: (n_regions, n_samples)
 ```
 
 ### PCA
@@ -165,7 +162,7 @@ ds.tornadoplot(binned_meth, modality="methylation", sort_by="mean")
 ### Feature-level Methylation Stats
 
 ```python
-stats, features = ds.methylation.count_features("genes.gtf", feature_type="gene")
+stats, features = ds.methylation.count_features(gtf_file="genes.gtf", feature_type="gene")
 # stats is a dict with keys:
 #   n_methylated, n_unmethylated, n_cpg_covered,
 #   methylation_ratio, methylation_pct

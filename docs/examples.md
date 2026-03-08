@@ -390,7 +390,7 @@ input_rep1.bam
 Use the Python API to control worker count when building datasets:
 
 ```python
-from quantnado.dataset.multiomics import MultiomicsStore
+from quantnado import MultiomicsStore
 
 bam_files = ["sample1.bam", "sample2.bam", "sample3.bam"]
 
