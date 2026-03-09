@@ -4,12 +4,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 if TYPE_CHECKING:
+    from typing import Any
     import matplotlib.pyplot as plt
 
-__all__ = ["metaplot", "tornadoplot", "locus_plot"]
+__all__ = ["metaplot", "tornadoplot", "locus_plot", "heatmap", "correlate"]
 
 # Sensible per-modality defaults that metaplot / tornadoplot apply when
 # ``modality`` is provided.  Explicit kwargs passed by the caller always win.
@@ -720,3 +722,261 @@ def locus_plot(
         fig.savefig(filepath, bbox_inches="tight", dpi=150)
 
     return axes
+
+
+# ---------------------------------------------------------------------------
+# Shared helper for heatmap / correlate
+# ---------------------------------------------------------------------------
+
+
+def _extract_signal_matrix(
+    data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+    variable: "str | None",
+    samples: "list[str] | None",
+) -> "tuple[np.ndarray, list[str]]":
+    """Return a (features × samples) float matrix and sample labels from various input types."""
+    if isinstance(data, xr.Dataset):
+        if variable is None:
+            variable = "mean" if "mean" in data.data_vars else next(
+                v for v in data.data_vars if v != "count"
+            )
+        da = data[variable]
+        if hasattr(da, "compute"):
+            da = da.compute()
+        mat = da.values.astype(float)  # (ranges, sample)
+        sample_labels = list(data["sample"].values)
+
+    elif isinstance(data, xr.DataArray):
+        if hasattr(data, "compute"):
+            data = data.compute()
+        mat = data.values.astype(float)
+        if "sample" in data.dims:
+            sample_labels = list(data["sample"].values)
+            sample_axis = data.dims.index("sample")
+            if sample_axis != mat.ndim - 1:
+                mat = np.moveaxis(mat, sample_axis, -1)
+            # Collapse non-sample dims to (features, samples)
+            mat = mat.reshape(-1, mat.shape[-1])
+        else:
+            sample_labels = [f"s{i + 1}" for i in range(mat.shape[-1])]
+
+    elif isinstance(data, pd.DataFrame):
+        mat = data.values.astype(float)
+        sample_labels = list(data.columns)
+
+    else:
+        raise TypeError(
+            f"data must be xr.Dataset, xr.DataArray, or pd.DataFrame; got {type(data).__name__}"
+        )
+
+    if samples is not None:
+        missing = set(samples) - set(sample_labels)
+        if missing:
+            raise ValueError(f"Samples not found in data: {missing}")
+        idx = [sample_labels.index(s) for s in samples]
+        mat = mat[:, idx]
+        sample_labels = list(samples)
+
+    return mat, sample_labels
+
+
+# ---------------------------------------------------------------------------
+# heatmap
+# ---------------------------------------------------------------------------
+
+
+def heatmap(
+    data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+    *,
+    variable: "str | None" = None,
+    samples: "list[str] | None" = None,
+    log_transform: bool = True,
+    cmap: str = "mako",
+    figsize: "tuple[float, float]" = (6, 6),
+    title: str = "Signal heatmap",
+    filepath: "str | Path | None" = None,
+) -> "Any":
+    """
+    Clustered heatmap of genomic signal across samples.
+
+    Works directly on the output of ``reduce()`` or ``count_features()``.
+    Rows are genomic features (regions / genes), columns are samples.
+    Both rows and columns are hierarchically clustered.
+
+    Parameters
+    ----------
+    data : xr.Dataset | xr.DataArray | pd.DataFrame
+        - ``xr.Dataset`` — output of ``reduce()``. The variable named by
+          ``variable`` (default ``"mean"``) is used.
+        - ``xr.DataArray`` — a single variable extracted from a Dataset.
+        - ``pd.DataFrame`` — output of ``count_features()``, rows = features,
+          columns = samples.
+    variable : str, optional
+        Name of the data variable to plot when ``data`` is an ``xr.Dataset``
+        (e.g. ``"mean"``, ``"sum"``). Defaults to ``"mean"`` if present.
+    samples : list of str, optional
+        Subset of samples to include. Defaults to all samples.
+    log_transform : bool, default True
+        Apply ``log1p`` before plotting. Recommended for count/coverage data
+        with a heavy-tailed distribution.
+    cmap : str, default "mako"
+        Matplotlib / seaborn colormap name.
+    figsize : tuple, default (6, 6)
+        Figure size in inches.
+    title : str, default "Signal heatmap"
+        Figure title.
+    filepath : str or Path, optional
+        Save figure to this path if provided.
+
+    Returns
+    -------
+    g : seaborn.matrix.ClusterGrid
+
+    Examples
+    --------
+    >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+    >>> g = qn.heatmap(signal, variable="mean", title="Promoter signal")
+
+    >>> counts, _ = ds.count_features(gtf_file="genes.gtf")
+    >>> g = qn.heatmap(counts, log_transform=True, title="Gene counts")
+    """
+    import seaborn as sns
+
+    mat, sample_labels = _extract_signal_matrix(data, variable, samples)
+
+    if log_transform:
+        mat = np.log1p(mat)
+
+    # Drop zero-variance columns (uninformative samples)
+    col_var = mat.var(axis=0)
+    keep = col_var > 0
+    if not keep.all():
+        sample_labels = [s for s, k in zip(sample_labels, keep) if k]
+        mat = mat[:, keep]
+
+    g = sns.clustermap(
+        mat,
+        cmap=cmap,
+        yticklabels=False,
+        xticklabels=sample_labels,
+        figsize=figsize,
+        col_cluster=True,
+        row_cluster=True,
+        cbar_kws={"label": "log1p(signal)" if log_transform else "signal"},
+        cbar_pos=(1.0, 0.5, 0.02, 0.2),
+        dendrogram_ratio=0.1,
+    )
+    g.figure.suptitle(title, y=1.02)
+
+    if filepath is not None:
+        g.savefig(filepath, bbox_inches="tight")
+
+    return g
+
+
+# ---------------------------------------------------------------------------
+# correlate
+# ---------------------------------------------------------------------------
+
+
+def correlate(
+    data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+    *,
+    variable: "str | None" = None,
+    samples: "list[str] | None" = None,
+    method: str = "pearson",
+    log_transform: bool = True,
+    annotate: bool = True,
+    cmap: str = "RdBu_r",
+    figsize: "tuple[float, float]" = (6, 6),
+    title: str = "Sample–sample correlation",
+    filepath: "str | Path | None" = None,
+) -> "tuple[pd.DataFrame, Any]":
+    """
+    Compute and plot a sample–sample correlation matrix.
+
+    Parameters
+    ----------
+    data : xr.Dataset | xr.DataArray | pd.DataFrame
+        Same inputs as :func:`heatmap`.
+    variable : str, optional
+        Data variable to use when ``data`` is an ``xr.Dataset``.
+    samples : list of str, optional
+        Subset of samples. Defaults to all samples.
+    method : {"pearson", "spearman"}, default "pearson"
+        Correlation method.
+    log_transform : bool, default True
+        Apply ``log1p`` before computing correlations.
+    annotate : bool, default True
+        Annotate cells with the correlation coefficient (r).
+    cmap : str, default "RdBu_r"
+        Colormap; diverging maps work best for correlation matrices.
+    figsize : tuple, default (6, 6)
+        Figure size in inches.
+    title : str, default "Sample–sample correlation"
+        Figure title.
+    filepath : str or Path, optional
+        Save figure to this path if provided.
+
+    Returns
+    -------
+    corr_df : pd.DataFrame
+        Correlation matrix (samples × samples).
+    g : seaborn.matrix.ClusterGrid
+
+    Examples
+    --------
+    >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+    >>> corr_df, g = qn.correlate(signal, title="Promoter signal correlation")
+
+    >>> counts, _ = ds.count_features(gtf_file="genes.gtf")
+    >>> corr_df, g = qn.correlate(counts, method="spearman")
+    """
+    import seaborn as sns
+    from scipy.stats import spearmanr
+
+    if method not in {"pearson", "spearman"}:
+        raise ValueError(f"method must be 'pearson' or 'spearman'; got {method!r}")
+
+    mat, sample_labels = _extract_signal_matrix(data, variable, samples)
+
+    if log_transform:
+        mat = np.log1p(mat)
+
+    # Drop zero-variance columns before correlating
+    col_var = mat.var(axis=0)
+    keep = col_var > 0
+    if not keep.all():
+        sample_labels = [s for s, k in zip(sample_labels, keep) if k]
+        mat = mat[:, keep]
+
+    if method == "pearson":
+        corr = np.corrcoef(mat.T)
+    else:
+        corr, _ = spearmanr(mat)
+        if corr.ndim == 0:  # single sample edge case
+            corr = np.array([[1.0]])
+
+    corr_df = pd.DataFrame(corr, index=sample_labels, columns=sample_labels)
+
+    g = sns.clustermap(
+        corr_df,
+        xticklabels=sample_labels,
+        yticklabels=sample_labels,
+        cmap=cmap,
+        vmin=-1,
+        vmax=1,
+        square=True,
+        figsize=figsize,
+        cbar_kws={"label": f"{method.capitalize()} r"},
+        cbar_pos=(1.0, 0.4, 0.02, 0.2),
+        dendrogram_ratio=0.1,
+        annot=annotate,
+        fmt=".2f" if annotate else "",
+    )
+    g.figure.suptitle(title, y=1.02)
+
+    if filepath is not None:
+        g.savefig(filepath, bbox_inches="tight")
+
+    return corr_df, g

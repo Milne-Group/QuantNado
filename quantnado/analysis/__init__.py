@@ -8,7 +8,7 @@ from .features import (
     load_gtf,
 )
 from .pca import plot_pca_scatter, plot_pca_scree, run_pca
-from .plot import metaplot, tornadoplot
+from .plot import correlate, heatmap, metaplot, tornadoplot
 from .ranges import (
     default_position_mask,
     get_fixed_windows,
@@ -16,4 +16,5 @@ from .ranges import (
     merge_ranges,
     ranges_loader,
 )
+from .normalise import get_library_sizes, normalise
 from .reduce import extract_byranges_signal, reduce_byranges_signal

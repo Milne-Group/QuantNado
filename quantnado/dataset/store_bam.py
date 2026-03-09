@@ -28,7 +28,64 @@ BIN_SIZE = 1
 CONSTRUCTION_ARRAY_DTYPE = np.uint32
 DEFAULT_CONSTRUCTION_COMPRESSION = "default"
 
-STRANDED_LIBRARY_TYPES = {"fr-firststrand", "fr-secondstrand"}
+STRANDED_LIBRARY_TYPES = {"fr-firststrand", "fr-secondstrand", "both"}
+
+
+def _normalize_strandedness(
+    stranded: "str | list[str] | dict[str, str] | None",
+    sample_names: list[str],
+) -> dict[str, str | None]:
+    """Normalize stranded input to a per-sample dict.
+
+    Parameters
+    ----------
+    stranded : str | list[str] | dict[str, str] | None
+        - ``None`` — no stranded coverage for any sample.
+        - ``str`` — apply this library type to all samples.
+        - ``list[str]`` — sample names to process with ``"both"``.
+        - ``dict[str, str]`` — mapping of sample name → library type.
+    sample_names : list[str]
+        All sample names in the store.
+
+    Returns
+    -------
+    dict mapping each sample name to its library type (or None).
+    """
+    if stranded is None:
+        return {s: None for s in sample_names}
+
+    if isinstance(stranded, str):
+        if stranded not in STRANDED_LIBRARY_TYPES:
+            raise ValueError(
+                f"stranded must be one of {STRANDED_LIBRARY_TYPES} or None, got {stranded!r}"
+            )
+        return {s: stranded for s in sample_names}
+
+    if isinstance(stranded, list):
+        unknown = set(stranded) - set(sample_names)
+        if unknown:
+            raise ValueError(
+                f"Unknown sample names in stranded list: {sorted(unknown)}"
+            )
+        sample_set = set(stranded)
+        return {s: ("both" if s in sample_set else None) for s in sample_names}
+
+    if isinstance(stranded, dict):
+        unknown = set(stranded) - set(sample_names)
+        if unknown:
+            raise ValueError(
+                f"Unknown sample names in stranded dict: {sorted(unknown)}"
+            )
+        for sname, lt in stranded.items():
+            if lt is not None and lt not in STRANDED_LIBRARY_TYPES:
+                raise ValueError(
+                    f"stranded[{sname!r}] must be one of {STRANDED_LIBRARY_TYPES}, got {lt!r}"
+                )
+        return {s: stranded.get(s) for s in sample_names}
+
+    raise TypeError(
+        f"stranded must be str, list, dict, or None, got {type(stranded).__name__}"
+    )
 
 
 def _get_stranded_signal(
@@ -43,14 +100,15 @@ def _get_stranded_signal(
     Parameters
     ----------
     library_type : str
-        RNA-seq library type:
-        - ``"fr-firststrand"`` — dUTP / RF (most common; e.g. TruSeq stranded)
-        - ``"fr-secondstrand"`` — ligation / FR (e.g. Directional)
+        ``"both"`` — split reads by raw alignment strand (``+`` → fwd, ``-`` → rev).
+        ``"fr-firststrand"`` — dUTP / RF (e.g. TruSeq Stranded); corrects for read
+        orientation before assigning strand.
+        ``"fr-secondstrand"`` — ligation / FR (e.g. Directional).
 
     Returns
     -------
     (fwd, rev) : tuple of np.ndarray uint32
-        Per-base coverage for the sense (+) and antisense (−) strands,
+        Per-base coverage for the forward (+) and reverse (−) strands,
         each of length *chrom_size*.
     """
     if library_type not in STRANDED_LIBRARY_TYPES:
@@ -58,32 +116,39 @@ def _get_stranded_signal(
             f"library_type must be one of {STRANDED_LIBRARY_TYPES}, got {library_type!r}"
         )
 
-    def _is_sense(read) -> bool:
-        """True if this read represents the + (sense) strand of the transcript."""
-        if read.is_paired:
-            if library_type == "fr-firststrand":
-                return (read.is_read1 and read.is_reverse) or (
-                    read.is_read2 and not read.is_reverse
-                )
-            else:  # fr-secondstrand
-                return (read.is_read1 and not read.is_reverse) or (
-                    read.is_read2 and read.is_reverse
-                )
-        else:  # single-end
-            return read.is_reverse if library_type == "fr-firststrand" else not read.is_reverse
-
     def _valid(read) -> bool:
         return not read.is_unmapped and not read.is_secondary and not read.is_supplementary
 
-    def _sense_cb(read):
-        return _valid(read) and _is_sense(read)
+    if library_type == "both":
+        def _fwd_cb(read):
+            return _valid(read) and not read.is_reverse
 
-    def _antisense_cb(read):
-        return _valid(read) and not _is_sense(read)
+        def _rev_cb(read):
+            return _valid(read) and read.is_reverse
+    else:
+        def _is_sense(read) -> bool:
+            """True if this read represents the + (sense) strand of the transcript."""
+            if read.is_paired:
+                if library_type == "fr-firststrand":
+                    return (read.is_read1 and read.is_reverse) or (
+                        read.is_read2 and not read.is_reverse
+                    )
+                else:  # fr-secondstrand
+                    return (read.is_read1 and not read.is_reverse) or (
+                        read.is_read2 and read.is_reverse
+                    )
+            else:  # single-end
+                return read.is_reverse if library_type == "fr-firststrand" else not read.is_reverse
+
+        def _fwd_cb(read):
+            return _valid(read) and _is_sense(read)
+
+        def _rev_cb(read):
+            return _valid(read) and not _is_sense(read)
 
     with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-        fwd_raw = bam.count_coverage(chrom, 0, chrom_size, quality_threshold=0, read_callback=_sense_cb)
-        rev_raw = bam.count_coverage(chrom, 0, chrom_size, quality_threshold=0, read_callback=_antisense_cb)
+        fwd_raw = bam.count_coverage(chrom, 0, chrom_size, quality_threshold=0, read_callback=_fwd_cb)
+        rev_raw = bam.count_coverage(chrom, 0, chrom_size, quality_threshold=0, read_callback=_rev_cb)
 
     fwd = sum(np.asarray(a, dtype=np.uint32) for a in fwd_raw)
     rev = sum(np.asarray(a, dtype=np.uint32) for a in rev_raw)
@@ -314,7 +379,7 @@ class BamStore:
         overwrite: bool = True,
         resume: bool = False,
         read_only: bool = False,
-        strandedness: str | None = None,
+        stranded: "str | list[str] | dict[str, str] | None" = None,
     ) -> None:
         self.store_path = self._normalize_path(store_path)
         self.chromsizes = _parse_chromsizes(chromsizes)
@@ -326,11 +391,11 @@ class BamStore:
             construction_compression
         )
         self.read_only = read_only
-        if strandedness is not None and strandedness not in STRANDED_LIBRARY_TYPES:
-            raise ValueError(
-                f"strandedness must be one of {STRANDED_LIBRARY_TYPES} or None, got {strandedness!r}"
-            )
-        self.strandedness = strandedness
+        self._strandedness_map: dict[str, str | None] = _normalize_strandedness(
+            stranded, self.sample_names
+        )
+        # Expose a summary attribute: the original value (for attrs storage / repr)
+        self.stranded = stranded
 
         if self.n_samples == 0:
             raise ValueError("sample_names must not be empty")
@@ -401,7 +466,18 @@ class BamStore:
             chunk_len = int(group.attrs["chunk_len"])
         except KeyError as e:
             raise ValueError(f"Missing required attribute in store: {e}")
-        strandedness = group.attrs.get("strandedness") or None
+        # stranded may be stored as a dict (new format) or string (old format)
+        raw_strand = group.attrs.get("stranded")
+        if isinstance(raw_strand, dict):
+            # Convert back to a per-sample dict, dropping empty strings → None
+            stranded: "str | dict[str, str] | None" = {
+                s: (lt if lt else None) for s, lt in raw_strand.items()
+            }
+            # If all values are None, simplify to None
+            if not any(stranded.values()):
+                stranded = None
+        else:
+            stranded = raw_strand or None
         # Return BamStore instance
         return cls(
             store_path=store_path,
@@ -411,7 +487,7 @@ class BamStore:
             overwrite=False,
             resume=True,
             read_only=read_only,
-            strandedness=strandedness,
+            stranded=stranded,
         )
     def _check_writable(self):
         if getattr(self, "read_only", False):
@@ -461,8 +537,15 @@ class BamStore:
             fill_value=0,
             overwrite=True,
         )
+        self.meta.create_array(
+            name="total_reads",
+            shape=(self.n_samples,),
+            dtype=np.int64,
+            fill_value=0,
+            overwrite=True,
+        )
 
-        if self.strandedness:
+        if any(v for v in self._strandedness_map.values() if v):
             for chrom, size in self.chromsizes.items():
                 for suffix in ("_fwd", "_rev"):
                     self.root.create_array(
@@ -470,11 +553,15 @@ class BamStore:
                         shape=(self.n_samples, size),
                         chunks=(1, self.chunk_len),
                         dtype=np.uint32,
-                        compressors=[self.compressor],
+                        compressors=self.compressors,
                         fill_value=0,
                         overwrite=True,
                     )
 
+        # Persist stranded as a per-sample dict so it round-trips correctly
+        strandedness_for_attrs = {
+            s: (lt or "") for s, lt in self._strandedness_map.items()
+        }
         self.root.attrs.update(
             {
                 "chromosomes": self.chromosomes,
@@ -486,7 +573,7 @@ class BamStore:
                 "bin_size": BIN_SIZE,
                 "sample_names": self.sample_names,
                 "sample_names_hash": self.sample_hash,
-                "strandedness": self.strandedness or "",
+                "stranded": strandedness_for_attrs,
             }
         )
         logger.info(f"Initialized Zarr store at {self.store_path}")
@@ -528,9 +615,23 @@ class BamStore:
         arr = self.meta["sample_hashes"][:]
         return ["".join(f"{b:02x}" for b in row) for row in arr]
 
+    @property
+    def library_sizes(self) -> pd.Series | None:
+        """
+        Total mapped reads per sample as a ``pd.Series`` indexed by sample name.
+
+        Returns ``None`` for stores built before library-size tracking was added.
+        Use :func:`quantnado.get_library_sizes` to get a helpful error in that case.
+        """
+        if "total_reads" not in self.meta:
+            return None
+        reads = self.meta["total_reads"][:].astype(float)
+        reads[~self.completed_mask] = np.nan
+        return pd.Series(reads, index=self.sample_names, name="library_size")
+
     def _process_chromosome(
-        self, bam_file: str, contig: str, contig_size: int
-    ) -> tuple[str, np.ndarray, float]:
+        self, bam_file: str, contig: str, contig_size: int, library_type: str | None = None
+    ) -> tuple[str, np.ndarray, float, np.ndarray | None, np.ndarray | None]:
         signal = bamnado.get_signal_for_chromosome(
             bam_path=bam_file,
             chromosome_name=contig,
@@ -554,13 +655,23 @@ class BamStore:
         dtype = np.uint16 if max_val <= np.iinfo(np.uint16).max else np.uint32
         data = signal.astype(dtype, copy=False)
         sparsity = float((np.sum(data == 0) / data.size) * 100)
-        return contig, data, sparsity
+
+        fwd_data = rev_data = None
+        if library_type:
+            fwd_raw, rev_raw = _get_stranded_signal(
+                bam_file, contig, contig_size, library_type
+            )
+            fwd_data = fwd_raw.astype(np.uint32)
+            rev_data = rev_raw.astype(np.uint32)
+
+        return contig, data, sparsity, fwd_data, rev_data
 
     def _process_bam_file(
         self,
         bam_file: str,
         chromsizes_dict: dict[str, int],
         max_workers: int,
+        library_type: str | None = None,
     ) -> tuple[dict[str, np.ndarray], list[float]]:
         """Process chromosomes for a single BAM file.
 
@@ -574,28 +685,35 @@ class BamStore:
 
         if max_workers <= 1 or len(contigs) <= 1:
             sample_data: dict[str, np.ndarray] = {}
+            fwd_data: dict[str, np.ndarray] = {}
+            rev_data: dict[str, np.ndarray] = {}
             sparsity_values: list[float] = []
             for contig, size in chromsizes_dict.items():
-                c, data, sparsity = self._process_chromosome(bam_file, contig, size)
+                c, data, sparsity, fwd, rev = self._process_chromosome(bam_file, contig, size, library_type)
                 sample_data[c] = data
                 sparsity_values.append(sparsity)
-            return sample_data, sparsity_values
+                if fwd is not None:
+                    fwd_data[c] = fwd
+                    rev_data[c] = rev
+            return sample_data, sparsity_values, fwd_data, rev_data
 
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
-                pool.submit(self._process_chromosome, bam_file, contig, chromsizes_dict[contig]): contig
+                pool.submit(self._process_chromosome, bam_file, contig, chromsizes_dict[contig], library_type): contig
                 for contig in contigs
             }
-            results: dict[str, tuple[np.ndarray, float]] = {}
+            results: dict[str, tuple[np.ndarray, float, np.ndarray | None, np.ndarray | None]] = {}
             for future in futures:
-                c, data, sparsity = future.result()
-                results[c] = (data, sparsity)
+                c, data, sparsity, fwd, rev = future.result()
+                results[c] = (data, sparsity, fwd, rev)
 
         sample_data = {c: results[c][0] for c in contigs}
         sparsity_values = [results[c][1] for c in contigs]
-        return sample_data, sparsity_values
+        fwd_data = {c: results[c][2] for c in contigs if results[c][2] is not None}
+        rev_data = {c: results[c][3] for c in contigs if results[c][3] is not None}
+        return sample_data, sparsity_values, fwd_data, rev_data
 
     def _process_single_sample(
         self,
@@ -610,21 +728,38 @@ class BamStore:
         )
 
         bam_hash = _compute_bam_hash(bam_file)
-        chr_data, sparsity_values = self._process_bam_file(
+        library_type = self._strandedness_map.get(sample_name)
+        chr_data, sparsity_values, chr_fwd, chr_rev = self._process_bam_file(
             bam_file,
             chromsizes_dict,
             max_workers=chr_workers,
+            library_type=library_type,
         )
+
+        total_reads: int | None = None
+        try:
+            with pysam.AlignmentFile(bam_file, "rb") as bam:
+                total_reads = bam.mapped
+        except Exception as e:
+            logger.warning(f"Could not read total mapped reads for {bam_file}: {e}")
 
         return sample_idx, {
             "sparsity": float(np.mean(sparsity_values)) if sparsity_values else np.nan,
             "hash": bam_hash,
             "chr_data": chr_data,
+            "chr_fwd": chr_fwd,
+            "chr_rev": chr_rev,
+            "total_reads": total_reads,
         }
 
     def _write_sample_result(self, sample_idx: int, results: dict[str, Any]) -> None:
         for contig, data in results["chr_data"].items():
             self.root[contig][sample_idx, : data.shape[0]] = data
+
+        for contig, fwd in results.get("chr_fwd", {}).items():
+            self.root[f"{contig}_fwd"][sample_idx, : fwd.shape[0]] = fwd
+        for contig, rev in results.get("chr_rev", {}).items():
+            self.root[f"{contig}_rev"][sample_idx, : rev.shape[0]] = rev
 
         self.meta["sparsity"][sample_idx] = results["sparsity"]
         self.meta["sample_hashes"][sample_idx, :] = 0
@@ -636,6 +771,9 @@ class BamStore:
                 hash_bytes,
                 dtype=np.uint8,
             )
+
+        if results.get("total_reads") is not None and "total_reads" in self.meta:
+            self.meta["total_reads"][sample_idx] = results["total_reads"]
 
         self.meta["completed"][sample_idx] = True
 
@@ -806,6 +944,7 @@ class BamStore:
         chr_workers: int = 1,
         log_file: Path | None = None,
         test: bool = False,
+        stranded: "str | list[str] | dict[str, str] | None" = None,
     ) -> "BamStore":
         """
         Create BamStore from list of BAM files and optionally attach metadata.
@@ -885,6 +1024,7 @@ class BamStore:
                 construction_compression=construction_compression,
                 overwrite=True if staging_enabled else overwrite,
                 resume=False if staging_enabled else resume,
+                stranded=stranded,
             )
             store.process_samples(bam_files, max_workers=max_workers, chr_workers=chr_workers)
 
@@ -1217,6 +1357,7 @@ class BamStore:
         end: int | None = None,
         samples: list[str] | list[int] | None = None,
         as_xarray: bool = True,
+        strand: str | None = None,
     ) -> xr.DataArray | np.ndarray:
         """
         Extract signal data for a specific genomic region.
@@ -1238,6 +1379,11 @@ class BamStore:
         as_xarray : bool, default True
             If True, return xr.DataArray with coordinates (lazy dask array).
             If False, return computed np.ndarray.
+        strand : {"+" or "-"}, optional
+            Return strand-specific coverage. Requires the store to have been built
+            with ``stranded`` set. ``"+"`` returns sense-strand coverage from
+            the ``{chrom}_fwd`` array; ``"-"`` returns antisense coverage from
+            ``{chrom}_rev``. If None (default), returns total coverage.
         
         Returns
         -------
@@ -1342,7 +1488,18 @@ class BamStore:
             )
         
         # Extract data from zarr store
-        zarr_array = self.root[chrom]
+        if strand is not None:
+            if strand not in ("+", "-"):
+                raise ValueError(f"strand must be '+', '-', or None, got {strand!r}")
+            has_any_stranded = any(v for v in self._strandedness_map.values() if v)
+            if not has_any_stranded:
+                raise RuntimeError(
+                    "This store was not built with stranded; no strand-specific arrays available."
+                )
+            array_key = f"{chrom}_fwd" if strand == "+" else f"{chrom}_rev"
+            zarr_array = self.root[array_key]
+        else:
+            zarr_array = self.root[chrom]
         # Slice: [sample_indices, start:end]
         data_slice = zarr_array[sample_indices.tolist(), start:end]
         

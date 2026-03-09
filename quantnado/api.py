@@ -26,6 +26,12 @@ Example:
     reduced = qn.reduce("promoters.bed", reduction="mean")
     pca_obj, transformed = qn.pca(reduced["mean"], n_components=10)
     counts, features = qn.count_features("genes.gtf", feature_type="gene")
+
+    # Visualise
+    qn.heatmap(reduced, title="Promoter signal")
+    corr_df, g = qn.correlate(reduced, method="pearson")
+    qn.metaplot(binned, modality="coverage", groups={"ctrl": ["s1"], "treat": ["s2"]})
+    qn.tornadoplot(binned, modality="coverage", sort_by="mean")
 """
 
 from __future__ import annotations
@@ -38,8 +44,9 @@ import xarray as xr
 from loguru import logger
 
 from quantnado.analysis.counts import count_features as _feature_counts
+from quantnado.analysis.normalise import get_library_sizes, normalise as _normalise
 from quantnado.analysis.pca import run_pca as _run_pca
-from quantnado.analysis.plot import locus_plot, metaplot, tornadoplot
+from quantnado.analysis.plot import correlate, heatmap, locus_plot, metaplot, tornadoplot
 from quantnado.analysis.reduce import extract_byranges_signal, reduce_byranges_signal
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
 from quantnado.dataset.store_bam import BamStore
@@ -55,7 +62,7 @@ class QuantNado:
     Wraps a ``MultiomicsStore`` (or a bare ``BamStore``) and provides
     properties to access each modality plus convenience methods for
     coverage-based analysis (reduce, extract, count_features, pca,
-    metaplot, tornadoplot).
+    metaplot, tornadoplot, heatmap, correlate, normalise).
 
     Construction
     ------------
@@ -179,6 +186,7 @@ class QuantNado:
         max_workers: int = 1,
         chr_workers: int = 1,
         test: bool = False,
+        stranded: list[str] | None = None,
     ) -> "QuantNado":
         """
         Create a new QuantNado dataset from genomic files.
@@ -240,6 +248,12 @@ class QuantNado:
             significantly reduce wall time.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
+        stranded : list of str, optional
+            Sample names whose BAM files should be processed for strand-specific
+            coverage. Each name must match an entry in ``bam_sample_names`` (or
+            the BAM file stems). Those samples will store separate forward and
+            reverse arrays in addition to total coverage. Unlisted samples store
+            total coverage only.
 
         Returns
         -------
@@ -392,7 +406,10 @@ class QuantNado:
                 sample_modalities.setdefault(n, []).append(modality)
 
         if bam_files:
-            _register(bam_sample_names or [Path(f).stem for f in bam_files], "coverage")
+            _bam_names = bam_sample_names or [Path(f).stem for f in bam_files]
+            _stranded_set = set(stranded) if stranded is not None else set()
+            for n in _bam_names:
+                _register([n], "stranded_coverage" if n in _stranded_set else "coverage")
         if methyldackel_files and (mc_files or hmc_files):
             _register(
                 (methyldackel_sample_names or [Path(f).stem for f in methyldackel_files])
@@ -449,6 +466,7 @@ class QuantNado:
             max_workers=max_workers,
             chr_workers=chr_workers,
             test=test,
+            stranded=stranded,
         )
         return cls(ms)
 
@@ -649,6 +667,7 @@ class QuantNado:
         modality: str | None = None,
         variable: str | None = None,
         samples: list[str] | None = None,
+        strand_aware: bool = False,
     ) -> xr.DataArray:
         """
         Extract signal over genomic ranges.
@@ -723,6 +742,7 @@ class QuantNado:
             bin_size=bin_size,
             bin_agg=bin_agg,
             include_incomplete=not filter_incomplete,
+            strand_aware=strand_aware,
         )
 
     def count_features(
@@ -806,6 +826,55 @@ class QuantNado:
             min_count=min_count,
             filter_zero=filter_zero,
             include_incomplete=include_incomplete,
+        )
+
+    def normalise(
+        self,
+        data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+        *,
+        method: str = "cpm",
+        library_sizes: "pd.Series | dict | None" = None,
+        feature_lengths: "pd.Series | Any | None" = None,
+    ) -> "xr.Dataset | xr.DataArray | pd.DataFrame":
+        """
+        Normalise coverage signal or feature counts.
+
+        Parameters
+        ----------
+        data : xr.Dataset | xr.DataArray | pd.DataFrame
+            Output of :meth:`reduce`, :meth:`extract`, or :meth:`count_features`.
+        method : {"cpm", "rpkm", "tpm"}, default "cpm"
+            Normalisation method:
+
+            - ``"cpm"``  — Counts Per Million (all data types)
+            - ``"rpkm"`` — RPKM (xr.Dataset and pd.DataFrame; needs feature_lengths)
+            - ``"tpm"``  — TPM (pd.DataFrame only; no library sizes required)
+        library_sizes : pd.Series or dict, optional
+            Total mapped reads per sample, indexed by sample name.
+            Auto-read from the store when omitted (requires store built with
+            current QuantNado version).
+        feature_lengths : pd.Series or array-like, optional
+            Feature lengths in base-pairs, aligned to data rows.
+            Required for ``"rpkm"`` / ``"tpm"`` on DataFrames.
+            Inferred from ``range_length`` coord automatically for xr.Dataset.
+
+        Returns
+        -------
+        Same type as ``data``, normalised values.
+
+        Examples
+        --------
+        >>> cpm_signal = ds.normalise(ds.reduce(intervals_path="promoters.bed"))
+        >>> cpm_binned = ds.normalise(binned, method="cpm")
+        >>> counts, features = ds.count_features(gtf_file="genes.gtf")
+        >>> tpm = ds.normalise(counts, method="tpm", feature_lengths=features["range_length"])
+        """
+        return _normalise(
+            data,
+            self,
+            method=method,
+            library_sizes=library_sizes,
+            feature_lengths=feature_lengths,
         )
 
     def pca(
@@ -1107,6 +1176,126 @@ class QuantNado:
             palette=palette,
             title=title,
             figsize=figsize,
+            filepath=filepath,
+        )
+
+    def heatmap(
+        self,
+        data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+        *,
+        variable: str | None = None,
+        samples: list[str] | None = None,
+        log_transform: bool = True,
+        cmap: str = "mako",
+        figsize: tuple[float, float] = (6, 6),
+        title: str = "Signal heatmap",
+        filepath: str | Path | None = None,
+    ) -> Any:
+        """
+        Clustered heatmap of genomic signal across samples.
+
+        Parameters
+        ----------
+        data : xr.Dataset | xr.DataArray | pd.DataFrame
+            Output of ``reduce()`` (xr.Dataset), a single DataArray variable,
+            or ``count_features()`` (pd.DataFrame).
+        variable : str, optional
+            Data variable to plot when ``data`` is an ``xr.Dataset``
+            (e.g. ``"mean"``, ``"sum"``). Defaults to ``"mean"`` if present.
+        samples : list of str, optional
+            Subset of samples to include. Defaults to all samples.
+        log_transform : bool, default True
+            Apply ``log1p`` before plotting.
+        cmap : str, default "mako"
+            Colormap name.
+        figsize : tuple, default (6, 6)
+            Figure size in inches.
+        title : str
+            Figure title.
+        filepath : str or Path, optional
+            Save figure to this path if provided.
+
+        Returns
+        -------
+        g : seaborn.matrix.ClusterGrid
+
+        Examples
+        --------
+        >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+        >>> g = ds.heatmap(signal, title="Promoter signal")
+        """
+        return heatmap(
+            data,
+            variable=variable,
+            samples=samples,
+            log_transform=log_transform,
+            cmap=cmap,
+            figsize=figsize,
+            title=title,
+            filepath=filepath,
+        )
+
+    def correlate(
+        self,
+        data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+        *,
+        variable: str | None = None,
+        samples: list[str] | None = None,
+        method: str = "pearson",
+        log_transform: bool = True,
+        annotate: bool = True,
+        cmap: str = "RdBu_r",
+        figsize: tuple[float, float] = (6, 6),
+        title: str = "Sample–sample correlation",
+        filepath: str | Path | None = None,
+    ) -> "tuple[pd.DataFrame, Any]":
+        """
+        Compute and plot a sample–sample correlation matrix.
+
+        Parameters
+        ----------
+        data : xr.Dataset | xr.DataArray | pd.DataFrame
+            Output of ``reduce()`` or ``count_features()``.
+        variable : str, optional
+            Data variable to use when ``data`` is an ``xr.Dataset``.
+        samples : list of str, optional
+            Subset of samples. Defaults to all samples.
+        method : {"pearson", "spearman"}, default "pearson"
+            Correlation method.
+        log_transform : bool, default True
+            Apply ``log1p`` before computing correlations.
+        annotate : bool, default True
+            Annotate cells with the r value.
+        cmap : str, default "RdBu_r"
+            Colormap for the heatmap cells.
+        figsize : tuple, default (6, 6)
+            Figure size in inches.
+        title : str
+            Figure title.
+        filepath : str or Path, optional
+            Save figure to this path if provided.
+
+        Returns
+        -------
+        corr_df : pd.DataFrame
+            Correlation matrix (samples × samples).
+        g : seaborn.matrix.ClusterGrid
+
+        Examples
+        --------
+        >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+        >>> corr_df, g = ds.correlate(signal, title="Promoter signal correlation")
+        """
+        return correlate(
+            data,
+            variable=variable,
+            samples=samples,
+            method=method,
+            log_transform=log_transform,
+            annotate=annotate,
+            cmap=cmap,
+            figsize=figsize,
+            title=title,
             filepath=filepath,
         )
 

@@ -21,7 +21,7 @@ def count_features(
     contig_col: str | None = None,
     feature_id_col: str | list[str] | None = None,
     aggregate_by: str | None = None,
-    strand: str | None = None,
+    strand: str | int | None = None,
     assay: str | None = None,
     samples: list[str] | None = None,
     filter_chromosomes: bool = True,
@@ -62,11 +62,17 @@ def count_features(
         length summed) grouped by the key.
     strand : str or int, optional
         Feature strand filtering or read counting mode:
-        - "+", "-": filter features by strand annotation (requires "strand" column in ranges)
-        - 0: unstranded (count all reads, default)
-        - 1: stranded (count only forward strand reads)
-        - 2: reversely stranded (count only reverse strand reads)
-        Note: int modes (0/1/2) for strand-aware read counting are not yet implemented for BAM/coverage data.
+
+        - ``"+"``, ``"-"``: filter features by strand annotation (requires a
+          ``strand`` column in the ranges table; unlisted features are excluded).
+        - ``0``: unstranded — sum all reads regardless of strand (default).
+        - ``1`` (fr-secondstrand): per-feature strand-aware counting.
+          ``+`` features use ``{chrom}_fwd``; ``-`` features use ``{chrom}_rev``.
+        - ``2`` (fr-firststrand / dUTP): per-feature strand-aware counting.
+          ``+`` features use ``{chrom}_rev``; ``-`` features use ``{chrom}_fwd``.
+
+        Int modes require the BamStore to have been built with ``stranded`` set
+        and a ``strand`` column in the ranges table.
     min_count : int
         Minimum count threshold passed to reduction (affects mean masking only; sums unaffected).
     integerize : bool
@@ -148,15 +154,14 @@ def count_features(
                 ~resolved_ranges[contig_name].str.contains("_")
             ].reset_index(drop=True)
 
-    # Apply strand filtering if requested
-    # strand can be "+" or "-" to filter by feature annotation, or 0/1/2 for read counting mode
-    if strand is not None and resolved_ranges is not None and "strand" in resolved_ranges.columns:
-        if strand in ("+", "-"):
-            resolved_ranges = resolved_ranges[
-                resolved_ranges["strand"] == strand
-            ].reset_index(drop=True)
-    # Note: strand parameter as int (0=unstranded, 1=stranded, 2=reversely stranded) is intended for
-    # strand-aware read counting but is not yet implemented for BAM/coverage data.
+    # Apply strand filtering or resolve strand_mode for read counting
+    _strand_mode = 0
+    if isinstance(strand, int):
+        _strand_mode = strand
+    elif strand in ("+", "-") and resolved_ranges is not None and "strand" in resolved_ranges.columns:
+        resolved_ranges = resolved_ranges[
+            resolved_ranges["strand"] == strand
+        ].reset_index(drop=True)
 
     # Convert sample names to indices if provided
     sample_indices = None
@@ -186,6 +191,7 @@ def count_features(
         reduction="mean",
         sample_indices=sample_indices,
         include_incomplete=include_incomplete,
+        strand_mode=_strand_mode,
     )
 
     aligned_ranges = resolved_ranges
