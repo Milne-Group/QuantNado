@@ -91,6 +91,7 @@ def call_peaks(
 @app.command()
 def create_dataset(
     output: Path = typer.Option(..., "--output", "-o", help="Output directory for the multiomics store."),
+    # Input files
     bam: str | None = typer.Option(None, "--bam", help="Comma-separated BAM files for coverage."),
     methylation: str | None = typer.Option(
         None,
@@ -102,10 +103,13 @@ def create_dataset(
         ),
     ),
     vcf: str | None = typer.Option(None, "--vcf", help="Comma-separated VCF.gz files for variants."),
+    # Reference / metadata
     chromsizes: Path | None = typer.Option(
         None, "--chromsizes", help="Path to chromsizes. If omitted, extracted from first BAM."
     ),
     metadata: Path | None = typer.Option(None, "--metadata", help="Path to metadata CSV file."),
+    sample_column: str = typer.Option("sample_id", "--sample-column", help="Column in metadata matching sample names."),
+    # Sample naming
     bam_sample_names: str | None = typer.Option(None, "--bam-sample-names", help="Comma-separated sample name overrides for BAM files."),
     methylation_sample_names: str | None = typer.Option(
         None,
@@ -116,10 +120,24 @@ def create_dataset(
         ),
     ),
     vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
-    sample_column: str = typer.Option("sample_id", "--sample-column", help="Column in metadata matching sample names."),
+    # Coverage options
     filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
+    stranded: str | None = typer.Option(
+        None,
+        "--stranded",
+        help=(
+            "Strand-specific coverage configuration as JSON. "
+            "List form: '[\"sample1\",\"sample2\"]' (uses library type 'U'). "
+            "Dict form: '{\"sample1\":\"R\",\"sample2\":\"R\"}' mapping each sample name to "
+            "its library type: 'R' (ISR/dUTP/TruSeq), 'F' (ISF/ligation), or 'U'."
+        ),
+    ),
+    # Process control
     overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite", help="Overwrite existing sub-stores."),
     resume: bool = typer.Option(False, "--resume", help="Resume processing an existing store, skipping completed samples."),
+    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for BAM processing (one per sample)."),
+    chr_workers: int = typer.Option(1, "--chr-workers", help="Parallel threads per sample for chromosome-level processing. Total reads = max-workers * chr-workers."),
+    # Store format
     chunk_len: int | None = typer.Option(
         None,
         "--chunk-len",
@@ -132,6 +150,7 @@ def create_dataset(
         help="Build-time compression profile: default, fast, or none.",
         case_sensitive=False,
     ),
+    # Staging
     local_staging: bool = typer.Option(
         False,
         "--local-staging/--no-local-staging",
@@ -142,8 +161,7 @@ def create_dataset(
         "--staging-dir",
         help="Scratch directory to use for local staging. Defaults to TMPDIR when local staging is enabled.",
     ),
-    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for BAM processing (one per sample)."),
-    chr_workers: int = typer.Option(1, "--chr-workers", help="Parallel threads per sample for chromosome-level processing. Total reads = max-workers * chr-workers."),
+    # Misc
     test: bool = typer.Option(False, "--test", help="Restrict coverage to chr21/chr22/chrY (for testing)."),
     log_file: Path = typer.Option("quantnado_processing.log", "--log-file", help="Path to the log file."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
@@ -155,6 +173,19 @@ def create_dataset(
     Multiple files can be passed as a comma-separated list, e.g. --bam a.bam,b.bam
     """
     _setup_cli_logging(log_file, verbose)
+
+    import json
+
+    stranded_parsed: list[str] | dict[str, str] | None = None
+    if stranded is not None:
+        try:
+            stranded_parsed = json.loads(stranded)
+        except json.JSONDecodeError as exc:
+            logger.error(f"--stranded must be valid JSON (list or dict): {exc}")
+            raise typer.Exit(code=1)
+        if not isinstance(stranded_parsed, (list, dict)):
+            logger.error("--stranded must be a JSON list or object.")
+            raise typer.Exit(code=1)
 
     def _split(s: str | None) -> list[str]:
         return [v.strip() for v in s.split(",") if v.strip()] if s else []
@@ -220,6 +251,7 @@ def create_dataset(
             max_workers=max_workers,
             chr_workers=chr_workers,
             test=test,
+            stranded=stranded_parsed,
         )
         logger.success(f"Multiomics store created: {output}")
     except Exception as e:

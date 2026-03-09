@@ -165,28 +165,36 @@ class QuantNado:
     def create_dataset(
         cls,
         store_dir: str | Path,
+        # Input files
         bam_files: list[str | Path] | None = None,
         methylation_files: list[str | Path] | None = None,
         vcf_files: list[str | Path] | None = None,
+        # Reference / metadata
         chromsizes: str | Path | dict[str, int] | None = None,
         metadata: pd.DataFrame | Path | str | None = None,
         *,
+        sample_column: str = "sample_id",
+        # Sample naming
         bam_sample_names: list[str] | callable | None = None,
         methylation_sample_names: list[str] | None = None,
         vcf_sample_names: list[str] | callable | None = None,
+        # Coverage options
         filter_chromosomes: bool = True,
+        stranded: list[str] | dict[str, str] | None = None,
+        # Process control
         overwrite: bool = True,
         resume: bool = False,
-        sample_column: str = "sample_id",
-        chunk_len: int = DEFAULT_CHUNK_LEN,
-        construction_compression: str = "default",
-        local_staging: bool = False,
-        staging_dir: str | Path | None = None,
-        log_file: Path | None = None,
         max_workers: int = 1,
         chr_workers: int = 1,
+        # Store format
+        chunk_len: int = DEFAULT_CHUNK_LEN,
+        construction_compression: str = "default",
+        # Staging
+        local_staging: bool = False,
+        staging_dir: str | Path | None = None,
+        # Misc
         test: bool = False,
-        stranded: list[str] | dict[str, str] | None = None,
+        log_file: Path | None = None,
     ) -> "QuantNado":
         """
         Create a new QuantNado dataset from genomic files.
@@ -211,6 +219,8 @@ class QuantNado:
             Chromosome sizes. Extracted from the first BAM if not provided.
         metadata : DataFrame, Path, or str, optional
             Sample metadata CSV attached to all sub-stores.
+        sample_column : str, default "sample_id"
+            Column in ``metadata`` matching sample names.
         bam_sample_names : list of str or callable, optional
             Override sample names for BAM files. A callable receives each
             ``Path`` and returns a ``str`` (e.g. ``lambda p: p.stem``).
@@ -223,31 +233,6 @@ class QuantNado:
             ``Path`` and returns a ``str``.
         filter_chromosomes : bool, default True
             Keep only canonical chromosomes (``chr*`` without underscores).
-        overwrite : bool, default True
-            Overwrite existing sub-stores.
-        resume : bool, default False
-            Resume processing an existing sub-store.
-        sample_column : str, default "sample_id"
-            Column in ``metadata`` matching sample names.
-        chunk_len : int, default 65536
-            Zarr chunk size for the position dimension (coverage store).
-        construction_compression : {"default", "fast", "none"}, default "default"
-            Build-time compression profile for the coverage store.
-        local_staging : bool, default False
-            Build the coverage store under local scratch before publishing.
-        staging_dir : str or Path, optional
-            Scratch directory for local staging.
-        log_file : Path, optional
-            Path to write BAM processing logs.
-        max_workers : int, default 1
-            Sample-level parallel workers for BAM processing.
-        chr_workers : int, default 1
-            Chromosome-level parallel workers within each sample thread.
-            Total concurrent BAM reads = max_workers * chr_workers.
-            On SSD/NVMe or HPC parallel filesystems, values of 2-4 can
-            significantly reduce wall time.
-        test : bool, default False
-            Restrict coverage to chr21/chr22/chrY (for testing).
         stranded : list of str or dict, optional
             Strand-specific coverage configuration. Two forms accepted:
 
@@ -263,6 +248,30 @@ class QuantNado:
             Example::
 
                 stranded={"rna-rep1": "R", "rna-rep2": "R"}
+
+        overwrite : bool, default True
+            Overwrite existing sub-stores.
+        resume : bool, default False
+            Resume processing an existing sub-store.
+        max_workers : int, default 1
+            Sample-level parallel workers for BAM processing.
+        chr_workers : int, default 1
+            Chromosome-level parallel workers within each sample thread.
+            Total concurrent BAM reads = max_workers * chr_workers.
+            On SSD/NVMe or HPC parallel filesystems, values of 2-4 can
+            significantly reduce wall time.
+        chunk_len : int, default 65536
+            Zarr chunk size for the position dimension (coverage store).
+        construction_compression : {"default", "fast", "none"}, default "default"
+            Build-time compression profile for the coverage store.
+        local_staging : bool, default False
+            Build the coverage store under local scratch before publishing.
+        staging_dir : str or Path, optional
+            Scratch directory for local staging.
+        test : bool, default False
+            Restrict coverage to chr21/chr22/chrY (for testing).
+        log_file : Path, optional
+            Path to write BAM processing logs.
 
         Returns
         -------
