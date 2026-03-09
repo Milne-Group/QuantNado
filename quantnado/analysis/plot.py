@@ -57,6 +57,7 @@ def _resolve_palette(palette, n: int, labels: "list | None" = None) -> list:
 
 def metaplot(
     data: xr.DataArray,
+    data_rev: "xr.DataArray | None" = None,
     *,
     modality: "str | None" = None,
     samples: list[str] | None = None,
@@ -92,6 +93,10 @@ def metaplot(
         Output of ``qn.extract()``, with dimensions
         ``(interval, relative_position, sample)`` or ``(interval, bin, sample)``.
         May be dask-backed; ``.compute()`` is called automatically if needed.
+    data_rev : DataArray, optional
+        Reverse-strand data with the same structure as ``data``. When provided,
+        the reverse-strand mean profile is mirrored below zero on the same axes,
+        creating a split-strand display (forward above, reverse below).
     modality : {"coverage", "methylation", "variant"}, optional
         Data modality. Sets sensible defaults for ``ylabel`` and visual style.
         Explicit kwargs always override modality defaults.
@@ -193,6 +198,21 @@ def metaplot(
     all_sample_labels = list(data.coords["sample"].values)
     x = data.coords[position_dim].values
 
+    # Process data_rev with the same transpose + flip
+    if data_rev is not None:
+        if hasattr(data_rev, "chunks"):
+            data_rev = data_rev.compute()
+        _pdim_rev = next((d for d in data_rev.dims if d in ("relative_position", "bin")), None)
+        if _pdim_rev and data_rev.dims != ("interval", _pdim_rev, "sample"):
+            data_rev = data_rev.transpose("interval", _pdim_rev, "sample")
+        if flip_minus_strand and "strand" in data_rev.coords:
+            _strands_rev = data_rev.coords["strand"].values
+            _minus_rev = _strands_rev == "-"
+            if _minus_rev.any():
+                _arr_rev = data_rev.values.copy()
+                _arr_rev[_minus_rev] = _arr_rev[_minus_rev, ::-1, :]
+                data_rev = xr.DataArray(_arr_rev, dims=data_rev.dims, coords=data_rev.coords)
+
     if ax is None:
         _, ax = plt.subplots(figsize=figsize)
 
@@ -219,6 +239,19 @@ def metaplot(
                     x, group_mean - err, group_mean + err,
                     alpha=0.2, color=line.get_color()
                 )
+            if data_rev is not None:
+                per_sample_means_rev = np.stack(
+                    [data_rev.sel(sample=s).values.mean(axis=0) for s in group_samples], axis=0
+                )
+                group_mean_rev = per_sample_means_rev.mean(axis=0)
+                ax.plot(x, -group_mean_rev, alpha=0.9, color=color, linestyle="--")
+                if error_stat is not None and len(group_samples) > 1:
+                    group_std_rev = per_sample_means_rev.std(axis=0)
+                    err_rev = group_std_rev / np.sqrt(len(group_samples)) if error_stat == "sem" else group_std_rev
+                    ax.fill_between(
+                        x, -group_mean_rev - err_rev, -group_mean_rev + err_rev,
+                        alpha=0.2, color=color
+                    )
     else:
         # One line per sample: mean across intervals.
         # Error band = SEM (or STD) across intervals.
@@ -234,6 +267,9 @@ def metaplot(
         n_intervals = data.sizes["interval"]
         mean_profile = data.mean(dim="interval")  # (position, sample)
         std_profile = data.std(dim="interval")    # (position, sample)
+        if data_rev is not None:
+            mean_profile_rev = data_rev.mean(dim="interval")
+            std_profile_rev = data_rev.std(dim="interval")
 
         for sample, color in zip(sample_labels, colors):
             y = mean_profile.sel(sample=sample).values
@@ -246,6 +282,20 @@ def metaplot(
                     x, y - err, y + err,
                     alpha=0.15, color=line.get_color()
                 )
+            if data_rev is not None:
+                y_rev = mean_profile_rev.sel(sample=sample).values
+                ax.plot(x, -y_rev, alpha=0.9, color=color, linestyle="--")
+                if error_stat is not None:
+                    err_rev = std_profile_rev.sel(sample=sample).values
+                    if error_stat == "sem":
+                        err_rev = err_rev / np.sqrt(n_intervals)
+                    ax.fill_between(
+                        x, -y_rev - err_rev, -y_rev + err_rev,
+                        alpha=0.15, color=color
+                    )
+
+    if data_rev is not None:
+        ax.axhline(0, color="black", linewidth=0.5, alpha=0.4)
 
     if reference_point is not None:
         ax.axvline(
@@ -294,6 +344,7 @@ def _prep_extract(data: xr.DataArray, flip_minus_strand: bool) -> "tuple[xr.Data
 
 def tornadoplot(
     data: xr.DataArray,
+    data_rev: "xr.DataArray | None" = None,
     *,
     modality: "str | None" = None,
     samples: "list[str] | None" = None,
@@ -324,6 +375,10 @@ def tornadoplot(
     data : DataArray
         Output of ``qn.extract()``, dimensions
         ``(interval, relative_position|bin, sample)``.
+    data_rev : DataArray, optional
+        Reverse-strand data with the same structure as ``data``. When provided,
+        each panel shows ``fwd − rev`` signal with a divergent colormap centred
+        at zero (more forward-strand signal = positive, more reverse = negative).
     modality : {"coverage", "methylation", "variant"}, optional
         Data modality. Sets sensible defaults for ``cmap``, ``vmin``, and ``vmax``.
         Explicit kwargs always override modality defaults.
@@ -379,12 +434,15 @@ def tornadoplot(
         if cmap is None:
             cmap = defaults.get("cmap", "RdYlBu_r")
     if cmap is None:
-        cmap = "RdYlBu_r"
+        cmap = "RdBu_r" if data_rev is not None else "RdYlBu_r"
 
     data, x, _ = _prep_extract(data, flip_minus_strand)
+    if data_rev is not None:
+        data_rev, _, _ = _prep_extract(data_rev, flip_minus_strand)
     all_sample_labels = list(data.coords["sample"].values)
 
     # Build list of (panel_label, matrix) where matrix is (n_intervals, n_positions)
+    # When data_rev is provided the matrix is fwd − rev (divergent signal).
     panels: "list[tuple[str, np.ndarray]]" = []
     if groups is not None:
         for group_label, group_samples in groups.items():
@@ -394,6 +452,11 @@ def tornadoplot(
             mat = np.stack(
                 [data.sel(sample=s).values for s in group_samples], axis=0
             ).mean(axis=0)  # (n_intervals, n_positions)
+            if data_rev is not None:
+                mat_rev = np.stack(
+                    [data_rev.sel(sample=s).values for s in group_samples], axis=0
+                ).mean(axis=0)
+                mat = mat - mat_rev
             panels.append((group_label, mat))
     else:
         label_list = samples if samples is not None else all_sample_labels
@@ -414,7 +477,10 @@ def tornadoplot(
             display_labels = label_list
 
         for s, label in zip(label_list, display_labels):
-            panels.append((label, data.sel(sample=s).values))
+            mat = data.sel(sample=s).values
+            if data_rev is not None:
+                mat = mat - data_rev.sel(sample=s).values
+            panels.append((label, mat))
 
     # Sort rows by first panel's signal
     if sort_by is not None and panels:
@@ -427,12 +493,19 @@ def tornadoplot(
             raise ValueError(f"sort_by must be 'mean', 'max', or None; got {sort_by!r}")
         panels = [(lbl, mat[order]) for lbl, mat in panels]
 
-    # Colour scale
-    if vmin is None:
-        vmin = 0.0
-    if vmax is None:
-        all_vals = np.concatenate([mat.ravel() for _, mat in panels])
-        vmax = float(np.nanpercentile(all_vals, 99))
+    # Colour scale — symmetric around zero when showing fwd−rev
+    if data_rev is not None:
+        if vmax is None:
+            all_vals = np.concatenate([mat.ravel() for _, mat in panels])
+            vmax = float(np.nanpercentile(np.abs(all_vals), 99))
+        if vmin is None:
+            vmin = -vmax
+    else:
+        if vmin is None:
+            vmin = 0.0
+        if vmax is None:
+            all_vals = np.concatenate([mat.ravel() for _, mat in panels])
+            vmax = float(np.nanpercentile(all_vals, 99))
 
     n_panels = len(panels)
     if figsize is None:
@@ -499,6 +572,8 @@ def locus_plot(
     sample_names: "list[str]",
     modality: "list[str]",
     coverage: "xr.DataArray | None" = None,
+    coverage_fwd: "xr.DataArray | None" = None,
+    coverage_rev: "xr.DataArray | None" = None,
     methylation: "xr.DataArray | None" = None,
     allele_depth_ref: "xr.DataArray | None" = None,
     allele_depth_alt: "xr.DataArray | None" = None,
@@ -516,6 +591,7 @@ def locus_plot(
     ``modality``:
 
     - **coverage** — stairsfilled area plot (per-base read depth)
+    - **stranded_coverage** — mirrored strands: forward above zero, reverse below
     - **methylation** — scatter points at CpG positions (methylation %)
     - **variant** — lollipop plot (allele frequency at variant positions)
 
@@ -528,11 +604,17 @@ def locus_plot(
         corresponding DataArrays).
     modality : list of str
         Modality for each track. Same length as ``sample_names``.
-        Each element must be one of ``"coverage"``, ``"methylation"``,
-        ``"variant"``.
+        Each element must be one of ``"coverage"``, ``"stranded_coverage"``,
+        ``"methylation"``, ``"variant"``.
     coverage : DataArray, optional
         Coverage DataArray with dims ``(sample, position)``.
         Required when any entry in ``modality`` is ``"coverage"``.
+    coverage_fwd : DataArray, optional
+        Forward-strand coverage with dims ``(sample, position)``.
+        Required when any entry in ``modality`` is ``"stranded_coverage"``.
+    coverage_rev : DataArray, optional
+        Reverse-strand coverage with dims ``(sample, position)``.
+        Required when any entry in ``modality`` is ``"stranded_coverage"``.
     methylation : DataArray, optional
         Methylation DataArray with dims ``(sample, position)`` (sparse CpG sites).
         Required when any entry in ``modality`` is ``"methylation"``.
@@ -624,6 +706,29 @@ def locus_plot(
             ax.plot(x, y, drawstyle="steps-post", linewidth=0.5, color=color)
             ax.set_ylim(bottom=0)
 
+        elif mod == "stranded_coverage":
+            if coverage_fwd is None or coverage_rev is None:
+                raise ValueError(
+                    f"modality='stranded_coverage' for sample '{sample_name}' requires "
+                    "both coverage_fwd and coverage_rev DataArrays."
+                )
+            arr_fwd = coverage_fwd.sel(sample=sample_name)
+            arr_rev = coverage_rev.sel(sample=sample_name)
+            if hasattr(arr_fwd, "compute"):
+                arr_fwd = arr_fwd.compute()
+            if hasattr(arr_rev, "compute"):
+                arr_rev = arr_rev.compute()
+            x = arr_fwd.coords["position"].values
+            y_fwd = arr_fwd.values.astype(float)
+            y_rev = arr_rev.values.astype(float)
+            ax.fill_between(x, y_fwd, step="post", alpha=0.55, color=color)
+            ax.plot(x, y_fwd, drawstyle="steps-post", linewidth=0.5, color=color)
+            ax.fill_between(x, -y_rev, step="post", alpha=0.55, color=color)
+            ax.plot(x, -y_rev, drawstyle="steps-post", linewidth=0.5, color=color)
+            ax.axhline(0, color="black", linewidth=0.5, alpha=0.4)
+            ymax = max(np.nanmax(y_fwd) if y_fwd.size else 0, np.nanmax(y_rev) if y_rev.size else 0)
+            ax.set_ylim(-ymax * 1.1, ymax * 1.1)
+
         elif mod == "methylation":
             if methylation is None:
                 raise ValueError(
@@ -698,7 +803,7 @@ def locus_plot(
 
         else:
             raise ValueError(
-                f"Unknown modality '{mod}'. Expected 'coverage', 'methylation', or 'variant'."
+                f"Unknown modality '{mod}'. Expected 'coverage', 'stranded_coverage', 'methylation', or 'variant'."
             )
 
         # Track label inside the plot, top-left

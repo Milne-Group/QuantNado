@@ -932,6 +932,7 @@ class QuantNado:
     def metaplot(
         self,
         data: xr.DataArray,
+        data_rev: xr.DataArray | None = None,
         *,
         modality: str | None = None,
         samples: list[str] | None = None,
@@ -982,6 +983,7 @@ class QuantNado:
         """
         return metaplot(
             data,
+            data_rev,
             modality=modality,
             samples=samples,
             groups=groups,
@@ -1001,6 +1003,7 @@ class QuantNado:
     def tornadoplot(
         self,
         data: xr.DataArray,
+        data_rev: xr.DataArray | None = None,
         *,
         modality: str | None = None,
         samples: list[str] | None = None,
@@ -1026,6 +1029,9 @@ class QuantNado:
         ----------
         data : DataArray
             Output of ``.extract()``.
+        data_rev : DataArray, optional
+            Reverse-strand data. When provided each panel shows ``fwd − rev``
+            with a divergent (RdBu_r) colormap centred at zero.
         modality : str, optional
             Sets colour defaults: "coverage", "methylation", "variant".
         samples : list of str, optional
@@ -1058,6 +1064,7 @@ class QuantNado:
         """
         return tornadoplot(
             data,
+            data_rev,
             modality=modality,
             samples=samples,
             sample_names=sample_names,
@@ -1086,6 +1093,8 @@ class QuantNado:
         allele_depth_alt: xr.DataArray | None = None,
         genotype: xr.DataArray | None = None,
         coverage: xr.DataArray | None = None,
+        coverage_fwd: xr.DataArray | None = None,
+        coverage_rev: xr.DataArray | None = None,
         methylation: xr.DataArray | None = None,
         palette: str | list | dict | None = None,
         title: str = "Locus plot",
@@ -1158,6 +1167,14 @@ class QuantNado:
         if coverage is None and any(m == "coverage" for m in modality):
             coverage = self._require_coverage().extract_region(locus)
 
+        # Auto-fetch stranded coverage if needed and not already provided
+        if any(m == "stranded_coverage" for m in modality):
+            bam = self._require_coverage()
+            if coverage_fwd is None:
+                coverage_fwd = bam.extract_region(locus, strand="+")
+            if coverage_rev is None:
+                coverage_rev = bam.extract_region(locus, strand="-")
+
         # Auto-fetch methylation if needed and not already provided
         if methylation is None and any(m == "methylation" for m in modality):
             if self.methylation is None:
@@ -1169,6 +1186,8 @@ class QuantNado:
             sample_names=sample_names,
             modality=modality,
             coverage=coverage,
+            coverage_fwd=coverage_fwd,
+            coverage_rev=coverage_rev,
             methylation=methylation,
             allele_depth_ref=allele_depth_ref,
             allele_depth_alt=allele_depth_alt,

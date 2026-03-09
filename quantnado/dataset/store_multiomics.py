@@ -386,11 +386,20 @@ class MultiomicsStore:
 
         combined = pd.concat(frames.values(), ignore_index=False)
 
-        # Build a modalities column showing which are available per sample
+        # Build a modalities column showing which are available per sample.
+        # For coverage, use "stranded_coverage" for samples where stranded arrays exist.
         sample_modalities: dict[str, list[str]] = {}
         for modality, df in frames.items():
             for sid in df.index:
-                sample_modalities.setdefault(str(sid), []).append(modality)
+                if (
+                    modality == "coverage"
+                    and self.coverage is not None
+                    and bool(self.coverage._strandedness_map.get(sid))
+                ):
+                    label = "stranded_coverage"
+                else:
+                    label = modality
+                sample_modalities.setdefault(str(sid), []).append(label)
 
         # Deduplicate: keep first occurrence per sample_id
         combined = combined[~combined.index.duplicated(keep="first")].drop(
