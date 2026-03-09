@@ -668,6 +668,7 @@ class QuantNado:
         variable: str | None = None,
         samples: list[str] | None = None,
         strand_aware: bool = False,
+        strand: str | None = None,
     ) -> xr.DataArray:
         """
         Extract signal over genomic ranges.
@@ -705,7 +706,16 @@ class QuantNado:
             (``"methylation_pct"``, ``"n_methylated"``, ``"n_unmethylated"``).
             Defaults to ``"methylation_pct"``.
         samples : list of str, optional
-            Subset of sample names (methylation only).
+            Subset of sample names.  Works for both coverage and methylation.
+        strand_aware : bool, default False
+            Per-interval strand routing: ``"+"`` features use ``_fwd``, ``"-"`` features
+            use ``_rev``.  Coverage only; ignored for methylation.
+        strand : {"+"  , "-"}, optional
+            Force all intervals to use the forward (``"+"`` → ``{chrom}_fwd``) or reverse
+            (``"-"`` → ``{chrom}_rev``) strand array, regardless of each interval's strand
+            annotation.  Use this to obtain separate fwd/rev DataArrays for
+            :py:meth:`metaplot` ``data_rev`` or :py:meth:`tornadoplot` ``data_rev``.
+            Coverage only; ignored for methylation.
 
         Returns
         -------
@@ -729,8 +739,14 @@ class QuantNado:
                 samples=samples,
             )
 
+        _coverage = self._require_coverage()
+        _sample_indices = None
+        if samples is not None:
+            _all = getattr(_coverage, "sample_names", None) or []
+            _sample_indices = [_all.index(s) for s in samples if s in _all]
+
         return extract_byranges_signal(
-            self._require_coverage(),
+            _coverage,
             ranges_df=ranges_df,
             intervals_path=intervals_path,
             feature_type=feature_type,
@@ -742,7 +758,9 @@ class QuantNado:
             bin_size=bin_size,
             bin_agg=bin_agg,
             include_incomplete=not filter_incomplete,
+            sample_indices=_sample_indices,
             strand_aware=strand_aware,
+            force_strand=strand,
         )
 
     def count_features(
@@ -782,8 +800,13 @@ class QuantNado:
             Column to aggregate sub-features by.
         strand : str or int, optional
             Feature strand filtering or read counting mode:
-            - "+", "-": filter features by strand annotation
-            - 0/1/2: strand-aware read counting (not yet implemented)
+
+            - ``"+"``, ``"-"``: filter features by strand annotation before counting
+            - ``0``: unstranded (default)
+            - ``1`` (fr-secondstrand): ``+`` features counted from ``_fwd``, ``-`` from ``_rev``
+            - ``2`` (fr-firststrand/dUTP): ``+`` features counted from ``_rev``, ``-`` from ``_fwd``
+
+            Int modes require a store built with ``stranded`` and a ``strand`` column in the GTF.
         assays : list of str, optional
             Which assays to include in output.
         samples : list of str, optional

@@ -445,6 +445,7 @@ def extract_byranges_signal(
 	include_incomplete: bool = False,
 	sample_indices: np.ndarray | None = None,
 	strand_aware: bool = False,
+	force_strand: str | None = None,
 ) -> xr.DataArray:
 	"""
 	Extract raw per-position signal over genomic ranges.
@@ -498,6 +499,11 @@ def extract_byranges_signal(
 		appropriate strand array based on the ``Strand`` column.  Intervals on ``"+"``
 		are drawn from ``{chrom}_fwd``; ``"-"`` intervals from ``{chrom}_rev``.
 		Falls back to total coverage when stranded arrays are absent.
+	force_strand : {"+"  , "-"}, optional
+		Force all intervals to use the forward (``"+"`` → ``{chrom}_fwd``) or reverse
+		(``"-"`` → ``{chrom}_rev``) strand array regardless of their strand annotation.
+		Takes precedence over ``strand_aware``.  Falls back to total coverage when
+		stranded arrays are absent.
 
 	Returns
 	-------
@@ -609,14 +615,23 @@ def extract_byranges_signal(
 		strands = np.asarray(group["Strand"], dtype=object) if has_strand else None
 		names = np.asarray(group[name_col], dtype=object) if name_col is not None else None
 
-		# Select source array: strand-specific (_fwd/_rev) or total
+		# Select source array: forced strand, strand-aware per-interval, or total
+		use_forced_strand = (
+			force_strand in ("+", "-")
+			and f"{contig}_fwd" in root
+			and f"{contig}_rev" in root
+		)
 		use_stranded = (
-			strand_aware
+			not use_forced_strand
+			and strand_aware
 			and has_strand
 			and f"{contig}_fwd" in root
 			and f"{contig}_rev" in root
 		)
-		if use_stranded:
+		if use_forced_strand:
+			akey = f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev"
+			arr = da.from_zarr(root[akey])[sample_indices, :].transpose(1, 0).astype(np.float32)
+		elif use_stranded:
 			arr_fwd = da.from_zarr(root[f"{contig}_fwd"])[sample_indices, :].transpose(1, 0).astype(np.float32)
 			arr_rev = da.from_zarr(root[f"{contig}_rev"])[sample_indices, :].transpose(1, 0).astype(np.float32)
 			arr = arr_fwd  # used for shape/length queries; replaced per-interval below
