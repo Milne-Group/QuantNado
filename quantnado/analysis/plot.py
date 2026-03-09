@@ -4,19 +4,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 if TYPE_CHECKING:
+    from typing import Any
     import matplotlib.pyplot as plt
 
-__all__ = ["metaplot", "tornadoplot", "locus_plot"]
+__all__ = ["metaplot", "tornadoplot", "locus_plot", "heatmap", "correlate"]
 
 # Sensible per-modality defaults that metaplot / tornadoplot apply when
 # ``modality`` is provided.  Explicit kwargs passed by the caller always win.
 _MODALITY_DEFAULTS: "dict[str, dict]" = {
     "coverage": {
         "ylabel": "Coverage (CPM)",
-        "cmap": "RdYlBu_r",
+        "cmap": "mako",
     },
     "methylation": {
         "ylabel": "Methylation (%)",
@@ -55,6 +57,7 @@ def _resolve_palette(palette, n: int, labels: "list | None" = None) -> list:
 
 def metaplot(
     data: xr.DataArray,
+    data_rev: "xr.DataArray | None" = None,
     *,
     modality: "str | None" = None,
     samples: list[str] | None = None,
@@ -90,6 +93,10 @@ def metaplot(
         Output of ``qn.extract()``, with dimensions
         ``(interval, relative_position, sample)`` or ``(interval, bin, sample)``.
         May be dask-backed; ``.compute()`` is called automatically if needed.
+    data_rev : DataArray, optional
+        Reverse-strand data with the same structure as ``data``. When provided,
+        the reverse-strand mean profile is mirrored below zero on the same axes,
+        creating a split-strand display (forward above, reverse below).
     modality : {"coverage", "methylation", "variant"}, optional
         Data modality. Sets sensible defaults for ``ylabel`` and visual style.
         Explicit kwargs always override modality defaults.
@@ -191,6 +198,21 @@ def metaplot(
     all_sample_labels = list(data.coords["sample"].values)
     x = data.coords[position_dim].values
 
+    # Process data_rev with the same transpose + flip
+    if data_rev is not None:
+        if hasattr(data_rev, "chunks"):
+            data_rev = data_rev.compute()
+        _pdim_rev = next((d for d in data_rev.dims if d in ("relative_position", "bin")), None)
+        if _pdim_rev and data_rev.dims != ("interval", _pdim_rev, "sample"):
+            data_rev = data_rev.transpose("interval", _pdim_rev, "sample")
+        if flip_minus_strand and "strand" in data_rev.coords:
+            _strands_rev = data_rev.coords["strand"].values
+            _minus_rev = _strands_rev == "-"
+            if _minus_rev.any():
+                _arr_rev = data_rev.values.copy()
+                _arr_rev[_minus_rev] = _arr_rev[_minus_rev, ::-1, :]
+                data_rev = xr.DataArray(_arr_rev, dims=data_rev.dims, coords=data_rev.coords)
+
     if ax is None:
         _, ax = plt.subplots(figsize=figsize)
 
@@ -217,6 +239,19 @@ def metaplot(
                     x, group_mean - err, group_mean + err,
                     alpha=0.2, color=line.get_color()
                 )
+            if data_rev is not None:
+                per_sample_means_rev = np.stack(
+                    [data_rev.sel(sample=s).values.mean(axis=0) for s in group_samples], axis=0
+                )
+                group_mean_rev = per_sample_means_rev.mean(axis=0)
+                ax.plot(x, -group_mean_rev, alpha=0.9, color=color, linestyle="--")
+                if error_stat is not None and len(group_samples) > 1:
+                    group_std_rev = per_sample_means_rev.std(axis=0)
+                    err_rev = group_std_rev / np.sqrt(len(group_samples)) if error_stat == "sem" else group_std_rev
+                    ax.fill_between(
+                        x, -group_mean_rev - err_rev, -group_mean_rev + err_rev,
+                        alpha=0.2, color=color
+                    )
     else:
         # One line per sample: mean across intervals.
         # Error band = SEM (or STD) across intervals.
@@ -232,6 +267,9 @@ def metaplot(
         n_intervals = data.sizes["interval"]
         mean_profile = data.mean(dim="interval")  # (position, sample)
         std_profile = data.std(dim="interval")    # (position, sample)
+        if data_rev is not None:
+            mean_profile_rev = data_rev.mean(dim="interval")
+            std_profile_rev = data_rev.std(dim="interval")
 
         for sample, color in zip(sample_labels, colors):
             y = mean_profile.sel(sample=sample).values
@@ -244,6 +282,20 @@ def metaplot(
                     x, y - err, y + err,
                     alpha=0.15, color=line.get_color()
                 )
+            if data_rev is not None:
+                y_rev = mean_profile_rev.sel(sample=sample).values
+                ax.plot(x, -y_rev, alpha=0.9, color=color, linestyle="--")
+                if error_stat is not None:
+                    err_rev = std_profile_rev.sel(sample=sample).values
+                    if error_stat == "sem":
+                        err_rev = err_rev / np.sqrt(n_intervals)
+                    ax.fill_between(
+                        x, -y_rev - err_rev, -y_rev + err_rev,
+                        alpha=0.15, color=color
+                    )
+
+    if data_rev is not None:
+        ax.axhline(0, color="black", linewidth=0.5, alpha=0.4)
 
     if reference_point is not None:
         ax.axvline(
@@ -292,6 +344,7 @@ def _prep_extract(data: xr.DataArray, flip_minus_strand: bool) -> "tuple[xr.Data
 
 def tornadoplot(
     data: xr.DataArray,
+    data_rev: "xr.DataArray | None" = None,
     *,
     modality: "str | None" = None,
     samples: "list[str] | None" = None,
@@ -301,6 +354,7 @@ def tornadoplot(
     sort_by: "str | None" = "mean",
     vmin: "float | None" = None,
     vmax: "float | None" = None,
+    scale_each: bool = False,
     cmap: "str | None" = None,
     reference_point: "float | None" = 0,
     reference_label: str = "TSS",
@@ -315,13 +369,18 @@ def tornadoplot(
 
     Each row is one genomic interval; colour encodes signal intensity.
     One panel is drawn per sample (or per group when ``groups`` is provided).
-    Panels share the same colour scale and row order.
+    By default panels share the same colour scale and row order; pass
+    ``scale_each=True`` for independent per-panel scaling.
 
     Parameters
     ----------
     data : DataArray
         Output of ``qn.extract()``, dimensions
         ``(interval, relative_position|bin, sample)``.
+    data_rev : DataArray, optional
+        Reverse-strand data with the same structure as ``data``. When provided,
+        each panel shows ``fwd − rev`` signal with a divergent colormap centred
+        at zero (more forward-strand signal = positive, more reverse = negative).
     modality : {"coverage", "methylation", "variant"}, optional
         Data modality. Sets sensible defaults for ``cmap``, ``vmin``, and ``vmax``.
         Explicit kwargs always override modality defaults.
@@ -335,13 +394,21 @@ def tornadoplot(
         Average samples within each group before plotting (one panel per group).
     flip_minus_strand : bool, default True
         Reverse minus-strand intervals before plotting.
-    sort_by : {"mean", "max", None}, default "mean"
+    sort_by : {"mean", "mean_r", "max", None}, default "mean"
         Sort intervals (rows) by their mean or max signal across all positions,
-        descending. Sorting is determined by the first panel and applied to all.
+        descending. ``"mean_r"`` sorts ascending (lowest signal at top).
+        Sorting is determined by the first panel and applied to all.
         ``None`` keeps the original order.
     vmin, vmax : float, optional
         Colour scale limits. Defaults to 0 and the 99th percentile across all panels.
-    cmap : str, default "RdYlBu_r"
+        Ignored per-panel when ``scale_each=True`` (unless explicitly set, in which
+        case the same limits apply to all panels).
+    scale_each : bool, default False
+        When ``True``, each panel uses its own colour scale (0–99th percentile of
+        that panel's values) and gets a horizontal colourbar beneath it.  Useful
+        when samples have very different signal ranges.  Explicit ``vmin``/``vmax``
+        take priority.
+    cmap : str, default "mako"
         Matplotlib colormap name.
     reference_point : float or None, default 0
         X position of the vertical reference line. ``None`` omits it.
@@ -375,14 +442,17 @@ def tornadoplot(
         if vmax is None:
             vmax = defaults.get("vmax")
         if cmap is None:
-            cmap = defaults.get("cmap", "RdYlBu_r")
+            cmap = defaults.get("cmap", "mako")
     if cmap is None:
-        cmap = "RdYlBu_r"
+        cmap = "mako" if data_rev is not None else "mako"
 
     data, x, _ = _prep_extract(data, flip_minus_strand)
+    if data_rev is not None:
+        data_rev, _, _ = _prep_extract(data_rev, flip_minus_strand)
     all_sample_labels = list(data.coords["sample"].values)
 
     # Build list of (panel_label, matrix) where matrix is (n_intervals, n_positions)
+    # When data_rev is provided the matrix is fwd − rev (divergent signal).
     panels: "list[tuple[str, np.ndarray]]" = []
     if groups is not None:
         for group_label, group_samples in groups.items():
@@ -392,6 +462,11 @@ def tornadoplot(
             mat = np.stack(
                 [data.sel(sample=s).values for s in group_samples], axis=0
             ).mean(axis=0)  # (n_intervals, n_positions)
+            if data_rev is not None:
+                mat_rev = np.stack(
+                    [data_rev.sel(sample=s).values for s in group_samples], axis=0
+                ).mean(axis=0)
+                mat = mat - mat_rev
             panels.append((group_label, mat))
     else:
         label_list = samples if samples is not None else all_sample_labels
@@ -412,25 +487,37 @@ def tornadoplot(
             display_labels = label_list
 
         for s, label in zip(label_list, display_labels):
-            panels.append((label, data.sel(sample=s).values))
+            mat = data.sel(sample=s).values
+            if data_rev is not None:
+                mat = mat - data_rev.sel(sample=s).values
+            panels.append((label, mat))
 
     # Sort rows by first panel's signal
     if sort_by is not None and panels:
         first_mat = panels[0][1]
         if sort_by == "mean":
             order = np.argsort(np.nanmean(first_mat, axis=1))[::-1]
+        elif sort_by == "mean_r":
+            order = np.argsort(np.nanmean(first_mat, axis=1))
         elif sort_by == "max":
             order = np.argsort(np.nanmax(first_mat, axis=1))[::-1]
         else:
-            raise ValueError(f"sort_by must be 'mean', 'max', or None; got {sort_by!r}")
+            raise ValueError(f"sort_by must be 'mean', 'mean_r', 'max', or None; got {sort_by!r}")
         panels = [(lbl, mat[order]) for lbl, mat in panels]
 
-    # Colour scale
-    if vmin is None:
-        vmin = 0.0
-    if vmax is None:
-        all_vals = np.concatenate([mat.ravel() for _, mat in panels])
-        vmax = float(np.nanpercentile(all_vals, 99))
+    # Colour scale — symmetric around zero when showing fwd−rev
+    if data_rev is not None:
+        if vmax is None:
+            all_vals = np.concatenate([mat.ravel() for _, mat in panels])
+            vmax = float(np.nanpercentile(np.abs(all_vals), 99))
+        if vmin is None:
+            vmin = -vmax
+    else:
+        if vmin is None:
+            vmin = 0.0
+        if vmax is None:
+            all_vals = np.concatenate([mat.ravel() for _, mat in panels])
+            vmax = float(np.nanpercentile(all_vals, 99))
 
     n_panels = len(panels)
     if figsize is None:
@@ -442,18 +529,32 @@ def tornadoplot(
     )
     if n_panels == 1:
         axes = [axes]
+    else:
+        axes = list(axes)
 
     n_intervals = panels[0][1].shape[0]
     extent = [float(x[0]), float(x[-1]), n_intervals, 0]
 
     for ax, (label, mat) in zip(axes, panels):
+        # Per-panel colour scale when scale_each=True and no explicit limits given
+        if scale_each and vmin is None and vmax is None:
+            finite = mat[np.isfinite(mat)]
+            if data_rev is not None:
+                _vmax = float(np.nanpercentile(np.abs(finite), 99)) if finite.size else 1.0
+                _vmin = -_vmax
+            else:
+                _vmin = 0.0
+                _vmax = float(np.nanpercentile(finite, 99)) if finite.size else 1.0
+        else:
+            _vmin, _vmax = vmin, vmax
+
         im = ax.imshow(
             mat,
             aspect="auto",
             origin="upper",
             extent=extent,
-            vmin=vmin,
-            vmax=vmax,
+            vmin=_vmin,
+            vmax=_vmax,
             cmap=cmap,
             interpolation="nearest",
         )
@@ -462,14 +563,22 @@ def tornadoplot(
         ax.tick_params(axis="y", left=False, labelleft=False)
         if reference_point is not None:
             ax.axvline(reference_point, color="white", linestyle="--", linewidth=0.8)
+        if scale_each:
+            from mpl_toolkits.axes_grid1 import make_axes_locatable
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("bottom", size="5%", pad=0.4)
+            cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+            cb.ax.tick_params(labelsize=7)
+            cb.set_label("Signal", fontsize=8)
 
-    axes[0].tick_params(axis="y", left=True, labelleft=True)
+    axes[0].tick_params(axis="y", left=False, labelleft=False)
     ylabel = f"Intervals (n={n_intervals})" if ylabel is None else ylabel
     axes[0].set_ylabel(ylabel, fontsize=8)
 
-    # Shared colorbar to the right
-    cbar = fig.colorbar(im, ax=axes, shrink=0.6, pad=0.02)
-    cbar.set_label("Signal", fontsize=8)
+    # Shared colorbar (when not using per-panel scaling)
+    if not scale_each:
+        cbar = fig.colorbar(im, ax=axes, shrink=0.6, pad=0.02)
+        cbar.set_label("Signal", fontsize=8)
     if reference_point is not None:
         axes[-1].annotate(
             reference_label,
@@ -495,6 +604,8 @@ def locus_plot(
     sample_names: "list[str]",
     modality: "list[str]",
     coverage: "xr.DataArray | None" = None,
+    coverage_fwd: "xr.DataArray | None" = None,
+    coverage_rev: "xr.DataArray | None" = None,
     methylation: "xr.DataArray | None" = None,
     allele_depth_ref: "xr.DataArray | None" = None,
     allele_depth_alt: "xr.DataArray | None" = None,
@@ -512,6 +623,7 @@ def locus_plot(
     ``modality``:
 
     - **coverage** — stairsfilled area plot (per-base read depth)
+    - **stranded_coverage** — mirrored strands: forward above zero, reverse below
     - **methylation** — scatter points at CpG positions (methylation %)
     - **variant** — lollipop plot (allele frequency at variant positions)
 
@@ -524,11 +636,17 @@ def locus_plot(
         corresponding DataArrays).
     modality : list of str
         Modality for each track. Same length as ``sample_names``.
-        Each element must be one of ``"coverage"``, ``"methylation"``,
-        ``"variant"``.
+        Each element must be one of ``"coverage"``, ``"stranded_coverage"``,
+        ``"methylation"``, ``"variant"``.
     coverage : DataArray, optional
         Coverage DataArray with dims ``(sample, position)``.
         Required when any entry in ``modality`` is ``"coverage"``.
+    coverage_fwd : DataArray, optional
+        Forward-strand coverage with dims ``(sample, position)``.
+        Required when any entry in ``modality`` is ``"stranded_coverage"``.
+    coverage_rev : DataArray, optional
+        Reverse-strand coverage with dims ``(sample, position)``.
+        Required when any entry in ``modality`` is ``"stranded_coverage"``.
     methylation : DataArray, optional
         Methylation DataArray with dims ``(sample, position)`` (sparse CpG sites).
         Required when any entry in ``modality`` is ``"methylation"``.
@@ -620,6 +738,29 @@ def locus_plot(
             ax.plot(x, y, drawstyle="steps-post", linewidth=0.5, color=color)
             ax.set_ylim(bottom=0)
 
+        elif mod == "stranded_coverage":
+            if coverage_fwd is None or coverage_rev is None:
+                raise ValueError(
+                    f"modality='stranded_coverage' for sample '{sample_name}' requires "
+                    "both coverage_fwd and coverage_rev DataArrays."
+                )
+            arr_fwd = coverage_fwd.sel(sample=sample_name)
+            arr_rev = coverage_rev.sel(sample=sample_name)
+            if hasattr(arr_fwd, "compute"):
+                arr_fwd = arr_fwd.compute()
+            if hasattr(arr_rev, "compute"):
+                arr_rev = arr_rev.compute()
+            x = arr_fwd.coords["position"].values
+            y_fwd = arr_fwd.values.astype(float)
+            y_rev = arr_rev.values.astype(float)
+            ax.fill_between(x, y_fwd, step="post", alpha=0.55, color=color)
+            ax.plot(x, y_fwd, drawstyle="steps-post", linewidth=0.5, color=color)
+            ax.fill_between(x, -y_rev, step="post", alpha=0.55, color=color)
+            ax.plot(x, -y_rev, drawstyle="steps-post", linewidth=0.5, color=color)
+            ax.axhline(0, color="black", linewidth=0.5, alpha=0.4)
+            ymax = max(np.nanmax(y_fwd) if y_fwd.size else 0, np.nanmax(y_rev) if y_rev.size else 0)
+            ax.set_ylim(-ymax * 1.1, ymax * 1.1)
+
         elif mod == "methylation":
             if methylation is None:
                 raise ValueError(
@@ -694,7 +835,7 @@ def locus_plot(
 
         else:
             raise ValueError(
-                f"Unknown modality '{mod}'. Expected 'coverage', 'methylation', or 'variant'."
+                f"Unknown modality '{mod}'. Expected 'coverage', 'stranded_coverage', 'methylation', or 'variant'."
             )
 
         # Track label inside the plot, top-left
@@ -718,3 +859,261 @@ def locus_plot(
         fig.savefig(filepath, bbox_inches="tight", dpi=150)
 
     return axes
+
+
+# ---------------------------------------------------------------------------
+# Shared helper for heatmap / correlate
+# ---------------------------------------------------------------------------
+
+
+def _extract_signal_matrix(
+    data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+    variable: "str | None",
+    samples: "list[str] | None",
+) -> "tuple[np.ndarray, list[str]]":
+    """Return a (features × samples) float matrix and sample labels from various input types."""
+    if isinstance(data, xr.Dataset):
+        if variable is None:
+            variable = "mean" if "mean" in data.data_vars else next(
+                v for v in data.data_vars if v != "count"
+            )
+        da = data[variable]
+        if hasattr(da, "compute"):
+            da = da.compute()
+        mat = da.values.astype(float)  # (ranges, sample)
+        sample_labels = list(data["sample"].values)
+
+    elif isinstance(data, xr.DataArray):
+        if hasattr(data, "compute"):
+            data = data.compute()
+        mat = data.values.astype(float)
+        if "sample" in data.dims:
+            sample_labels = list(data["sample"].values)
+            sample_axis = data.dims.index("sample")
+            if sample_axis != mat.ndim - 1:
+                mat = np.moveaxis(mat, sample_axis, -1)
+            # Collapse non-sample dims to (features, samples)
+            mat = mat.reshape(-1, mat.shape[-1])
+        else:
+            sample_labels = [f"s{i + 1}" for i in range(mat.shape[-1])]
+
+    elif isinstance(data, pd.DataFrame):
+        mat = data.values.astype(float)
+        sample_labels = list(data.columns)
+
+    else:
+        raise TypeError(
+            f"data must be xr.Dataset, xr.DataArray, or pd.DataFrame; got {type(data).__name__}"
+        )
+
+    if samples is not None:
+        missing = set(samples) - set(sample_labels)
+        if missing:
+            raise ValueError(f"Samples not found in data: {missing}")
+        idx = [sample_labels.index(s) for s in samples]
+        mat = mat[:, idx]
+        sample_labels = list(samples)
+
+    return mat, sample_labels
+
+
+# ---------------------------------------------------------------------------
+# heatmap
+# ---------------------------------------------------------------------------
+
+
+def heatmap(
+    data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+    *,
+    variable: "str | None" = None,
+    samples: "list[str] | None" = None,
+    log_transform: bool = True,
+    cmap: str = "mako",
+    figsize: "tuple[float, float]" = (6, 6),
+    title: str = "Signal heatmap",
+    filepath: "str | Path | None" = None,
+) -> "Any":
+    """
+    Clustered heatmap of genomic signal across samples.
+
+    Works directly on the output of ``reduce()`` or ``count_features()``.
+    Rows are genomic features (regions / genes), columns are samples.
+    Both rows and columns are hierarchically clustered.
+
+    Parameters
+    ----------
+    data : xr.Dataset | xr.DataArray | pd.DataFrame
+        - ``xr.Dataset`` — output of ``reduce()``. The variable named by
+          ``variable`` (default ``"mean"``) is used.
+        - ``xr.DataArray`` — a single variable extracted from a Dataset.
+        - ``pd.DataFrame`` — output of ``count_features()``, rows = features,
+          columns = samples.
+    variable : str, optional
+        Name of the data variable to plot when ``data`` is an ``xr.Dataset``
+        (e.g. ``"mean"``, ``"sum"``). Defaults to ``"mean"`` if present.
+    samples : list of str, optional
+        Subset of samples to include. Defaults to all samples.
+    log_transform : bool, default True
+        Apply ``log1p`` before plotting. Recommended for count/coverage data
+        with a heavy-tailed distribution.
+    cmap : str, default "mako"
+        Matplotlib / seaborn colormap name.
+    figsize : tuple, default (6, 6)
+        Figure size in inches.
+    title : str, default "Signal heatmap"
+        Figure title.
+    filepath : str or Path, optional
+        Save figure to this path if provided.
+
+    Returns
+    -------
+    g : seaborn.matrix.ClusterGrid
+
+    Examples
+    --------
+    >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+    >>> g = qn.heatmap(signal, variable="mean", title="Promoter signal")
+
+    >>> counts, _ = ds.count_features(gtf_file="genes.gtf")
+    >>> g = qn.heatmap(counts, log_transform=True, title="Gene counts")
+    """
+    import seaborn as sns
+
+    mat, sample_labels = _extract_signal_matrix(data, variable, samples)
+
+    if log_transform:
+        mat = np.log1p(mat)
+
+    # Drop zero-variance columns (uninformative samples)
+    col_var = mat.var(axis=0)
+    keep = col_var > 0
+    if not keep.all():
+        sample_labels = [s for s, k in zip(sample_labels, keep) if k]
+        mat = mat[:, keep]
+
+    g = sns.clustermap(
+        mat,
+        cmap=cmap,
+        yticklabels=False,
+        xticklabels=sample_labels,
+        figsize=figsize,
+        col_cluster=True,
+        row_cluster=True,
+        cbar_kws={"label": "log1p(signal)" if log_transform else "signal"},
+        cbar_pos=(1.0, 0.5, 0.02, 0.2),
+        dendrogram_ratio=0.1,
+    )
+    g.figure.suptitle(title, y=1.02)
+
+    if filepath is not None:
+        g.savefig(filepath, bbox_inches="tight")
+
+    return g
+
+
+# ---------------------------------------------------------------------------
+# correlate
+# ---------------------------------------------------------------------------
+
+
+def correlate(
+    data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+    *,
+    variable: "str | None" = None,
+    samples: "list[str] | None" = None,
+    method: str = "pearson",
+    log_transform: bool = True,
+    annotate: bool = True,
+    cmap: str = "RdBu_r",
+    figsize: "tuple[float, float]" = (6, 6),
+    title: str = "Sample–sample correlation",
+    filepath: "str | Path | None" = None,
+) -> "tuple[pd.DataFrame, Any]":
+    """
+    Compute and plot a sample–sample correlation matrix.
+
+    Parameters
+    ----------
+    data : xr.Dataset | xr.DataArray | pd.DataFrame
+        Same inputs as :func:`heatmap`.
+    variable : str, optional
+        Data variable to use when ``data`` is an ``xr.Dataset``.
+    samples : list of str, optional
+        Subset of samples. Defaults to all samples.
+    method : {"pearson", "spearman"}, default "pearson"
+        Correlation method.
+    log_transform : bool, default True
+        Apply ``log1p`` before computing correlations.
+    annotate : bool, default True
+        Annotate cells with the correlation coefficient (r).
+    cmap : str, default "RdBu_r"
+        Colormap; diverging maps work best for correlation matrices.
+    figsize : tuple, default (6, 6)
+        Figure size in inches.
+    title : str, default "Sample–sample correlation"
+        Figure title.
+    filepath : str or Path, optional
+        Save figure to this path if provided.
+
+    Returns
+    -------
+    corr_df : pd.DataFrame
+        Correlation matrix (samples × samples).
+    g : seaborn.matrix.ClusterGrid
+
+    Examples
+    --------
+    >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+    >>> corr_df, g = qn.correlate(signal, title="Promoter signal correlation")
+
+    >>> counts, _ = ds.count_features(gtf_file="genes.gtf")
+    >>> corr_df, g = qn.correlate(counts, method="spearman")
+    """
+    import seaborn as sns
+    from scipy.stats import spearmanr
+
+    if method not in {"pearson", "spearman"}:
+        raise ValueError(f"method must be 'pearson' or 'spearman'; got {method!r}")
+
+    mat, sample_labels = _extract_signal_matrix(data, variable, samples)
+
+    if log_transform:
+        mat = np.log1p(mat)
+
+    # Drop zero-variance columns before correlating
+    col_var = mat.var(axis=0)
+    keep = col_var > 0
+    if not keep.all():
+        sample_labels = [s for s, k in zip(sample_labels, keep) if k]
+        mat = mat[:, keep]
+
+    if method == "pearson":
+        corr = np.corrcoef(mat.T)
+    else:
+        corr, _ = spearmanr(mat)
+        if corr.ndim == 0:  # single sample edge case
+            corr = np.array([[1.0]])
+
+    corr_df = pd.DataFrame(corr, index=sample_labels, columns=sample_labels)
+
+    g = sns.clustermap(
+        corr_df,
+        xticklabels=sample_labels,
+        yticklabels=sample_labels,
+        cmap=cmap,
+        vmin=-1,
+        vmax=1,
+        square=True,
+        figsize=figsize,
+        cbar_kws={"label": f"{method.capitalize()} r"},
+        cbar_pos=(1.0, 0.4, 0.02, 0.2),
+        dendrogram_ratio=0.1,
+        annot=annotate,
+        fmt=".2f" if annotate else "",
+    )
+    g.figure.suptitle(title, y=1.02)
+
+    if filepath is not None:
+        g.savefig(filepath, bbox_inches="tight")
+
+    return corr_df, g

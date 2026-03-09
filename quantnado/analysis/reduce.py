@@ -228,6 +228,9 @@ def _select_samples(
 		)
 	else:
 		sample_indices = np.asarray(sample_indices, dtype=np.int64)
+		# Apply completion filter to explicitly provided sample indices
+		if not include_incomplete:
+			sample_indices = sample_indices[completed_mask[sample_indices]]
 
 	if sample_indices.size == 0:
 		raise ValueError("No samples selected")
@@ -441,6 +444,8 @@ def extract_byranges_signal(
 	bin_agg: ReductionMethod | str = ReductionMethod.MEAN,
 	include_incomplete: bool = False,
 	sample_indices: np.ndarray | None = None,
+	strand_aware: bool = False,
+	force_strand: str | None = None,
 ) -> xr.DataArray:
 	"""
 	Extract raw per-position signal over genomic ranges.
@@ -488,6 +493,17 @@ def extract_byranges_signal(
 		If False (default), only use samples marked as complete in metadata.
 	sample_indices : np.ndarray, optional
 		Explicit sample indices to keep (applied after completion filter).
+	strand_aware : bool, default False
+		If True and the store was built with ``stranded`` set (i.e. ``{chrom}_fwd``
+		and ``{chrom}_rev`` arrays exist), select per-interval coverage from the
+		appropriate strand array based on the ``Strand`` column.  Intervals on ``"+"``
+		are drawn from ``{chrom}_fwd``; ``"-"`` intervals from ``{chrom}_rev``.
+		Falls back to total coverage when stranded arrays are absent.
+	force_strand : {"+"  , "-"}, optional
+		Force all intervals to use the forward (``"+"`` → ``{chrom}_fwd``) or reverse
+		(``"-"`` → ``{chrom}_rev``) strand array regardless of their strand annotation.
+		Takes precedence over ``strand_aware``.  Falls back to total coverage when
+		stranded arrays are absent.
 
 	Returns
 	-------
@@ -599,7 +615,28 @@ def extract_byranges_signal(
 		strands = np.asarray(group["Strand"], dtype=object) if has_strand else None
 		names = np.asarray(group[name_col], dtype=object) if name_col is not None else None
 
-		arr = da.from_zarr(root[contig])[sample_indices, :].transpose(1, 0)
+		# Select source array: forced strand, strand-aware per-interval, or total
+		use_forced_strand = (
+			force_strand in ("+", "-")
+			and f"{contig}_fwd" in root
+			and f"{contig}_rev" in root
+		)
+		use_stranded = (
+			not use_forced_strand
+			and strand_aware
+			and has_strand
+			and f"{contig}_fwd" in root
+			and f"{contig}_rev" in root
+		)
+		if use_forced_strand:
+			akey = f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev"
+			arr = da.from_zarr(root[akey])[sample_indices, :].transpose(1, 0).astype(np.float32)
+		elif use_stranded:
+			arr_fwd = da.from_zarr(root[f"{contig}_fwd"])[sample_indices, :].transpose(1, 0).astype(np.float32)
+			arr_rev = da.from_zarr(root[f"{contig}_rev"])[sample_indices, :].transpose(1, 0).astype(np.float32)
+			arr = arr_fwd  # used for shape/length queries; replaced per-interval below
+		else:
+			arr = da.from_zarr(root[contig])[sample_indices, :].transpose(1, 0)
 		# Extraction introduces NaNs (padding/masking), so use a float dtype.
 		if not np.issubdtype(arr.dtype, np.floating):
 			arr = arr.astype(np.float32)
@@ -637,15 +674,28 @@ def extract_byranges_signal(
 			extract_starts = anchor_pos - _upstream
 			pad_left = int(max(0, -int(extract_starts.min())))
 			pad_right = int(max(0, int(extract_starts.max() + _total_width) - arr_len))
-			if pad_left or pad_right:
-				arr = da.pad(arr, ((pad_left, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
 
-			start_idx = (extract_starts + pad_left).astype(np.int64)
-			offsets = np.arange(_total_width, dtype=np.int64)
-			indices = start_idx[:, None] + offsets[None, :]
-			gathered = da.take(arr, indices.reshape(-1), axis=0).reshape(
-				(start_idx.shape[0], _total_width, arr.shape[1])
-			)
+			if use_stranded:
+				if pad_left or pad_right:
+					arr_fwd = da.pad(arr_fwd, ((pad_left, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
+					arr_rev = da.pad(arr_rev, ((pad_left, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
+				start_idx = (extract_starts + pad_left).astype(np.int64)
+				offsets = np.arange(_total_width, dtype=np.int64)
+				indices = start_idx[:, None] + offsets[None, :]
+				n_intervals = start_idx.shape[0]
+				gathered_fwd = da.take(arr_fwd, indices.reshape(-1), axis=0).reshape((n_intervals, _total_width, arr_fwd.shape[1]))
+				gathered_rev = da.take(arr_rev, indices.reshape(-1), axis=0).reshape((n_intervals, _total_width, arr_rev.shape[1]))
+				is_plus = da.from_array((strands == "+")[:, None, None])
+				gathered = da.where(is_plus, gathered_fwd, gathered_rev)
+			else:
+				if pad_left or pad_right:
+					arr = da.pad(arr, ((pad_left, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
+				start_idx = (extract_starts + pad_left).astype(np.int64)
+				offsets = np.arange(_total_width, dtype=np.int64)
+				indices = start_idx[:, None] + offsets[None, :]
+				gathered = da.take(arr, indices.reshape(-1), axis=0).reshape(
+					(start_idx.shape[0], _total_width, arr.shape[1])
+				)
 			signal = gathered
 
 			if bin_size is not None:
@@ -686,15 +736,26 @@ def extract_byranges_signal(
 					continue
 
 			start_idx = clipped_starts.astype(np.int64)
-			pad_right = int(max(0, int(start_idx.max() + target_bases) - arr_len))
-			if pad_right:
-				arr = da.pad(arr, ((0, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
-
 			offsets = np.arange(target_bases, dtype=np.int64)
 			indices = start_idx[:, None] + offsets[None, :]
-			gathered = da.take(arr, indices.reshape(-1), axis=0).reshape(
-				(start_idx.shape[0], target_bases, arr.shape[1])
-			)
+
+			if use_stranded:
+				pad_right = int(max(0, int(start_idx.max() + target_bases) - arr_len))
+				if pad_right:
+					arr_fwd = da.pad(arr_fwd, ((0, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
+					arr_rev = da.pad(arr_rev, ((0, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
+				n_intervals = start_idx.shape[0]
+				gathered_fwd = da.take(arr_fwd, indices.reshape(-1), axis=0).reshape((n_intervals, target_bases, arr_fwd.shape[1]))
+				gathered_rev = da.take(arr_rev, indices.reshape(-1), axis=0).reshape((n_intervals, target_bases, arr_rev.shape[1]))
+				is_plus = da.from_array((strands == "+")[:, None, None])
+				gathered = da.where(is_plus, gathered_fwd, gathered_rev)
+			else:
+				pad_right = int(max(0, int(start_idx.max() + target_bases) - arr_len))
+				if pad_right:
+					arr = da.pad(arr, ((0, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
+				gathered = da.take(arr, indices.reshape(-1), axis=0).reshape(
+					(start_idx.shape[0], target_bases, arr.shape[1])
+				)
 
 			mask = offsets[None, :] < lengths[:, None]
 			mask_da = da.from_array(mask, chunks=(min(mask.shape[0], 256), mask.shape[1]))
@@ -793,6 +854,7 @@ def reduce_byranges_signal(
 	reduction: ReductionMethod | str = ReductionMethod.MEAN,
 	include_incomplete: bool = False,
 	sample_indices: np.ndarray | None = None,
+	strand_mode: int = 0,
 ) -> xr.Dataset:
 	"""
 	Summarize per-chromosome Zarr arrays over genomic ranges using efficient reduction.
@@ -830,6 +892,20 @@ def reduce_byranges_signal(
 		If False (default), only use samples marked as complete in metadata.
 	sample_indices : np.ndarray, optional
 		Explicit sample indices to keep (applied after completion filter).
+	strand_mode : int, default 0
+		0 — use total coverage (unstranded). When a ``Strand``/``strand`` column
+		is present in the ranges, modes 1 and 2 perform per-feature strand-aware
+		counting: each feature's reads are drawn from the array that corresponds to
+		its annotated strand.
+
+		- ``1`` (F / ISF / ligation): ``+`` features → ``{chrom}_fwd``,
+		  ``-`` features → ``{chrom}_rev``.
+		- ``2`` (R / ISR / dUTP): ``+`` features → ``{chrom}_rev``,
+		  ``-`` features → ``{chrom}_fwd``.
+
+		Requires the BamStore to have been built with ``stranded`` set. Falls back
+		to total coverage for features with no strand annotation or when the
+		stranded arrays are absent.
 
 	Returns
 	-------
@@ -856,9 +932,19 @@ def reduce_byranges_signal(
 
 	# Log chromosome overlap between ranges and dataset
 	ranges_contigs = set(ranges_df[contig_col].unique())
-	dataset_contigs = set(k for k in root.keys() if k != "metadata")
+	dataset_contigs = set(
+		k for k in root.keys()
+		if k != "metadata" and not k.endswith("_fwd") and not k.endswith("_rev")
+	)
 	feature_source = "GTF" if feature_type is not None else ("BED/GTF file" if intervals_path else "input ranges")
 	_log_chromosome_overlap(ranges_contigs, dataset_contigs, feature_source)
+
+	_array_suffix = {1: "_fwd", 2: "_rev"}.get(strand_mode, "")
+	# Per-feature strand selection: split features by their annotation and route to
+	# the matching _fwd/_rev array.  Applies when strand_mode != 0 and a strand
+	# column is present in the ranges (takes precedence over the global suffix).
+	strand_col_name = next((c for c in ("Strand", "strand") if c in ranges_df.columns), None)
+	_strand_per_feature = strand_mode != 0 and strand_col_name is not None
 
 	# Group ranges by contig and reduce
 	outputs = []
@@ -875,57 +961,78 @@ def reduce_byranges_signal(
 	)
 
 	for contig, group in ranges_df.groupby(contig_col, observed=True):
-		if contig not in root:
-			continue
-
-		starts = np.asarray(group[start_col], dtype=np.int64)
-		ends = np.asarray(group[end_col], dtype=np.int64)
-		names = np.asarray(group[name_col], dtype=object) if name_col is not None else None
-
-		# Load chromosome data: (samples × positions) → transpose to (positions × samples)
-		arr = da.from_zarr(root[contig])[sample_indices, :].transpose(1, 0)
-		arr_len = int(arr.shape[0])
-
-		# Clip coordinates to valid range
-		starts = starts.clip(min=0)
-		ends = ends.clip(max=arr_len)
-
-		# Filter out invalid ranges
-		valid = (ends > starts) & (starts < arr_len) & (ends > 0)
-		if not np.all(valid):
-			starts = starts[valid]
-			ends = ends[valid]
-			if names is not None:
-				names = names[valid]
-			group = group.loc[valid]
-
-		if starts.size == 0:
-			continue
-
-		# Reduce using appropriate method
-		# Always compute sum/count/mean via prefix sums (fast + consistent API)
-		reduced = _reduce_byranges_prefix(starts, ends, arr, min_count=min_count)
-		if reduction_str == "mean":
-			reduction_data = reduced["mean"]
+		# Build (sub_group, array_key) pairs.
+		# When strand_mode != 0 and a strand column is present, split features by
+		# their annotation so that each half reads from the correct _fwd/_rev array:
+		#   mode 1 (F / ISF / ligation):  + → _fwd,  - → _rev
+		#   mode 2 (R / ISR / dUTP):      + → _rev,  - → _fwd
+		# Unstranded features (strand not in +/-) fall back to total coverage.
+		if _strand_per_feature:
+			_strand_to_key = (
+				{"+": f"{contig}_fwd", "-": f"{contig}_rev"}
+				if strand_mode == 1
+				else {"+": f"{contig}_rev", "-": f"{contig}_fwd"}
+			)
+			pairs = [
+				(sg, _strand_to_key.get(str(sv), contig))
+				for sv, sg in group.groupby(strand_col_name)
+			]
 		else:
-			reduction_data = _reduce_ranges_vectorized(arr, starts, ends, reduction_str)
+			_akey = f"{contig}{_array_suffix}" if _array_suffix and f"{contig}{_array_suffix}" in root else contig
+			pairs = [(group, _akey)]
 
-		outputs.append(
-			{
-				"sum": reduced["sum"],
-				"count": reduced["count"],
-				"mean": reduced["mean"],
-				reduction_str: reduction_data,
-			}
-		)
-		idx_order.append(group.index.to_numpy())
-		starts_all.append(starts)
-		ends_all.append(ends)
-		contigs_all.append(np.asarray(group[contig_col]))
-		if has_strand:
-			strands_all.append(np.asarray(group["Strand"]))
-		if names is not None:
-			names_all.append(names)
+		for sg, akey in pairs:
+			if akey not in root:
+				continue
+
+			starts = np.asarray(sg[start_col], dtype=np.int64)
+			ends = np.asarray(sg[end_col], dtype=np.int64)
+			names = np.asarray(sg[name_col], dtype=object) if name_col is not None else None
+
+			# Load chromosome data: (samples × positions) → transpose to (positions × samples)
+			arr = da.from_zarr(root[akey])[sample_indices, :].transpose(1, 0)
+			arr_len = int(arr.shape[0])
+
+			# Clip coordinates to valid range
+			starts = starts.clip(min=0)
+			ends = ends.clip(max=arr_len)
+
+			# Filter out invalid ranges
+			valid = (ends > starts) & (starts < arr_len) & (ends > 0)
+			if not np.all(valid):
+				starts = starts[valid]
+				ends = ends[valid]
+				if names is not None:
+					names = names[valid]
+				sg = sg.loc[valid]
+
+			if starts.size == 0:
+				continue
+
+			# Reduce using appropriate method
+			# Always compute sum/count/mean via prefix sums (fast + consistent API)
+			reduced = _reduce_byranges_prefix(starts, ends, arr, min_count=min_count)
+			if reduction_str == "mean":
+				reduction_data = reduced["mean"]
+			else:
+				reduction_data = _reduce_ranges_vectorized(arr, starts, ends, reduction_str)
+
+			outputs.append(
+				{
+					"sum": reduced["sum"],
+					"count": reduced["count"],
+					"mean": reduced["mean"],
+					reduction_str: reduction_data,
+				}
+			)
+			idx_order.append(sg.index.to_numpy())
+			starts_all.append(starts)
+			ends_all.append(ends)
+			contigs_all.append(np.asarray(sg[contig_col]))
+			if has_strand:
+				strands_all.append(np.asarray(sg["Strand"]))
+			if names is not None:
+				names_all.append(names)
 
 	if not outputs:
 		raise ValueError("No valid ranges found for provided contigs")

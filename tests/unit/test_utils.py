@@ -2,6 +2,7 @@
 import pytest
 
 from quantnado.utils import (
+    classify_methylation_files,
     estimate_chunk_len,
     get_filesystem_type,
     is_network_fs,
@@ -163,4 +164,90 @@ class TestEstimateChunkLen:
     def test_zero_total_positions(self):
         result = estimate_chunk_len(total_positions=0)
         assert result["total_positions"] == 0
+
+
+# ---------------------------------------------------------------------------
+# classify_methylation_files
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyMethylationFiles:
+    def test_empty_list(self):
+        md, cx, mc, hmc = classify_methylation_files([])
+        assert md == []
+        assert cx == []
+        assert mc == []
+        assert hmc == []
+
+    def test_methyldackel_bedgraph(self):
+        files = ["/data/sample1_CpG.bedGraph", "/data/sample2_CpG.bedGraph"]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert md == files
+        assert cx == []
+        assert mc == []
+        assert hmc == []
+
+    def test_cxreport_files(self):
+        files = ["/data/sample1_CXreport.txt", "/data/sample2_CXreport.txt"]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert cx == files
+        assert md == []
+        assert mc == []
+        assert hmc == []
+
+    def test_mc_cxreport_files(self):
+        files = ["/data/sample1_num_mc_cxreport.txt"]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert mc == files
+        assert hmc == []
+        assert cx == []
+        assert md == []
+
+    def test_hmc_cxreport_files(self):
+        files = ["/data/sample1_num_hmc_cxreport.txt"]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert hmc == files
+        assert mc == []
+        assert cx == []
+        assert md == []
+
+    def test_mixed_file_types(self):
+        files = [
+            "/data/sample1_CpG.bedGraph",
+            "/data/sample2_CXreport.txt",
+            "/data/sample3_num_mc_cxreport.txt",
+            "/data/sample4_num_hmc_cxreport.txt",
+        ]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert len(md) == 1
+        assert len(cx) == 1
+        assert len(mc) == 1
+        assert len(hmc) == 1
+
+    def test_hmc_takes_priority_over_mc(self):
+        # A file named with both num_hmc_cxreport should go to hmc, not mc
+        files = ["/data/sample1_num_hmc_cxreport_thing.txt"]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert hmc == files
+        assert mc == []
+
+    def test_mc_takes_priority_over_cxreport(self):
+        # num_mc_cxreport contains "CXreport" as substring but should be mc
+        files = ["/data/sample1_num_mc_cxreport.txt"]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert mc == files
+        assert cx == []
+
+    def test_accepts_path_objects(self):
+        from pathlib import Path
+        files = [Path("/data/sample1_CpG.bedGraph")]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert md == ["/data/sample1_CpG.bedGraph"]
+        assert isinstance(md[0], str)
+
+    def test_returns_strings_not_paths(self):
+        from pathlib import Path
+        files = [Path("/data/sample1_CXreport.txt")]
+        md, cx, mc, hmc = classify_methylation_files(files)
+        assert isinstance(cx[0], str)
 

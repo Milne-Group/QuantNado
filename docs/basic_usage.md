@@ -216,10 +216,10 @@ import quantnado as qn
 qn.create_dataset(
     store_dir="dataset/",
     bam_files=["atac.bam", "chip.bam", "rna.bam"],
-    bedgraph_files=["meth-rep1.bedGraph", "meth-rep2.bedGraph"],
+    methyldackel_files=["meth-rep1.bedGraph", "meth-rep2.bedGraph"],
     vcf_files=["snp.vcf.gz"],
     # Callable to derive sample names from file paths
-    bedgraph_sample_names=lambda p: p.stem.split("_hg38")[0],
+    methyldackel_sample_names=lambda p: p.stem.split("_hg38")[0],
     max_workers=4,
 )
 ```

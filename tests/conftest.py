@@ -51,10 +51,10 @@ def sample_names():
 def simple_store(tmp_path, monkeypatch, chromsizes, sample_names):
     """BamStore with constant per-sample values (s1=1, s2=2) everywhere."""
 
-    def _fake_chrom(self, bam_file, contig, size):
+    def _fake_chrom(self, bam_file, contig, size, library_type=None):
         val = int(bam_file)
         arr = np.full(size, val, dtype=np.uint16)
-        return contig, arr, 0.0
+        return contig, arr, 0.0, None, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", _fake_chrom)
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
@@ -72,10 +72,10 @@ def simple_store_extract(tmp_path, monkeypatch):
     chromsizes = {"chr1": 100}
     sample_names = ["s1", "s2"]
 
-    def _fake_chrom(self, bam_file, contig, size):
+    def _fake_chrom(self, bam_file, contig, size, library_type=None):
         val = int(bam_file)
         arr = np.arange(size, dtype=np.uint16) * val
-        return contig, arr, 0.0
+        return contig, arr, 0.0, None, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", _fake_chrom)
     store = BamStore(tmp_path / "ds_extract", chromsizes, sample_names)

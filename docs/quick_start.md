@@ -17,9 +17,9 @@ import quantnado as qn
 qn.create_dataset(
     store_dir="dataset/",
     bam_files=["atac.bam", "chip.bam", "rna.bam"],      # coverage
-    bedgraph_files=["meth-rep1.bedGraph"],                # methylation
+    methyldackel_files=["meth-rep1.bedGraph"],                # methylation
     vcf_files=["snp.vcf.gz"],                            # variants
-    bedgraph_sample_names=lambda p: p.stem.split("_hg38")[0],
+    methyldackel_sample_names=lambda p: p.stem.split("_hg38")[0],
     max_workers=4,
 )
 ```

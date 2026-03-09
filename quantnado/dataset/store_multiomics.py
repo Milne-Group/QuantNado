@@ -33,7 +33,7 @@ class MultiomicsStore:
     >>> ms = MultiomicsStore.from_files(
     ...     store_dir="dataset/",
     ...     bam_files=["atac.bam", "meth-rep1.bam"],
-    ...     bedgraph_files=["meth-rep1.bedGraph", "meth-rep2.bedGraph"],
+    ...     methyldackel_files=["meth-rep1.bedGraph", "meth-rep2.bedGraph"],
     ...     vcf_files=["snp.vcf.gz"],
     ... )
     >>> ms.modalities
@@ -75,13 +75,18 @@ class MultiomicsStore:
         cls,
         store_dir: Path | str,
         bam_files: list[str | Path] | None = None,
-        bedgraph_files: list[str | Path] | None = None,
+        methyldackel_files: list[str | Path] | None = None,
+        cxreport_files: list[str | Path] | None = None,
+        mc_files: list[str | Path] | None = None,
+        hmc_files: list[str | Path] | None = None,
         vcf_files: list[str | Path] | None = None,
         chromsizes: str | Path | dict[str, int] | None = None,
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         bam_sample_names: list[str] | None = None,
-        bedgraph_sample_names: list[str] | None = None,
+        methyldackel_sample_names: list[str] | None = None,
+        cxreport_sample_names: list[str] | None = None,
+        mc_hmc_sample_names: list[str] | None = None,
         vcf_sample_names: list[str] | None = None,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
@@ -93,12 +98,14 @@ class MultiomicsStore:
         staging_dir: "Path | str | None" = None,
         log_file: "Path | None" = None,
         max_workers: int = 1,
+        chr_workers: int = 1,
         test: bool = False,
+        stranded: list[str] | dict[str, str] | None = None,
     ) -> "MultiomicsStore":
         """
         Create a MultiomicsStore from genomic data files.
 
-        At least one of ``bam_files``, ``bedgraph_files``, or ``vcf_files``
+        At least one of ``bam_files``, ``methyldackel_files``, or ``vcf_files``
         must be provided. Any omitted modality is simply absent from the store.
 
         Parameters
@@ -107,7 +114,7 @@ class MultiomicsStore:
             Output directory. Created if it does not exist.
         bam_files : list of Path, optional
             BAM files for per-base coverage storage.
-        bedgraph_files : list of Path, optional
+        methyldackel_files : list of Path, optional
             MethylDackel CpG bedGraph files for methylation storage.
         vcf_files : list of Path, optional
             VCF.gz files (one per sample) for variant storage.
@@ -119,7 +126,7 @@ class MultiomicsStore:
             sample names are used to subset the metadata automatically.
         bam_sample_names : list of str, optional
             Override sample names for BAM files (default: file stems).
-        bedgraph_sample_names : list of str, optional
+        methyldackel_sample_names : list of str, optional
             Override sample names for bedGraph files (default: file stems).
             Useful when MethylDackel embeds genome/suffix in the filename,
             e.g. ``meth-rep1_hg38_CpG_inverted.bedGraph`` → ``"meth-rep1"``.
@@ -144,12 +151,38 @@ class MultiomicsStore:
         log_file : Path, optional
             Path to write BAM processing logs.
         max_workers : int, default 1
-            Parallel workers for BAM processing.
+            Sample-level parallel workers for BAM processing.
+        chr_workers : int, default 1
+            Chromosome-level parallel workers within each sample thread.
+            Total concurrent BAM reads = max_workers * chr_workers.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
+        stranded : list of str or dict, optional
+            Strand-specific coverage configuration.  Pass a **list** of sample names
+            to use ``"U"`` (raw alignment orientation), or a **dict** mapping
+            sample names to library types (``"R"``, ``"F"``, or ``"U"``).
+            Use a dict for RNA-seq so read1/read2 orientation is taken into account.
+
+            - ``"R"`` (ISR/dUTP/TruSeq Stranded): read1 aligns to reverse strand.
+            - ``"F"`` (ISF/ligation): read1 aligns to forward strand.
+            - ``"U"``: split purely by raw alignment orientation.
+
+            Example::
+
+                stranded={"rna-rep1": "R", "rna-rep2": "R"}
         """
-        if not any([bam_files, bedgraph_files, vcf_files]):
-            raise ValueError("Provide at least one of bam_files, bedgraph_files, or vcf_files")
+        has_cx_files = bool(mc_files or hmc_files)
+        meth_inputs = [methyldackel_files, cxreport_files, has_cx_files]
+        if not any([bam_files, vcf_files, methyldackel_files, cxreport_files, mc_files, hmc_files]):
+            raise ValueError(
+                "Provide at least one of bam_files, methyldackel_files, cxreport_files, "
+                "mc_files/hmc_files, or vcf_files"
+            )
+        # cxreport_files cannot be mixed with bedgraph or split CXreport
+        if cxreport_files and (methyldackel_files or mc_files or hmc_files):
+            raise ValueError(
+                "cxreport_files cannot be combined with methyldackel_files or mc_files/hmc_files"
+            )
 
         store_dir = Path(store_dir)
         store_dir.mkdir(parents=True, exist_ok=True)
@@ -171,15 +204,65 @@ class MultiomicsStore:
                 staging_dir=staging_dir,
                 log_file=log_file,
                 max_workers=max_workers,
+                chr_workers=chr_workers,
                 test=test,
+                stranded=stranded,
             )
 
-        if bedgraph_files:
-            logger.info(f"Building methylation store from {len(bedgraph_files)} bedGraph file(s)...")
-            MethylStore.from_bedgraph_files(
-                bedgraph_files=[str(f) for f in bedgraph_files],
+        # Route methylation: mixed (bedgraph + cx), bedgraph-only, cxreport, or split cx
+        if methyldackel_files and (mc_files or hmc_files):
+            n_bg = len(methyldackel_files)
+            n_cx = len(mc_files or hmc_files)
+            logger.info(
+                f"Building mixed methylation store from {n_bg} bedGraph + {n_cx} CXreport sample(s)..."
+            )
+            MethylStore.from_mixed_files(
+                methyldackel_files=[str(f) for f in methyldackel_files],
+                mc_files=[str(f) for f in mc_files] if mc_files else None,
+                hmc_files=[str(f) for f in hmc_files] if hmc_files else None,
                 store_path=store_dir / "methylation.zarr",
-                sample_names=bedgraph_sample_names,
+                methyldackel_sample_names=methyldackel_sample_names,
+                mc_hmc_sample_names=mc_hmc_sample_names,
+                metadata=metadata,
+                filter_chromosomes=filter_chromosomes,
+                overwrite=overwrite,
+                resume=resume,
+                sample_column=sample_column,
+            )
+        elif methyldackel_files:
+            logger.info(f"Building methylation store from {len(methyldackel_files)} bedGraph file(s)...")
+            MethylStore.from_bedgraph_files(
+                methyldackel_files=[str(f) for f in methyldackel_files],
+                store_path=store_dir / "methylation.zarr",
+                sample_names=methyldackel_sample_names,
+                metadata=metadata,
+                filter_chromosomes=filter_chromosomes,
+                overwrite=overwrite,
+                resume=resume,
+                sample_column=sample_column,
+            )
+        elif cxreport_files:
+            logger.info(f"Building methylation store from {len(cxreport_files)} CXreport file(s)...")
+            MethylStore.from_cxreport_files(
+                cxreport_files=[str(f) for f in cxreport_files],
+                store_path=store_dir / "methylation.zarr",
+                sample_names=cxreport_sample_names,
+                metadata=metadata,
+                filter_chromosomes=filter_chromosomes,
+                overwrite=overwrite,
+                resume=resume,
+                sample_column=sample_column,
+            )
+        elif mc_files or hmc_files:
+            n_cx = len(mc_files or hmc_files)
+            logger.info(
+                f"Building methylation store from {n_cx} split CXreport sample(s)..."
+            )
+            MethylStore.from_split_cxreport_files(
+                mc_files=[str(f) for f in mc_files] if mc_files else None,
+                hmc_files=[str(f) for f in hmc_files] if hmc_files else None,
+                store_path=store_dir / "methylation.zarr",
+                sample_names=mc_hmc_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
                 overwrite=overwrite,
@@ -310,11 +393,20 @@ class MultiomicsStore:
 
         combined = pd.concat(frames.values(), ignore_index=False)
 
-        # Build a modalities column showing which are available per sample
+        # Build a modalities column showing which are available per sample.
+        # For coverage, use "stranded_coverage" for samples where stranded arrays exist.
         sample_modalities: dict[str, list[str]] = {}
         for modality, df in frames.items():
             for sid in df.index:
-                sample_modalities.setdefault(str(sid), []).append(modality)
+                if (
+                    modality == "coverage"
+                    and self.coverage is not None
+                    and bool(self.coverage._strandedness_map.get(sid))
+                ):
+                    label = "stranded_coverage"
+                else:
+                    label = modality
+                sample_modalities.setdefault(str(sid), []).append(label)
 
         # Deduplicate: keep first occurrence per sample_id
         combined = combined[~combined.index.duplicated(keep="first")].drop(

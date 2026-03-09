@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dask.sizeof import logger
 import pandas as pd
 import dask.array as da
 import numpy as np
@@ -65,6 +66,7 @@ def _mean_impute(array):
 def run_pca(
     input_array: xr.DataArray,
     n_components: int = 2,
+    chromosome: str | None = None,
     nan_handling_strategy: str = "drop",
     standardize: bool = False,
     random_state: int | None = None,
@@ -80,6 +82,8 @@ def run_pca(
         2D array with sample dimension and feature/context dimension.
     n_components : int
         Number of principal components to return.
+    chromosome : str | None
+        Chromosome to select for PCA.
     nan_handling_strategy : str
         One of ['drop', 'set_to_zero', 'mean_value_imputation'].
     standardize : bool
@@ -99,7 +103,16 @@ def run_pca(
     """
 
     arr_2d = _normalise_orientation(input_array)
+    if chromosome is not None:
+        feature_dim = arr_2d.dims[1]
+        coord = next((c for c in ("contig", "chrom") if c in arr_2d.coords), None)
+        if coord is None:
+            raise ValueError("chromosome argument provided but no 'contig' or 'chrom' coordinate found in DataArray")
+        mask = (arr_2d.coords[coord] == chromosome).values
+        arr_2d = arr_2d.isel({feature_dim: mask})
+        logger.info(f"Selected chromosome {chromosome} for PCA with shape {arr_2d.data.shape}")
     array = arr_2d.data
+
     if subset_size is not None:
         n_features = array.shape[1]
         if subset_size < n_features:
@@ -111,18 +124,22 @@ def run_pca(
                 rng = np.random.default_rng(random_state)
                 subset_idx = rng.choice(n_features, subset_size, replace=False)
             array = array[:, subset_idx]
+        logger.info(f"Subsetting to {array.shape[1]} features for PCA")
 
     match nan_handling_strategy:
         case "drop":
             array = _drop_any_nan_columns(array)
+            logger.info("Dropped NaN-containing features")
         case "set_to_zero":
             array = (
                 da.nan_to_num(array)
                 if isinstance(array, da.Array)
                 else np.nan_to_num(array)
             )
+            logger.info("Set NaNs to zero for PCA")
         case "mean_value_imputation":
             array = _mean_impute(array)
+            logger.info("Imputed NaNs with column means for PCA")
         case _:
             raise ValueError(
                 "nan_handling_strategy must be one of ['drop', 'set_to_zero', 'mean_value_imputation']"
@@ -134,12 +151,14 @@ def run_pca(
             mean = da.nanmean(array, axis=0)
             std = da.nanstd(array, axis=0)
             array = (array - mean) / da.maximum(std, 1e-12)
+            logger.info("Standardized features by z-scoring for PCA")
         else:
             if not isinstance(array, np.ndarray):
                 array = np.asarray(array)
             mean = np.nanmean(array, axis=0)
             std = np.nanstd(array, axis=0)
             array = (array - mean) / np.maximum(std, 1e-12)
+            logger.info("Standardized features by z-scoring for PCA")
 
     # Materialise dask arrays — the sample count is always small enough for in-memory PCA.
     if isinstance(array, da.Array):
@@ -150,6 +169,7 @@ def run_pca(
     pca_kwargs = {"n_components": n_components, **kwargs}
     if random_state is not None:
         pca_kwargs["random_state"] = random_state
+        logger.info(f"Using random_state={random_state} for PCA")
 
     pca = PCA(**pca_kwargs)
     pca_object = pca.fit(array)

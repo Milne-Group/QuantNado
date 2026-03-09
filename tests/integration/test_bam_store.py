@@ -1,12 +1,15 @@
 """Integration tests for BamStore: create, open, process, metadata, resume."""
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from quantnado.dataset.store_bam import BamStore
 from quantnado.analysis.core import QuantNadoDataset
+from quantnado.utils import estimate_chunk_len
 
 
 # ---------------------------------------------------------------------------
@@ -15,8 +18,8 @@ from quantnado.analysis.core import QuantNadoDataset
 
 
 def test_bamstore_write_and_metadata(tmp_path, chromsizes, sample_names, monkeypatch):
-    def fake_chrom(self, bam_file, contig, size):
-        return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0
+    def fake_chrom(self, bam_file, contig, size, library_type=None):
+        return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0, None, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
@@ -31,8 +34,8 @@ def test_bamstore_write_and_metadata(tmp_path, chromsizes, sample_names, monkeyp
 
 
 def test_bamstore_dataset_wrapper(tmp_path, chromsizes, sample_names, monkeypatch):
-    def fake_chrom(self, bam_file, contig, size):
-        return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0
+    def fake_chrom(self, bam_file, contig, size, library_type=None):
+        return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0, None, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
@@ -51,7 +54,7 @@ def test_bamstore_dataset_wrapper(tmp_path, chromsizes, sample_names, monkeypatc
 
 
 def test_resume_validates_sample_names(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
     BamStore(tmp_path / "ds", chromsizes, sample_names).process_samples(["0", "0"])
 
     BamStore(tmp_path / "ds", chromsizes, sample_names, resume=True, overwrite=False)
@@ -66,7 +69,7 @@ def test_resume_validates_sample_names(tmp_path, chromsizes, sample_names, monke
 
 
 def test_open_readonly_and_writable(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1])), 0.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1])), 0.0, None, None))
     BamStore(tmp_path / "ds", chromsizes, sample_names).process_samples(["1", "2"])
 
     ro = BamStore.open(tmp_path / "ds")
@@ -136,7 +139,7 @@ def test_bamstore_sample_hash_alignment(tmp_path, monkeypatch):
     f2 = tmp_path / "2.bam"
     f2.write_bytes(b"content2" * 1000)
 
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
     store = BamStore(tmp_path / "ds", {"chr1": 10}, ["s1", "s2"])
     store.process_samples([str(f1), str(f2)])
 
@@ -157,7 +160,7 @@ def test_bamstore_sample_hash_alignment(tmp_path, monkeypatch):
 
 
 def test_bamstore_hash_validation_on_resume(tmp_path, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
     BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
     BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"], resume=True, overwrite=False)
 
@@ -175,7 +178,7 @@ def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
         "quantnado.dataset.store_bam._get_chromsizes_from_bam",
         lambda path: {"chr1": 100, "chr2": 200},
     )
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
 
     bam_path = tmp_path / "test.bam"
     bam_path.write_text("dummy")
@@ -195,7 +198,7 @@ def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
 
 
 def test_to_xarray_requires_all_complete(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1])), 0.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1])), 0.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     store.meta["completed"][0] = False
@@ -205,7 +208,7 @@ def test_to_xarray_requires_all_complete(tmp_path, chromsizes, sample_names, mon
 
 
 def test_to_xarray_structure_and_metadata(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     store.set_metadata(pd.DataFrame({
@@ -238,7 +241,7 @@ def test_to_xarray_structure_and_metadata(tmp_path, chromsizes, sample_names, mo
 
 
 def test_extract_region_string_format(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     store.set_metadata(pd.DataFrame({"sample_id": sample_names, "cell_type": ["A549", "HeLa"]}))
@@ -255,7 +258,7 @@ def test_extract_region_string_format(tmp_path, chromsizes, sample_names, monkey
 
 
 def test_extract_region_separate_parameters(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -267,7 +270,7 @@ def test_extract_region_separate_parameters(tmp_path, chromsizes, sample_names, 
 
 
 def test_extract_region_sample_subsetting(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -281,7 +284,7 @@ def test_extract_region_sample_subsetting(tmp_path, chromsizes, sample_names, mo
 
 
 def test_extract_region_as_numpy(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -292,7 +295,7 @@ def test_extract_region_as_numpy(tmp_path, chromsizes, sample_names, monkeypatch
 
 
 def test_extract_region_metadata_coordinates(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     store.set_metadata(pd.DataFrame({
@@ -310,7 +313,7 @@ def test_extract_region_metadata_coordinates(tmp_path, chromsizes, sample_names,
 
 
 def test_extract_region_error_cases(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -338,3 +341,338 @@ def test_extract_region_error_cases(tmp_path, chromsizes, sample_names, monkeypa
     store.meta["completed"][0] = False
     with pytest.raises(RuntimeError, match="incomplete"):
         store.extract_region("chr1:0-2")
+
+
+# ---------------------------------------------------------------------------
+# Chunk length auto-selection and overrides
+# ---------------------------------------------------------------------------
+
+
+def test_bamstore_auto_chunk_len_uses_filesystem_hint(tmp_path, monkeypatch):
+    chromsizes = {"chr1": 250_000_000}
+
+    monkeypatch.setattr("quantnado.dataset.store_bam.is_network_fs", lambda path: False)
+    local_store = BamStore(tmp_path / "local_ds", chromsizes, ["s1"])
+    expected_local = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(np.uint32).itemsize,
+        fs_is_network=False,
+    )["chunk_len"]
+    assert local_store.chunk_len == expected_local
+    assert local_store.root.attrs["chunk_len"] == expected_local
+
+    monkeypatch.setattr("quantnado.dataset.store_bam.is_network_fs", lambda path: True)
+    network_store = BamStore(tmp_path / "network_ds", chromsizes, ["s1"])
+    expected_network = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(np.uint32).itemsize,
+        fs_is_network=True,
+    )["chunk_len"]
+    assert network_store.chunk_len == expected_network
+    assert network_store.root.attrs["chunk_len"] == expected_network
+    assert network_store.chunk_len > local_store.chunk_len
+
+
+def test_bamstore_explicit_chunk_len_overrides_auto(tmp_path, monkeypatch):
+    monkeypatch.setattr("quantnado.dataset.store_bam.is_network_fs", lambda path: True)
+
+    store = BamStore(
+        tmp_path / "manual_chunk_ds",
+        {"chr1": 250_000_000},
+        ["s1"],
+        chunk_len=131072,
+    )
+
+    assert store.chunk_len == 131072
+    assert store.root.attrs["chunk_len"] == 131072
+
+
+# ---------------------------------------------------------------------------
+# Construction compression profiles
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_compressors"),
+    [("default", 1), ("fast", 1), ("none", 0)],
+)
+def test_bamstore_construction_compression_profiles(
+    tmp_path, chromsizes, sample_names, profile, expected_compressors
+):
+    store = BamStore(
+        tmp_path / f"{profile}_compression_ds",
+        chromsizes,
+        sample_names,
+        construction_compression=profile,
+    )
+
+    array = store.root["chr1"]
+    assert store.root.attrs["construction_compression"] == profile
+    assert len(array.compressors) == expected_compressors
+
+
+def test_bamstore_invalid_construction_compression_raises(tmp_path, chromsizes, sample_names):
+    with pytest.raises(ValueError, match="construction_compression"):
+        BamStore(
+            tmp_path / "bad_compression_ds",
+            chromsizes,
+            sample_names,
+            construction_compression="turbo",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Parallel writer preserves sample order
+# ---------------------------------------------------------------------------
+
+
+def test_process_samples_parallel_writer_preserves_sample_order(
+    tmp_path, chromsizes, sample_names, monkeypatch
+):
+    write_order = []
+
+    def fake_process_single_sample(
+        self,
+        sample_idx,
+        bam_file,
+        sample_name,
+        chromsizes_dict,
+        chr_workers=1,
+    ):
+        if sample_idx == 0:
+            time.sleep(0.05)
+
+        return sample_idx, {
+            "sparsity": 0.0,
+            "hash": "",
+            "chr_data": {
+                contig: np.full(size, sample_idx + 1, dtype=np.uint16)
+                for contig, size in chromsizes_dict.items()
+            },
+        }
+
+    original_write_sample_result = BamStore._write_sample_result
+
+    def recording_write_sample_result(self, sample_idx, results):
+        write_order.append(sample_idx)
+        original_write_sample_result(self, sample_idx, results)
+
+    monkeypatch.setattr(BamStore, "_process_single_sample", fake_process_single_sample)
+    monkeypatch.setattr(BamStore, "_write_sample_result", recording_write_sample_result)
+
+    store = BamStore(tmp_path / "parallel_ds", chromsizes, sample_names)
+    store.process_samples(["1", "2"], max_workers=2)
+
+    assert write_order == [0, 1]
+    assert np.all(store.root["chr1"][0, :] == 1)
+    assert np.all(store.root["chr2"][1, :] == 2)
+    assert store.completed_mask.tolist() == [True, True]
+
+
+# ---------------------------------------------------------------------------
+# Local staging: publish to final path
+# ---------------------------------------------------------------------------
+
+
+def test_bamstore_from_bam_files_with_local_staging_publishes_to_final_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 5},
+    )
+    monkeypatch.setattr(
+        BamStore,
+        "_process_chromosome",
+        lambda *args, **kwargs: (args[2], np.ones(args[3], dtype=np.uint16), 0.0, None, None),
+    )
+
+    bam_path = tmp_path / "sample1.bam"
+    bam_path.write_text("dummy")
+    final_store = tmp_path / "published_ds.zarr"
+    scratch_dir = tmp_path / "scratch"
+
+    store = BamStore.from_bam_files(
+        bam_files=[str(bam_path)],
+        store_path=final_store,
+        chromsizes=None,
+        local_staging=True,
+        staging_dir=scratch_dir,
+    )
+
+    assert store.store_path == final_store
+    assert final_store.exists()
+    assert np.all(store.root["chr1"][0, :] == 1)
+    assert list(scratch_dir.iterdir()) == []
+
+
+def test_bamstore_staging_rejects_resume(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        lambda path: {"chr1": 5},
+    )
+
+    bam_path = tmp_path / "sample1.bam"
+    bam_path.write_text("dummy")
+
+    with pytest.raises(ValueError, match="resume=True is not supported"):
+        BamStore.from_bam_files(
+            bam_files=[str(bam_path)],
+            store_path=tmp_path / "published_ds.zarr",
+            chromsizes=None,
+            resume=True,
+            local_staging=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# _combine_metadata_files edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCombineMetadataFiles:
+    def test_empty_list_raises(self):
+        with pytest.raises(ValueError, match="No metadata files"):
+            BamStore._combine_metadata_files([])
+
+    def test_no_valid_files_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="No valid metadata files"):
+            BamStore._combine_metadata_files([str(tmp_path / "nonexistent.csv")])
+
+    def test_single_file(self, tmp_path):
+        f = tmp_path / "meta.csv"
+        f.write_text("sample_id,group\ns1,A\ns2,B\n")
+        result = BamStore._combine_metadata_files([str(f)])
+        assert len(result) == 2
+        assert set(result["sample_id"]) == {"s1", "s2"}
+
+    def test_multiple_files_merged(self, tmp_path):
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f1.write_text("sample_id,condition\ns1,ctrl\n")
+        f2.write_text("sample_id,condition\ns2,treat\n")
+        result = BamStore._combine_metadata_files([str(f1), str(f2)])
+        assert len(result) == 2
+        assert set(result["sample_id"]) == {"s1", "s2"}
+
+    def test_skips_missing_files(self, tmp_path):
+        f1 = tmp_path / "real.csv"
+        f1.write_text("sample_id,group\ns1,A\n")
+        result = BamStore._combine_metadata_files([str(f1), str(tmp_path / "missing.csv")])
+        assert len(result) == 1
+
+    def test_r1_r2_columns_excluded(self, tmp_path):
+        f = tmp_path / "meta.csv"
+        f.write_text("sample_id,r1_path,r2_path,condition\ns1,/p/r1.fq,/p/r2.fq,ctrl\n")
+        result = BamStore._combine_metadata_files([str(f)])
+        assert "r1_path" not in result.columns
+        assert "r2_path" not in result.columns
+        assert "condition" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# set_metadata with merge=False
+# ---------------------------------------------------------------------------
+
+
+class TestSetMetadataMergeFalse:
+    def test_merge_false_replaces_existing_columns(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
+        store.set_metadata(pd.DataFrame({
+            "sample_id": ["s1", "s2"],
+            "group": ["A", "B"],
+        }))
+        # Now replace with merge=False - should clear existing and write new
+        store.set_metadata(pd.DataFrame({
+            "sample_id": ["s1", "s2"],
+            "new_col": ["X", "Y"],
+        }), merge=False)
+        md = store.get_metadata()
+        # new_col should exist
+        assert "new_col" in md.columns
+        # group column should be removed since merge=False clears it first
+        assert "group" not in md.columns
+
+    def test_sample_column_not_found_raises(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"])
+        with pytest.raises(ValueError, match="Sample column"):
+            store.set_metadata(pd.DataFrame({"wrong_col": ["s1"]}), sample_column="sample_id")
+
+
+# ---------------------------------------------------------------------------
+# update_metadata various paths
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateMetadata:
+    def test_update_with_list(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
+        store.update_metadata({"condition": ["ctrl", "treat"]})
+        md = store.get_metadata()
+        assert md.loc["s1", "condition"] == "ctrl"
+        assert md.loc["s2", "condition"] == "treat"
+
+    def test_update_with_dict_partial(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
+        store.update_metadata({"condition": ["ctrl", "ctrl"]})
+        # Now update only s2
+        store.update_metadata({"condition": {"s2": "treat"}})
+        md = store.get_metadata()
+        assert md.loc["s1", "condition"] == "ctrl"
+        assert md.loc["s2", "condition"] == "treat"
+
+    def test_update_with_dict_new_column(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
+        store.update_metadata({"newcol": {"s1": "yes"}})
+        md = store.get_metadata()
+        assert md.loc["s1", "newcol"] == "yes"
+        # s2 should have empty string
+        assert md.loc["s2", "newcol"] == "" or pd.isna(md.loc["s2", "newcol"])
+
+    def test_update_list_wrong_length_raises(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
+        with pytest.raises(ValueError, match="items but store has"):
+            store.update_metadata({"col": ["only_one"]})
+
+    def test_update_with_invalid_type_raises(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
+        with pytest.raises(TypeError, match="must be list or dict"):
+            store.update_metadata({"col": 42})
+
+
+# ---------------------------------------------------------------------------
+# BamStore error paths
+# ---------------------------------------------------------------------------
+
+
+class TestBamStoreErrorPaths:
+    def test_overwrite_in_read_only_mode_raises(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"])
+        with pytest.raises(ValueError, match="read-only"):
+            BamStore(
+                tmp_path / "ds",
+                {"chr1": 4},
+                ["s1"],
+                overwrite=True,
+                read_only=True,
+            )
+
+    def test_empty_sample_names_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            BamStore(tmp_path / "empty", {"chr1": 4}, [])
+
+    def test_file_exists_without_overwrite_or_resume_raises(self, tmp_path):
+        BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"])
+        with pytest.raises(FileExistsError):
+            BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"], overwrite=False, resume=False)
+
+    def test_open_nonexistent_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            BamStore.open(tmp_path / "nonexistent.zarr")
+
+    def test_process_samples_wrong_length_raises(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
+        with pytest.raises(ValueError, match="length must match"):
+            store.process_samples(["only_one"])
+
+    def test_strandedness_invalid_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="stranded"):
+            BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"], stranded="invalid")

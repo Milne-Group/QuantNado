@@ -1,7 +1,8 @@
 """QuantNado package initialization."""
 
-from quantnado.api import QuantNado, locus_plot, metaplot, tornadoplot
-from quantnado.analysis.pca import plot_pca_scree, plot_pca_scatter
+from quantnado.api import QuantNado, correlate, heatmap, locus_plot, metaplot, tornadoplot
+from quantnado.analysis.normalise import get_library_sizes, normalise
+from quantnado.analysis.pca import plot_pca_scree, plot_pca_scatter, run_pca as pca
 
 create_dataset = QuantNado.create_dataset
 open = QuantNado.open
@@ -27,4 +28,9 @@ __all__ = [
     "open",
     "plot_pca_scree",
     "plot_pca_scatter",
+    "normalise",
+    "get_library_sizes",
+    "heatmap",
+    "correlate",
+    "pca",
 ]
