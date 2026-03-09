@@ -18,7 +18,7 @@ from quantnado.utils import estimate_chunk_len
 
 
 def test_bamstore_write_and_metadata(tmp_path, chromsizes, sample_names, monkeypatch):
-    def fake_chrom(self, bam_file, contig, size):
+    def fake_chrom(self, bam_file, contig, size, library_type=None):
         return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0, None, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
@@ -34,7 +34,7 @@ def test_bamstore_write_and_metadata(tmp_path, chromsizes, sample_names, monkeyp
 
 
 def test_bamstore_dataset_wrapper(tmp_path, chromsizes, sample_names, monkeypatch):
-    def fake_chrom(self, bam_file, contig, size):
+    def fake_chrom(self, bam_file, contig, size, library_type=None):
         return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0, None, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
