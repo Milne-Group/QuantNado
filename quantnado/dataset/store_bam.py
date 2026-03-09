@@ -28,7 +28,7 @@ BIN_SIZE = 1
 CONSTRUCTION_ARRAY_DTYPE = np.uint32
 DEFAULT_CONSTRUCTION_COMPRESSION = "default"
 
-STRANDED_LIBRARY_TYPES = {"fr-firststrand", "fr-secondstrand", "both"}
+STRANDED_LIBRARY_TYPES = {"R", "F", "U"}
 
 
 def _normalize_strandedness(
@@ -42,7 +42,7 @@ def _normalize_strandedness(
     stranded : str | list[str] | dict[str, str] | None
         - ``None`` — no stranded coverage for any sample.
         - ``str`` — apply this library type to all samples.
-        - ``list[str]`` — sample names to process with ``"both"``.
+        - ``list[str]`` — sample names to process with ``"U"``.
         - ``dict[str, str]`` — mapping of sample name → library type.
     sample_names : list[str]
         All sample names in the store.
@@ -68,7 +68,7 @@ def _normalize_strandedness(
                 f"Unknown sample names in stranded list: {sorted(unknown)}"
             )
         sample_set = set(stranded)
-        return {s: ("both" if s in sample_set else None) for s in sample_names}
+        return {s: ("U" if s in sample_set else None) for s in sample_names}
 
     if isinstance(stranded, dict):
         unknown = set(stranded) - set(sample_names)
@@ -100,10 +100,9 @@ def _get_stranded_signal(
     Parameters
     ----------
     library_type : str
-        ``"both"`` — split reads by raw alignment strand (``+`` → fwd, ``-`` → rev).
-        ``"fr-firststrand"`` — dUTP / RF (e.g. TruSeq Stranded); corrects for read
-        orientation before assigning strand.
-        ``"fr-secondstrand"`` — ligation / FR (e.g. Directional).
+        ``"U"`` — split reads by raw alignment strand (``+`` → fwd, ``-`` → rev).
+        ``"R"`` — ISR / dUTP / TruSeq Stranded (read1 from reverse strand).
+        ``"F"`` — ISF / ligation / Directional (read1 from forward strand).
 
     Returns
     -------
@@ -119,7 +118,7 @@ def _get_stranded_signal(
     def _valid(read) -> bool:
         return not read.is_unmapped and not read.is_secondary and not read.is_supplementary
 
-    if library_type == "both":
+    if library_type == "U":
         def _fwd_cb(read):
             return _valid(read) and not read.is_reverse
 
@@ -129,16 +128,16 @@ def _get_stranded_signal(
         def _is_sense(read) -> bool:
             """True if this read represents the + (sense) strand of the transcript."""
             if read.is_paired:
-                if library_type == "fr-firststrand":
+                if library_type == "R":
                     return (read.is_read1 and read.is_reverse) or (
                         read.is_read2 and not read.is_reverse
                     )
-                else:  # fr-secondstrand
+                else:  # F
                     return (read.is_read1 and not read.is_reverse) or (
                         read.is_read2 and read.is_reverse
                     )
             else:  # single-end
-                return read.is_reverse if library_type == "fr-firststrand" else not read.is_reverse
+                return read.is_reverse if library_type == "R" else not read.is_reverse
 
         def _fwd_cb(read):
             return _valid(read) and _is_sense(read)

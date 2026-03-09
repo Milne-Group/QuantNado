@@ -898,9 +898,9 @@ def reduce_byranges_signal(
 		counting: each feature's reads are drawn from the array that corresponds to
 		its annotated strand.
 
-		- ``1`` (fr-secondstrand): ``+`` features → ``{chrom}_fwd``,
+		- ``1`` (F / ISF / ligation): ``+`` features → ``{chrom}_fwd``,
 		  ``-`` features → ``{chrom}_rev``.
-		- ``2`` (fr-firststrand / dUTP): ``+`` features → ``{chrom}_rev``,
+		- ``2`` (R / ISR / dUTP): ``+`` features → ``{chrom}_rev``,
 		  ``-`` features → ``{chrom}_fwd``.
 
 		Requires the BamStore to have been built with ``stranded`` set. Falls back
@@ -964,8 +964,8 @@ def reduce_byranges_signal(
 		# Build (sub_group, array_key) pairs.
 		# When strand_mode != 0 and a strand column is present, split features by
 		# their annotation so that each half reads from the correct _fwd/_rev array:
-		#   mode 1 (fr-secondstrand):  + → _fwd,  - → _rev
-		#   mode 2 (fr-firststrand):   + → _rev,  - → _fwd
+		#   mode 1 (F / ISF / ligation):  + → _fwd,  - → _rev
+		#   mode 2 (R / ISR / dUTP):      + → _rev,  - → _fwd
 		# Unstranded features (strand not in +/-) fall back to total coverage.
 		if _strand_per_feature:
 			_strand_to_key = (

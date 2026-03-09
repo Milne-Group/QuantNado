@@ -100,7 +100,7 @@ class MultiomicsStore:
         max_workers: int = 1,
         chr_workers: int = 1,
         test: bool = False,
-        stranded: list[str] | None = None,
+        stranded: list[str] | dict[str, str] | None = None,
     ) -> "MultiomicsStore":
         """
         Create a MultiomicsStore from genomic data files.
@@ -157,12 +157,19 @@ class MultiomicsStore:
             Total concurrent BAM reads = max_workers * chr_workers.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
-        stranded : list of str, optional
-            Sample names whose BAM files should be processed for strand-specific
-            coverage. Each name must match an entry in ``bam_sample_names`` (or
-            the BAM file stems). Those samples store separate forward and reverse
-            arrays in addition to total coverage. Unlisted samples store total
-            coverage only.
+        stranded : list of str or dict, optional
+            Strand-specific coverage configuration.  Pass a **list** of sample names
+            to use ``"U"`` (raw alignment orientation), or a **dict** mapping
+            sample names to library types (``"R"``, ``"F"``, or ``"U"``).
+            Use a dict for RNA-seq so read1/read2 orientation is taken into account.
+
+            - ``"R"`` (ISR/dUTP/TruSeq Stranded): read1 aligns to reverse strand.
+            - ``"F"`` (ISF/ligation): read1 aligns to forward strand.
+            - ``"U"``: split purely by raw alignment orientation.
+
+            Example::
+
+                stranded={"rna-rep1": "R", "rna-rep2": "R"}
         """
         has_cx_files = bool(mc_files or hmc_files)
         meth_inputs = [methyldackel_files, cxreport_files, has_cx_files]

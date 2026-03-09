@@ -66,9 +66,9 @@ def count_features(
         - ``"+"``, ``"-"``: filter features by strand annotation (requires a
           ``strand`` column in the ranges table; unlisted features are excluded).
         - ``0``: unstranded — sum all reads regardless of strand (default).
-        - ``1`` (fr-secondstrand): per-feature strand-aware counting.
+        - ``1`` (F / ISF / ligation): per-feature strand-aware counting.
           ``+`` features use ``{chrom}_fwd``; ``-`` features use ``{chrom}_rev``.
-        - ``2`` (fr-firststrand / dUTP): per-feature strand-aware counting.
+        - ``2`` (R / ISR / dUTP): per-feature strand-aware counting.
           ``+`` features use ``{chrom}_rev``; ``-`` features use ``{chrom}_fwd``.
 
         Int modes require the BamStore to have been built with ``stranded`` set

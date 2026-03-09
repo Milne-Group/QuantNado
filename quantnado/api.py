@@ -186,7 +186,7 @@ class QuantNado:
         max_workers: int = 1,
         chr_workers: int = 1,
         test: bool = False,
-        stranded: list[str] | None = None,
+        stranded: list[str] | dict[str, str] | None = None,
     ) -> "QuantNado":
         """
         Create a new QuantNado dataset from genomic files.
@@ -248,12 +248,21 @@ class QuantNado:
             significantly reduce wall time.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
-        stranded : list of str, optional
-            Sample names whose BAM files should be processed for strand-specific
-            coverage. Each name must match an entry in ``bam_sample_names`` (or
-            the BAM file stems). Those samples will store separate forward and
-            reverse arrays in addition to total coverage. Unlisted samples store
-            total coverage only.
+        stranded : list of str or dict, optional
+            Strand-specific coverage configuration. Two forms accepted:
+
+            * **list of str** — sample names that should store strand arrays using
+              ``"U"`` (raw alignment orientation; useful when read1/read2
+              correction is not needed, e.g. some ATAC-seq applications).
+            * **dict** — maps each stranded sample name to its library type:
+              ``"R"`` (ISR / dUTP / TruSeq Stranded mRNA — read1 from reverse strand),
+              ``"F"`` (ISF / ligation — read1 from forward strand), or ``"U"``.
+              Use a dict for RNA-seq so that read1/read2 orientation is taken into
+              account when assigning reads to the forward or reverse strand.
+
+            Example::
+
+                stranded={"rna-rep1": "R", "rna-rep2": "R"}
 
         Returns
         -------
@@ -407,7 +416,7 @@ class QuantNado:
 
         if bam_files:
             _bam_names = bam_sample_names or [Path(f).stem for f in bam_files]
-            _stranded_set = set(stranded) if stranded is not None else set()
+            _stranded_set = set(stranded.keys() if isinstance(stranded, dict) else (stranded or []))
             for n in _bam_names:
                 _register([n], "stranded_coverage" if n in _stranded_set else "coverage")
         if methyldackel_files and (mc_files or hmc_files):
@@ -1036,6 +1045,7 @@ class QuantNado:
         sort_by: str | None = "mean",
         vmin: float | None = None,
         vmax: float | None = None,
+        scale_each: bool = False,
         cmap: str | None = None,
         reference_point: float | None = 0,
         reference_label: str = "TSS",
@@ -1065,10 +1075,12 @@ class QuantNado:
             Average samples within each group (one panel per group).
         flip_minus_strand : bool, default True
             Reverse minus-strand intervals before plotting.
-        sort_by : {"mean", "max", None}, default "mean"
-            Sort intervals by signal (descending).
+        sort_by : {"mean", "mean_r", "max", None}, default "mean"
+            Sort intervals by signal. ``"mean_r"`` sorts ascending (lowest at top).
         vmin, vmax : float, optional
             Colour scale limits.
+        scale_each : bool, default False
+            Independent per-panel colour scale with a horizontal colourbar beneath each panel.
         cmap : str, optional
             Matplotlib colormap.
         reference_point : float or None, default 0
@@ -1096,6 +1108,7 @@ class QuantNado:
             sort_by=sort_by,
             vmin=vmin,
             vmax=vmax,
+            scale_each=scale_each,
             cmap=cmap,
             reference_point=reference_point,
             reference_label=reference_label,

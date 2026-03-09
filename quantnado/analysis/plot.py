@@ -18,7 +18,7 @@ __all__ = ["metaplot", "tornadoplot", "locus_plot", "heatmap", "correlate"]
 _MODALITY_DEFAULTS: "dict[str, dict]" = {
     "coverage": {
         "ylabel": "Coverage (CPM)",
-        "cmap": "RdYlBu_r",
+        "cmap": "mako",
     },
     "methylation": {
         "ylabel": "Methylation (%)",
@@ -354,6 +354,7 @@ def tornadoplot(
     sort_by: "str | None" = "mean",
     vmin: "float | None" = None,
     vmax: "float | None" = None,
+    scale_each: bool = False,
     cmap: "str | None" = None,
     reference_point: "float | None" = 0,
     reference_label: str = "TSS",
@@ -368,7 +369,8 @@ def tornadoplot(
 
     Each row is one genomic interval; colour encodes signal intensity.
     One panel is drawn per sample (or per group when ``groups`` is provided).
-    Panels share the same colour scale and row order.
+    By default panels share the same colour scale and row order; pass
+    ``scale_each=True`` for independent per-panel scaling.
 
     Parameters
     ----------
@@ -392,13 +394,21 @@ def tornadoplot(
         Average samples within each group before plotting (one panel per group).
     flip_minus_strand : bool, default True
         Reverse minus-strand intervals before plotting.
-    sort_by : {"mean", "max", None}, default "mean"
+    sort_by : {"mean", "mean_r", "max", None}, default "mean"
         Sort intervals (rows) by their mean or max signal across all positions,
-        descending. Sorting is determined by the first panel and applied to all.
+        descending. ``"mean_r"`` sorts ascending (lowest signal at top).
+        Sorting is determined by the first panel and applied to all.
         ``None`` keeps the original order.
     vmin, vmax : float, optional
         Colour scale limits. Defaults to 0 and the 99th percentile across all panels.
-    cmap : str, default "RdYlBu_r"
+        Ignored per-panel when ``scale_each=True`` (unless explicitly set, in which
+        case the same limits apply to all panels).
+    scale_each : bool, default False
+        When ``True``, each panel uses its own colour scale (0–99th percentile of
+        that panel's values) and gets a horizontal colourbar beneath it.  Useful
+        when samples have very different signal ranges.  Explicit ``vmin``/``vmax``
+        take priority.
+    cmap : str, default "mako"
         Matplotlib colormap name.
     reference_point : float or None, default 0
         X position of the vertical reference line. ``None`` omits it.
@@ -432,9 +442,9 @@ def tornadoplot(
         if vmax is None:
             vmax = defaults.get("vmax")
         if cmap is None:
-            cmap = defaults.get("cmap", "RdYlBu_r")
+            cmap = defaults.get("cmap", "mako")
     if cmap is None:
-        cmap = "RdBu_r" if data_rev is not None else "RdYlBu_r"
+        cmap = "mako" if data_rev is not None else "mako"
 
     data, x, _ = _prep_extract(data, flip_minus_strand)
     if data_rev is not None:
@@ -487,10 +497,12 @@ def tornadoplot(
         first_mat = panels[0][1]
         if sort_by == "mean":
             order = np.argsort(np.nanmean(first_mat, axis=1))[::-1]
+        elif sort_by == "mean_r":
+            order = np.argsort(np.nanmean(first_mat, axis=1))
         elif sort_by == "max":
             order = np.argsort(np.nanmax(first_mat, axis=1))[::-1]
         else:
-            raise ValueError(f"sort_by must be 'mean', 'max', or None; got {sort_by!r}")
+            raise ValueError(f"sort_by must be 'mean', 'mean_r', 'max', or None; got {sort_by!r}")
         panels = [(lbl, mat[order]) for lbl, mat in panels]
 
     # Colour scale — symmetric around zero when showing fwd−rev
@@ -524,13 +536,25 @@ def tornadoplot(
     extent = [float(x[0]), float(x[-1]), n_intervals, 0]
 
     for ax, (label, mat) in zip(axes, panels):
+        # Per-panel colour scale when scale_each=True and no explicit limits given
+        if scale_each and vmin is None and vmax is None:
+            finite = mat[np.isfinite(mat)]
+            if data_rev is not None:
+                _vmax = float(np.nanpercentile(np.abs(finite), 99)) if finite.size else 1.0
+                _vmin = -_vmax
+            else:
+                _vmin = 0.0
+                _vmax = float(np.nanpercentile(finite, 99)) if finite.size else 1.0
+        else:
+            _vmin, _vmax = vmin, vmax
+
         im = ax.imshow(
             mat,
             aspect="auto",
             origin="upper",
             extent=extent,
-            vmin=vmin,
-            vmax=vmax,
+            vmin=_vmin,
+            vmax=_vmax,
             cmap=cmap,
             interpolation="nearest",
         )
@@ -539,14 +563,22 @@ def tornadoplot(
         ax.tick_params(axis="y", left=False, labelleft=False)
         if reference_point is not None:
             ax.axvline(reference_point, color="white", linestyle="--", linewidth=0.8)
+        if scale_each:
+            from mpl_toolkits.axes_grid1 import make_axes_locatable
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("bottom", size="5%", pad=0.4)
+            cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+            cb.ax.tick_params(labelsize=7)
+            cb.set_label("Signal", fontsize=8)
 
-    axes[0].tick_params(axis="y", left=True, labelleft=True)
+    axes[0].tick_params(axis="y", left=False, labelleft=False)
     ylabel = f"Intervals (n={n_intervals})" if ylabel is None else ylabel
     axes[0].set_ylabel(ylabel, fontsize=8)
 
-    # Shared colorbar to the right
-    cbar = fig.colorbar(im, ax=axes, shrink=0.6, pad=0.02)
-    cbar.set_label("Signal", fontsize=8)
+    # Shared colorbar (when not using per-panel scaling)
+    if not scale_each:
+        cbar = fig.colorbar(im, ax=axes, shrink=0.6, pad=0.02)
+        cbar.set_label("Signal", fontsize=8)
     if reference_point is not None:
         axes[-1].annotate(
             reference_label,
