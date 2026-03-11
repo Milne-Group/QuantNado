@@ -135,8 +135,7 @@ def create_dataset(
     # Process control
     overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite", help="Overwrite existing sub-stores."),
     resume: bool = typer.Option(False, "--resume", help="Resume processing an existing store, skipping completed samples."),
-    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for BAM processing (one per sample)."),
-    chr_workers: int = typer.Option(1, "--chr-workers", help="Parallel threads per sample for chromosome-level processing. Total reads = max-workers * chr-workers."),
+    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for chromosome-level processing within each sample."),
     # Store format
     chunk_len: int | None = typer.Option(
         None,
@@ -249,7 +248,6 @@ def create_dataset(
             overwrite=overwrite,
             resume=resume,
             max_workers=max_workers,
-            chr_workers=chr_workers,
             test=test,
             stranded=stranded_parsed,
         )

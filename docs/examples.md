@@ -20,8 +20,7 @@ ds = qn.create_dataset(
     methylation_sample_names=["meth-rep1", "meth-rep2"],
     vcf_files=["snp.vcf.gz"],
     filter_chromosomes=True,      # keep only canonical chrN / chrX / chrY
-    max_workers=8,
-    chr_workers=4,
+    max_workers=8,                # chromosomes processed in parallel per sample
     chromsizes="hg38.chrom.sizes",
 )
 ```
@@ -355,8 +354,7 @@ re-running the full pipeline.
 ```python
 qn.create_dataset(
     ...,
-    max_workers=8,   # samples processed in parallel
-    chr_workers=4,   # chromosomes processed in parallel per sample
+    max_workers=8,   # chromosomes processed in parallel per sample
 )
 ```
 
