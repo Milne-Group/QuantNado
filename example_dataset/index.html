@@ -3092,7 +3092,6 @@ sub-Zarr for each supplied modality:</p>
         <span class="n">staging_dir</span><span class="o">=</span><span class="n">OUT_DIR</span> <span class="o">/</span> <span class="s2">"staging"</span><span class="p">,</span>
         <span class="n">log_file</span><span class="o">=</span><span class="s2">"dataset.log"</span><span class="p">,</span>
         <span class="n">max_workers</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
-        <span class="n">chr_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
         <span class="n">test</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
         <span class="c1"># dUTP / TruSeq Stranded mRNA — use "F" for ligation / ISF libraries</span>
         <span class="n">stranded</span><span class="o">=</span><span class="p">{</span><span class="n">s</span><span class="p">:</span> <span class="s2">"R"</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">rna_sample_names</span><span class="p">},</span>
@@ -3125,7 +3124,6 @@ else:
         staging_dir=OUT_DIR / "staging",
         log_file="dataset.log",
         max_workers=8,
-        chr_workers=4,
         test=True,
         # dUTP / TruSeq Stranded mRNA — use "F" for ligation / ISF libraries
         stranded={s: "R" for s in rna_sample_names},

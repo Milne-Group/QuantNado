@@ -1949,10 +1949,9 @@ reduction, PCA, feature counts, normalisation, and visualisation over a chr21 te
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">methylation_sample_names</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;meth-rep1&quot;</span><span class="p">,</span> <span class="s2">&quot;meth-rep2&quot;</span><span class="p">],</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">vcf_files</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;snp.vcf.gz&quot;</span><span class="p">],</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">filter_chromosomes</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>      <span class="c1"># keep only canonical chrN / chrX / chrY</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">max_workers</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">chr_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">chromsizes</span><span class="o">=</span><span class="s2">&quot;hg38.chrom.sizes&quot;</span><span class="p">,</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">max_workers</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>                <span class="c1"># chromosomes processed in parallel per sample</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">chromsizes</span><span class="o">=</span><span class="s2">&quot;hg38.chrom.sizes&quot;</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>Omit modalities you don't have — the store is created with whatever is supplied.
 To open an existing store:</p>
@@ -2210,9 +2209,8 @@ re-running the full pipeline.</p>
 <h3 id="parallel-dataset-construction">Parallel dataset construction<a class="headerlink" href="#parallel-dataset-construction" title="Anchor link to this section">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="n">qn</span><span class="o">.</span><span class="n">create_dataset</span><span class="p">(</span>
 </span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>    <span class="o">...</span><span class="p">,</span>
-</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>    <span class="n">max_workers</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>   <span class="c1"># samples processed in parallel</span>
-</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>    <span class="n">chr_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>   <span class="c1"># chromosomes processed in parallel per sample</span>
-</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="p">)</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>    <span class="n">max_workers</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>   <span class="c1"># chromosomes processed in parallel per sample</span>
+</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="deseq2-edger-handoff">DESeq2 / edgeR handoff<a class="headerlink" href="#deseq2-edger-handoff" title="Anchor link to this section">&para;</a></h3>
 <p><div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">counts</span><span class="p">,</span> <span class="n">features</span> <span class="o">=</span> <span class="n">ds</span><span class="o">.</span><span class="n">count_features</span><span class="p">(</span>
