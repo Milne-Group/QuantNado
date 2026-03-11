@@ -302,10 +302,16 @@ class TestNormaliseXrDataArray:
         result = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
         assert result.attrs.get("normalised") == "cpm"
 
-    def test_cpm_result_is_lazy(self):
+    def test_cpm_result_is_lazy_when_input_is_dask(self):
+        da_in = _make_xr_dataarray()
+        da_in_dask = da_in.copy(data=da.from_array(da_in.values))
+        result = normalise(da_in_dask, library_sizes=LIB_SIZES, method="cpm")
+        assert isinstance(result.data, da.Array)
+
+    def test_cpm_result_is_numpy_when_input_is_numpy(self):
         da_in = _make_xr_dataarray()
         result = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
-        assert isinstance(result.data, da.Array)
+        assert not isinstance(result.data, da.Array)
 
     def test_rpkm_returns_dataarray(self):
         da_in = _make_xr_dataarray()
@@ -349,9 +355,10 @@ class TestNormaliseXrDataArray:
         # min(bin_size=200, read_length=50) = 50 → RPKM = CPM / 0.05
         np.testing.assert_allclose(rpkm.values, cpm.values / 0.05, rtol=1e-5)
 
-    def test_rpkm_result_is_lazy(self):
+    def test_rpkm_result_is_lazy_when_input_is_dask(self):
         da_in = _make_xr_dataarray()
-        result = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm")
+        da_in_dask = da_in.copy(data=da.from_array(da_in.values))
+        result = normalise(da_in_dask, library_sizes=LIB_SIZES, method="rpkm")
         assert isinstance(result.data, da.Array)
 
     def test_tpm_raises(self):

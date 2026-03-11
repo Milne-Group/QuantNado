@@ -306,6 +306,16 @@ def metaplot(
             label=reference_label,
         )
 
+    # Set xlim so the full window is shown, including the right edge of the last bin.
+    # Bin coords are left-edges, so the true range extends one bin-step beyond x[-1].
+    _upstream = data.attrs.get("upstream")
+    _downstream = data.attrs.get("downstream")
+    if _upstream is not None and _downstream is not None:
+        ax.set_xlim(-_upstream, _downstream)
+    elif len(x) > 1:
+        step = abs(float(x[1] - x[0]))
+        ax.set_xlim(x[0], x[-1] + step)
+
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)

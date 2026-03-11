@@ -363,14 +363,13 @@ def _normalise_xr_dataarray(
     scale = _scale_per_sample(lib_sizes, sample_labels)  # (n_samples,)
 
     arr = data.data
-    if not isinstance(arr, da.Array):
-        arr = da.from_array(arr)
+    _is_dask = isinstance(arr, da.Array)
     if not np.issubdtype(arr.dtype, np.floating):
         arr = arr.astype(np.float32)
 
     # signal dims: (interval, position/bin, sample) — scale over last axis
-    scale_da = da.from_array(scale, chunks=-1).reshape(1, 1, -1)
-    normed_arr = arr / scale_da
+    scale_vec = scale.reshape(1, 1, -1) if not _is_dask else da.from_array(scale, chunks=-1).reshape(1, 1, -1)
+    normed_arr = arr / scale_vec
 
     if method == "rpkm":
         # Resolve bin_size from attrs (set by extract()) or infer from coordinate spacing.
@@ -400,8 +399,8 @@ def _normalise_xr_dataarray(
         else:
             effective_lengths_kb = np.full(len(sample_labels), bin_size_bp / 1000.0, dtype=np.float64)
 
-        rl_da = da.from_array(effective_lengths_kb, chunks=-1).reshape(1, 1, -1)
-        normed_arr = normed_arr / rl_da
+        rl_vec = effective_lengths_kb.reshape(1, 1, -1) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(1, 1, -1)
+        normed_arr = normed_arr / rl_vec
 
     result = xr.DataArray(
         normed_arr,
