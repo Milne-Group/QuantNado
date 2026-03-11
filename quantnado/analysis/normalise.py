@@ -326,13 +326,6 @@ def _normalise_xr_dataarray(
     sample_labels = list(data["sample"].values)
     scale = _scale_per_sample(lib_sizes, sample_labels)  # expected shape: (n_samples,)
 
-    arr = data.data
-    if not isinstance(arr, da.Array):
-        arr = da.from_array(arr)
-    if not np.issubdtype(arr.dtype, np.floating):
-        arr = arr.astype(np.float32)
-
-    # sanity checks
     if "sample" not in data.dims:
         raise ValueError("Input DataArray must have a 'sample' dimension.")
     n_samples = int(data.sizes["sample"])
@@ -341,17 +334,25 @@ def _normalise_xr_dataarray(
         raise ValueError(f"Scale must be 1D, got shape {scale.shape}.")
     if scale.shape[0] != n_samples:
         raise ValueError(f"Scale length ({scale.shape[0]}) does not match number of samples ({n_samples}).")
+    arr = data.data
+    if not isinstance(arr, da.Array):
+        arr = da.from_array(arr)
+    if not np.issubdtype(arr.dtype, np.floating):
+        arr = arr.astype(np.float32)
 
-    # Build reshape shape so scale broadcasts over the last axis of `arr`,
-    # regardless of number of leading axes.
-    # Example: arr.ndim == 3 -> reshape_shape = (1, 1, -1)
-    reshape_shape = tuple([1] * (arr.ndim - 1) + [-1])
+    data_float = xr.DataArray(
+        arr,
+        dims=data.dims,
+        coords=data.coords,
+        attrs=data.attrs,
+    )
+    scale_xr = xr.DataArray(
+        da.from_array(scale.astype(np.float32), chunks=-1),
+        dims=("sample",),
+        coords={"sample": data["sample"].values},
+    )
 
-    # create dask array for scale with a single chunk spanning the sample axis
-    scale_da = da.from_array(scale, chunks=-1).reshape(reshape_shape)
-
-    # normalise across last axis
-    normed_arr = arr / scale_da
+    normed = data_float / scale_xr
 
     if method == "rpkm":
         # Infer bin size in kb from the position/bin coordinate spacing.
@@ -372,13 +373,8 @@ def _normalise_xr_dataarray(
         else:
             bin_size_kb = 1.0 / 1000.0  # assume 1bp
 
-        normed_arr = normed_arr / bin_size_kb
+        normed = normed / bin_size_kb
 
-    result = xr.DataArray(
-        normed_arr,
-        dims=data.dims,
-        coords=data.coords,
-        attrs={**data.attrs, "normalised": method},
-    )
+    result = normed.assign_attrs({**data.attrs, "normalised": method})
     logger.info(f"Normalised xr.DataArray to {method.upper()}.")
     return result
