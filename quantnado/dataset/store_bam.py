@@ -665,75 +665,80 @@ class BamStore:
 
         return contig, data, sparsity, fwd_data, rev_data
 
-    def _process_bam_file(
-        self,
-        bam_file: str,
-        chromsizes_dict: dict[str, int],
-        max_workers: int,
-        library_type: str | None = None,
-    ) -> tuple[dict[str, np.ndarray], list[float]]:
-        """Process chromosomes for a single BAM file.
-
-        When max_workers > 1, chromosomes are processed in parallel using a
-        thread pool (bamnado releases the GIL so threads run concurrently).
-
-        Returns a dict of contig->data and list of sparsity values, preserving
-        the original API for tests that monkeypatch this method.
-        """
-        contigs = list(chromsizes_dict.keys())
-
-        if max_workers <= 1 or len(contigs) <= 1:
-            sample_data: dict[str, np.ndarray] = {}
-            fwd_data: dict[str, np.ndarray] = {}
-            rev_data: dict[str, np.ndarray] = {}
-            sparsity_values: list[float] = []
-            for contig, size in chromsizes_dict.items():
-                c, data, sparsity, fwd, rev = self._process_chromosome(bam_file, contig, size, library_type)
-                sample_data[c] = data
-                sparsity_values.append(sparsity)
-                if fwd is not None:
-                    fwd_data[c] = fwd
-                    rev_data[c] = rev
-            return sample_data, sparsity_values, fwd_data, rev_data
-
-        from concurrent.futures import ThreadPoolExecutor
-
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(self._process_chromosome, bam_file, contig, chromsizes_dict[contig], library_type): contig
-                for contig in contigs
-            }
-            results: dict[str, tuple[np.ndarray, float, np.ndarray | None, np.ndarray | None]] = {}
-            for future in futures:
-                c, data, sparsity, fwd, rev = future.result()
-                results[c] = (data, sparsity, fwd, rev)
-
-        sample_data = {c: results[c][0] for c in contigs}
-        sparsity_values = [results[c][1] for c in contigs]
-        fwd_data = {c: results[c][2] for c in contigs if results[c][2] is not None}
-        rev_data = {c: results[c][3] for c in contigs if results[c][3] is not None}
-        return sample_data, sparsity_values, fwd_data, rev_data
-
-    def _process_single_sample(
+    def _process_and_write_single_sample(
         self,
         sample_idx: int,
         bam_file: str,
         sample_name: str,
         chromsizes_dict: dict[str, int],
-        chr_workers: int = 1,
-    ) -> tuple[int, dict[str, Any]]:
+        max_workers: int = 1,
+    ) -> None:
+        """Process a single sample by streaming chromosomes directly to disk.
+
+        Unlike the legacy ``_process_single_sample`` this method writes each
+        chromosome to the zarr store immediately after extraction, so only one
+        chromosome's worth of data is ever held in memory at a time.  This
+        reduces peak memory from O(genome_size) to O(max_chromosome_size).
+        """
         logger.info(
             f"Processing sample {sample_idx + 1}/{self.n_samples}: {sample_name}"
         )
 
         bam_hash = _compute_bam_hash(bam_file)
         library_type = self._strandedness_map.get(sample_name)
-        chr_data, sparsity_values, chr_fwd, chr_rev = self._process_bam_file(
-            bam_file,
-            chromsizes_dict,
-            max_workers=chr_workers,
-            library_type=library_type,
+        sparsity_values: list[float] = []
+        contigs = list(chromsizes_dict.keys())
+
+        if max_workers <= 1 or len(contigs) <= 1:
+            # Sequential: process + write one chromosome at a time
+            for contig, size in chromsizes_dict.items():
+                _, data, sparsity, fwd, rev = self._process_chromosome(
+                    bam_file, contig, size, library_type
+                )
+                self.root[contig][sample_idx, : data.shape[0]] = data
+                del data
+                if fwd is not None:
+                    self.root[f"{contig}_fwd"][sample_idx, : fwd.shape[0]] = fwd
+                    self.root[f"{contig}_rev"][sample_idx, : rev.shape[0]] = rev
+                    del fwd, rev
+                sparsity_values.append(sparsity)
+        else:
+            # Parallel chromosome processing with streaming writes.
+            # Process chromosomes in a thread pool (bamnado releases the GIL).
+            # Write results as they complete to bound memory.
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(
+                        self._process_chromosome,
+                        bam_file,
+                        contig,
+                        chromsizes_dict[contig],
+                        library_type,
+                    ): contig
+                    for contig in contigs
+                }
+                for future in as_completed(futures):
+                    contig, data, sparsity, fwd, rev = future.result()
+                    self.root[contig][sample_idx, : data.shape[0]] = data
+                    del data
+                    if fwd is not None:
+                        self.root[f"{contig}_fwd"][sample_idx, : fwd.shape[0]] = fwd
+                        self.root[f"{contig}_rev"][sample_idx, : rev.shape[0]] = rev
+                        del fwd, rev
+                    sparsity_values.append(sparsity)
+
+        # Write sample-level metadata
+        self.meta["sparsity"][sample_idx] = (
+            float(np.mean(sparsity_values)) if sparsity_values else np.nan
         )
+        self.meta["sample_hashes"][sample_idx, :] = 0
+        if bam_hash:
+            hash_bytes = bytes.fromhex(bam_hash)
+            self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(
+                hash_bytes, dtype=np.uint8,
+            )
 
         total_reads: int | None = None
         try:
@@ -742,37 +747,8 @@ class BamStore:
         except Exception as e:
             logger.warning(f"Could not read total mapped reads for {bam_file}: {e}")
 
-        return sample_idx, {
-            "sparsity": float(np.mean(sparsity_values)) if sparsity_values else np.nan,
-            "hash": bam_hash,
-            "chr_data": chr_data,
-            "chr_fwd": chr_fwd,
-            "chr_rev": chr_rev,
-            "total_reads": total_reads,
-        }
-
-    def _write_sample_result(self, sample_idx: int, results: dict[str, Any]) -> None:
-        for contig, data in results["chr_data"].items():
-            self.root[contig][sample_idx, : data.shape[0]] = data
-
-        for contig, fwd in results.get("chr_fwd", {}).items():
-            self.root[f"{contig}_fwd"][sample_idx, : fwd.shape[0]] = fwd
-        for contig, rev in results.get("chr_rev", {}).items():
-            self.root[f"{contig}_rev"][sample_idx, : rev.shape[0]] = rev
-
-        self.meta["sparsity"][sample_idx] = results["sparsity"]
-        self.meta["sample_hashes"][sample_idx, :] = 0
-
-        hash_value = results.get("hash") or ""
-        if hash_value:
-            hash_bytes = bytes.fromhex(hash_value)
-            self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(
-                hash_bytes,
-                dtype=np.uint8,
-            )
-
-        if results.get("total_reads") is not None and "total_reads" in self.meta:
-            self.meta["total_reads"][sample_idx] = results["total_reads"]
+        if total_reads is not None and "total_reads" in self.meta:
+            self.meta["total_reads"][sample_idx] = total_reads
 
         self.meta["completed"][sample_idx] = True
 
@@ -780,15 +756,22 @@ class BamStore:
         self,
         bam_files: list[str],
         max_workers: int = 1,
-        chr_workers: int = 1,
     ) -> None:
+        """Process BAM files and write signal data to the zarr store.
+
+        Samples are processed **sequentially** to minimise peak memory.  Each
+        sample's chromosomes are streamed directly to disk so only a single
+        chromosome's array is ever resident in memory at a time.
+
+        Within each sample, chromosome processing is parallelised using
+        ``max_workers`` threads (bamnado releases the GIL).
+        """
         if len(bam_files) != self.n_samples:
             raise ValueError("bam_files length must match number of sample_names")
 
         chromsizes_dict = self.chromsizes
         completed = self.completed_mask
 
-        pending_samples: list[tuple[int, str, str]] = []
         for sample_idx, (bam_file, sample_name) in enumerate(
             zip(bam_files, self.sample_names)
         ):
@@ -797,127 +780,14 @@ class BamStore:
                     f"Skipping completed sample '{sample_name}' (index {sample_idx})"
                 )
                 continue
-            pending_samples.append((sample_idx, bam_file, sample_name))
 
-        if pending_samples:
-            from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-            from queue import Full, Queue
-            from threading import Event, Thread
-
-            max_workers = max(1, int(max_workers))
-            expected_order = [sample_idx for sample_idx, _, _ in pending_samples]
-            result_queue: Queue[tuple[int, dict[str, Any]] | object] = Queue(
-                maxsize=max_workers
+            self._process_and_write_single_sample(
+                sample_idx,
+                bam_file,
+                sample_name,
+                chromsizes_dict,
+                max_workers=max_workers,
             )
-            writer_failed = Event()
-            writer_errors: list[BaseException] = []
-            writer_stop_token = object()
-
-            def _raise_writer_error() -> None:
-                if writer_errors:
-                    raise RuntimeError("Writer thread failed during sample flush") from writer_errors[0]
-
-            def _enqueue_result(item: tuple[int, dict[str, Any]] | object) -> None:
-                while True:
-                    _raise_writer_error()
-                    try:
-                        result_queue.put(item, timeout=0.1)
-                        return
-                    except Full:
-                        continue
-
-            def _writer_loop() -> None:
-                buffered_results: dict[int, dict[str, Any]] = {}
-                next_expected_idx = 0
-
-                try:
-                    while True:
-                        item = result_queue.get()
-                        if item is writer_stop_token:
-                            break
-
-                        sample_idx, results = item
-                        buffered_results[sample_idx] = results
-
-                        while next_expected_idx < len(expected_order):
-                            expected_sample_idx = expected_order[next_expected_idx]
-                            if expected_sample_idx not in buffered_results:
-                                break
-
-                            self._write_sample_result(
-                                expected_sample_idx,
-                                buffered_results.pop(expected_sample_idx),
-                            )
-                            next_expected_idx += 1
-
-                    if next_expected_idx != len(expected_order):
-                        raise RuntimeError(
-                            "Writer stopped before all pending samples were flushed"
-                        )
-                except BaseException as exc:
-                    writer_errors.append(exc)
-                    writer_failed.set()
-
-            writer_thread = Thread(
-                target=_writer_loop,
-                name="bamstore-writer",
-                daemon=True,
-            )
-            writer_thread.start()
-
-            producer_error: BaseException | None = None
-            executor = ThreadPoolExecutor(max_workers=max_workers)
-            active_futures = {}
-            pending_iter = iter(pending_samples)
-
-            def _submit_next() -> bool:
-                try:
-                    sample_idx, bam_file, sample_name = next(pending_iter)
-                except StopIteration:
-                    return False
-
-                future = executor.submit(
-                    self._process_single_sample,
-                    sample_idx,
-                    bam_file,
-                    sample_name,
-                    chromsizes_dict,
-                    chr_workers,
-                )
-                active_futures[future] = sample_idx
-                return True
-
-            try:
-                for _ in range(min(max_workers, len(pending_samples))):
-                    _submit_next()
-
-                while active_futures:
-                    _raise_writer_error()
-                    done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
-
-                    for future in done:
-                        active_futures.pop(future)
-                        sample_idx, results = future.result()
-                        _enqueue_result((sample_idx, results))
-                        _submit_next()
-            except BaseException as exc:
-                producer_error = exc
-            finally:
-                executor.shutdown(
-                    wait=producer_error is None,
-                    cancel_futures=producer_error is not None,
-                )
-
-                try:
-                    _enqueue_result(writer_stop_token)
-                except RuntimeError:
-                    pass
-
-                writer_thread.join()
-
-                _raise_writer_error()
-                if producer_error is not None:
-                    raise producer_error
 
         all_sparsity = self.meta["sparsity"][:]
         if np.isfinite(all_sparsity).any():
@@ -930,6 +800,7 @@ class BamStore:
         chromsizes: str | Path | dict[str, int] | None = None,
         store_path: Path | str | None = None,
         metadata: pd.DataFrame | Path | str | list[Path | str] | None = None,
+        bam_sample_names: list[str] | None = None,
         *,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
@@ -940,7 +811,6 @@ class BamStore:
         local_staging: bool = False,
         staging_dir: Path | str | None = None,
         max_workers: int = 1,
-        chr_workers: int = 1,
         log_file: Path | None = None,
         test: bool = False,
         stranded: "str | list[str] | dict[str, str] | None" = None,
@@ -957,9 +827,8 @@ class BamStore:
         construction_compression controls build-time compression only and does
         not affect reader compatibility.
 
-        max_workers controls sample-level parallelism (one thread per sample).
-        chr_workers controls chromosome-level parallelism within each sample thread.
-        Total concurrent BAM reads = max_workers * chr_workers.
+        max_workers controls chromosome-level parallelism within each sample.
+        Samples are processed sequentially to keep memory usage low.
         """
 
         if log_file is not None:
@@ -980,7 +849,15 @@ class BamStore:
         chromsizes_dict = _parse_chromsizes(
             chromsizes_raw, filter_chromosomes=filter_chromosomes, test=test
         )
-        sample_names = [Path(f).stem for f in bam_files]
+
+        if bam_sample_names is not None:
+            if len(bam_sample_names) != len(bam_files):
+                raise ValueError(
+                    f"bam_sample_names length ({len(bam_sample_names)}) != bam_files length ({len(bam_files)})"
+                )
+            sample_names = bam_sample_names
+        else:
+            sample_names = [Path(f).stem for f in bam_files]
 
         if store_path is None:
             raise ValueError("store_path must be provided.")
@@ -1025,7 +902,7 @@ class BamStore:
                 resume=False if staging_enabled else resume,
                 stranded=stranded,
             )
-            store.process_samples(bam_files, max_workers=max_workers, chr_workers=chr_workers)
+            store.process_samples(bam_files, max_workers=max_workers)
 
             if metadata is not None:
                 if isinstance(metadata, list):
