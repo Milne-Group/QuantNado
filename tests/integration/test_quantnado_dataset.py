@@ -7,7 +7,7 @@ import pytest
 import zarr
 import xarray as xr
 
-from quantnado.analysis.core import QuantNadoDataset as AnalysisCore
+from quantnado.dataset.core import BaseStore as AnalysisCore
 from quantnado.dataset.core import QuantNadoDataset as DatasetCore
 
 

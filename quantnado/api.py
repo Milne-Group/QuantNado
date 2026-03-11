@@ -101,7 +101,7 @@ class QuantNado:
     # ========== Construction ==========
 
     @classmethod
-    def open(cls, path: str | Path, read_only: bool = True) -> "QuantNado":
+    def open_dataset(cls, path: str | Path, read_only: bool = True) -> "QuantNado":
         """
         Open an existing QuantNado dataset.
 
@@ -126,6 +126,9 @@ class QuantNado:
         if zarr_path.exists():
             return cls(BamStore.open(zarr_path, read_only=read_only))
         return cls(MultiomicsStore.open(path))
+
+    # Alias for backward compatibility (optional, but requested rename)
+    open = open_dataset
 
     @classmethod
     def from_bam_files(

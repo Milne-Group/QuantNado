@@ -15,11 +15,10 @@ from .features import (
 	extract_feature_ranges,
 	extract_promoters,
 	load_gtf,
-	_to_pyranges,
 )
 
 if TYPE_CHECKING:
-	import zarr
+	pass
 
 
 def _ensure_dask_2d(data: xr.DataArray | np.ndarray | da.Array) -> da.Array:
@@ -383,46 +382,60 @@ def _reduce_ranges_vectorized(
 	raise ValueError(f"Unknown reduction: {reduction}")
 
 
-def _bin_array_along_axis0(arr: da.Array, bin_size: int, agg_func: str = "mean") -> da.Array:
+def _bin_array(arr: da.Array, bin_size: int, agg_func: str = "mean", axis: int = 0) -> da.Array:
 	"""
-	Bin a dask array along axis 0 (positions) into fixed-size bins.
+	Bin a dask array along a specified axis into fixed-size bins.
 
 	Parameters
 	----------
 	arr : da.Array
-		2D array (positions x samples).
+		Input dask array (2D or 3D).
 	bin_size : int
-		Size of each bin in positions.
+		Size of each bin along the binned axis.
 	agg_func : str
 		Aggregation function: 'mean', 'sum', 'max', 'min', 'median'.
+	axis : int, default 0
+		Axis to bin along.
 
 	Returns
 	-------
 	da.Array
-		Binned array (n_bins x samples) with NaN-aware aggregation.
+		Binned array with NaN-aware aggregation.
 	"""
-	n_pos = int(arr.shape[0])
+	n_pos = int(arr.shape[axis])
 	if n_pos == 0:
-		return da.empty((0, arr.shape[1]), dtype=arr.dtype)
+		new_shape = list(arr.shape)
+		new_shape[axis] = 0
+		return da.empty(tuple(new_shape), dtype=arr.dtype)
 
-	# Drop remainder: exact multiple of bin_size only
 	n_bins = n_pos // bin_size
 	if n_bins == 0:
-		return da.empty((0, arr.shape[1]), dtype=arr.dtype)
+		new_shape = list(arr.shape)
+		new_shape[axis] = 0
+		return da.empty(tuple(new_shape), dtype=arr.dtype)
 
-	trimmed = arr[: n_bins * bin_size, :]
-	reshaped = trimmed.reshape((n_bins, bin_size, trimmed.shape[1]))
+	# Slice to exact multiple of bin_size
+	slc = [slice(None)] * arr.ndim
+	slc[axis] = slice(0, n_bins * bin_size)
+	trimmed = arr[tuple(slc)]
+
+	# Reshape to (..., n_bins, bin_size, ...)
+	new_shape = trimmed.shape[:axis] + (n_bins, bin_size) + trimmed.shape[axis+1:]
+	reshaped = trimmed.reshape(new_shape)
+
+	# Aggregation axis is axis + 1 in the reshaped array
+	agg_axis = axis + 1
 
 	if agg_func == "mean":
-		return da.nanmean(reshaped, axis=1)
-	if agg_func == "sum":
-		return da.nansum(reshaped, axis=1)
-	if agg_func == "max":
-		return da.nanmax(reshaped, axis=1)
-	if agg_func == "min":
-		return da.nanmin(reshaped, axis=1)
-	if agg_func == "median":
-		return da.nanpercentile(reshaped, 50, axis=1)
+		return da.nanmean(reshaped, axis=agg_axis)
+	elif agg_func == "sum":
+		return da.nansum(reshaped, axis=agg_axis)
+	elif agg_func == "max":
+		return da.nanmax(reshaped, axis=agg_axis)
+	elif agg_func == "min":
+		return da.nanmin(reshaped, axis=agg_axis)
+	elif agg_func == "median":
+		return da.nanpercentile(reshaped, 50, axis=agg_axis)
 
 	raise ValueError(f"Unknown aggregation function: {agg_func}")
 
@@ -699,20 +712,7 @@ def extract_byranges_signal(
 			signal = gathered
 
 			if bin_size is not None:
-				n_bins = _total_width // bin_size
-				reshaped = signal.reshape((signal.shape[0], n_bins, bin_size, signal.shape[2]))
-				if bin_agg_str == "mean":
-					signal = da.nanmean(reshaped, axis=2)
-				elif bin_agg_str == "sum":
-					signal = da.nansum(reshaped, axis=2)
-				elif bin_agg_str == "max":
-					signal = da.nanmax(reshaped, axis=2)
-				elif bin_agg_str == "min":
-					signal = da.nanmin(reshaped, axis=2)
-				elif bin_agg_str == "median":
-					signal = da.nanpercentile(reshaped, 50, axis=2)
-				else:
-					raise ValueError(f"Unknown bin aggregation function: {bin_agg_str}")
+				signal = _bin_array(signal, bin_size, agg_func=bin_agg_str, axis=1)
 
 			out = signal
 		else:
@@ -762,20 +762,7 @@ def extract_byranges_signal(
 			signal = da.where(mask_da[:, :, None], gathered, np.nan)
 
 			if bin_size is not None:
-				n_bins = target_bases // bin_size
-				reshaped = signal.reshape((signal.shape[0], n_bins, bin_size, signal.shape[2]))
-				if bin_agg_str == "mean":
-					signal = da.nanmean(reshaped, axis=2)
-				elif bin_agg_str == "sum":
-					signal = da.nansum(reshaped, axis=2)
-				elif bin_agg_str == "max":
-					signal = da.nanmax(reshaped, axis=2)
-				elif bin_agg_str == "min":
-					signal = da.nanmin(reshaped, axis=2)
-				elif bin_agg_str == "median":
-					signal = da.nanpercentile(reshaped, 50, axis=2)
-				else:
-					raise ValueError(f"Unknown bin aggregation function: {bin_agg_str}")
+				signal = _bin_array(signal, bin_size, agg_func=bin_agg_str, axis=1)
 
 			out = signal
 

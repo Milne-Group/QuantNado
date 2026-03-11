@@ -1,5 +1,4 @@
-from ..dataset.enums import AnchorPoint, FeatureType, ReductionMethod
-from .core import QuantNadoDataset
+from ..dataset.core import BaseStore
 from .counts import count_features
 from .features import (
     annotate_intervals,

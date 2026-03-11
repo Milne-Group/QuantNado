@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from quantnado.dataset.store_bam import BamStore
-from quantnado.analysis.core import QuantNadoDataset
+from quantnado.dataset.core import BaseStore as QuantNadoDataset
 from quantnado.utils import estimate_chunk_len
 
 

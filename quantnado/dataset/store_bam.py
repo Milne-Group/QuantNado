@@ -17,13 +17,8 @@ import zarr
 from zarr.storage import LocalStore
 from zarr.codecs import BloscCodec
 from loguru import logger
-import xarray as xr
-import dask.array as da
-
-from .metadata import extract_metadata
+from .core import BaseStore
 from quantnado.utils import estimate_chunk_len, is_network_fs
-
-DEFAULT_CHUNK_LEN = 65536
 BIN_SIZE = 1
 CONSTRUCTION_ARRAY_DTYPE = np.uint32
 DEFAULT_CONSTRUCTION_COMPRESSION = "default"
@@ -298,57 +293,28 @@ def _parse_chromsizes(
     filter_chromosomes: bool = True,
     test: bool = False,
 ) -> dict[str, int]:
-    
-    if isinstance(chromsizes, dict) and not filter_chromosomes and not test:
-        return chromsizes
-    elif isinstance(chromsizes, dict) and (filter_chromosomes) and not test:
-        chromsizes = {k: v for k, v in chromsizes.items() if k.startswith("chr") and "_" not in k}
-        return chromsizes
-    elif isinstance(chromsizes, dict) and test:
-        desired = ["chr21", "chr22", "chrY"]
-        chromsizes = {k: v for k, v in chromsizes.items() if k in desired}
-        return chromsizes
+    """Parse chromsizes from dict, file path, or BAM file."""
+    if isinstance(chromsizes, dict):
+        chromsizes_dict = chromsizes
+    else:
+        path = Path(chromsizes)
+        if not path.exists():
+            raise FileNotFoundError(f"Chromsizes file not found: {path}")
+        df = pd.read_csv(path, sep="\t", header=None, names=["chrom", "size"])
+        chromsizes_dict = df.set_index("chrom")["size"].to_dict()
 
-    chromsizes_dict: dict[str, int] = {}
-    with open(chromsizes) as f:
-        for line_num, line in enumerate(f, 1):
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            if len(parts) < 2:
-                logger.warning(
-                    f"Skipping invalid line {line_num} in chromsizes file: {line}"
-                )
-                continue
-            chrom, size_str = parts[0], parts[1]
-            try:
-                size = int(size_str)
-            except ValueError:
-                logger.warning(
-                    f"Skipping line {line_num} - invalid size '{size_str}': {line}"
-                )
-                continue
-            if filter_chromosomes:
-                if chrom.startswith("chr") and "_" not in chrom:
-                    chromsizes_dict[chrom] = size
-            else:
-                chromsizes_dict[chrom] = size
+    if filter_chromosomes:
+        chromsizes_dict = {k: v for k, v in chromsizes_dict.items() if k.startswith("chr") and "_" not in k}
 
     if test:
         desired = ["chr21", "chr22", "chrY"]
-        chromsizes_dict = {
-            c: chromsizes_dict[c] for c in desired if c in chromsizes_dict
-        }
-        logger.info(
-            f"Test mode enabled: keeping chromosomes {list(chromsizes_dict.keys())}"
-        )
+        chromsizes_dict = {k: v for k, v in chromsizes_dict.items() if k in desired}
+        logger.info(f"Test mode enabled: keeping chromosomes {list(chromsizes_dict.keys())}")
 
-    logger.info(f"Loaded {len(chromsizes_dict)} chromosomes from {chromsizes}")
     return chromsizes_dict
 
 
-class BamStore:
+class BamStore(BaseStore):
     """
     Zarr-backed BAM signal store for per-chromosome, per-sample data and metadata.
 
@@ -380,10 +346,23 @@ class BamStore:
         read_only: bool = False,
         stranded: "str | list[str] | dict[str, str] | None" = None,
     ) -> None:
-        self.store_path = self._normalize_path(store_path)
-        self.chromsizes = _parse_chromsizes(chromsizes)
-        self.chromosomes = list(self.chromsizes.keys())
-        self.sample_names = [str(s) for s in sample_names]
+        self.path = Path(store_path)
+        self.store_path = self._normalize_path(self.path)
+        
+        # Initialize BaseStore attributes
+        if self.store_path.exists() and not overwrite:
+            self.root = zarr.open_group(str(self.store_path), mode="r" if read_only else "r+")
+            self._init_common_attributes(sample_names)
+        else:
+            # For new or overwritten stores, we don't have a zarr group yet
+            # but we need to set up the basic attributes for processing
+            self.sample_names = [str(s) for s in sample_names]
+            self._setup_sample_lookup()
+            self._chromsizes = _parse_chromsizes(chromsizes)
+            self._chromosomes = sorted(list(self._chromsizes.keys()))
+            self.completed_mask_raw = np.zeros(len(self.sample_names), dtype=bool)
+            self._metadata_cache = None
+
         self.n_samples = len(self.sample_names)
         self.sample_hash = _compute_sample_hash(self.sample_names)
         self.construction_compression, self.compressors = _resolve_construction_compressors(
@@ -606,13 +585,16 @@ class BamStore:
 
     @property
     def completed_mask(self) -> np.ndarray:
-        return self.meta["completed"][:].astype(bool)
+        if not hasattr(self, "_completed_mask") or not self.read_only:
+             self._completed_mask = self.meta["completed"][:].astype(bool)
+        return self._completed_mask
 
     @property
-    def sample_hashes(self) -> np.ndarray:
-        """Return the calculated MD5 hashes for each sample as hex strings."""
-        arr = self.meta["sample_hashes"][:]
-        return ["".join(f"{b:02x}" for b in row) for row in arr]
+    def sample_hashes(self) -> list[str]:
+        if not hasattr(self, "_sample_hashes") or not self.read_only:
+            arr = self.meta["sample_hashes"][:]
+            self._sample_hashes = ["".join(f"{b:02x}" for b in row) for row in arr]
+        return self._sample_hashes
 
     @property
     def library_sizes(self) -> pd.Series | None:
@@ -968,141 +950,10 @@ class BamStore:
         """Return number of completed samples."""
         return int(self.completed_mask.sum())
 
-    def get_metadata(self) -> pd.DataFrame:
-        """Retrieve all metadata columns as a DataFrame."""
-        return extract_metadata(self.root)
-
-    def list_metadata_columns(self) -> list[str]:
-        """List current metadata column names."""
-        return [
-            k.replace("metadata_", "")
-            for k in self.root.attrs.keys()
-            if k.startswith("metadata_")
-        ]
-
-    def remove_metadata_columns(self, columns: list[str]) -> None:
-        """Remove specified metadata columns from the store."""
-        self._check_writable()
-        for col in columns:
-            # Special handling: 'sample_hash' is backed by the metadata group array
-            if col == "sample_hash" and "sample_hashes" in self.meta:
-                self.meta["sample_hashes"][:] = 0
-                logger.info("Cleared sample_hash values in metadata group")
-                continue
-
-            key = f"metadata_{col}"
-            if key in self.root.attrs:
-                del self.root.attrs[key]
-                logger.info(f"Removed metadata column: {col}")
-
-    def set_metadata(
-        self,
-        metadata: pd.DataFrame,
-        sample_column: str = "sample_id",
-        merge: bool = True,
-    ) -> None:
-        """
-        Store metadata columns from a DataFrame. Subsets of samples are allowed;
-        missing samples will have empty strings for the metadata.
-        """
-        if sample_column not in metadata.columns:
-            raise ValueError(
-                f"Sample column '{sample_column}' not found in metadata DataFrame"
-            )
-
-        meta_subset = metadata.copy()
-        meta_subset[sample_column] = meta_subset[sample_column].astype(str)
-
-        if not merge:
-            for col in self.list_metadata_columns():
-                del self.root.attrs[f"metadata_{col}"]
-
-        # Reindex to match store order, filling gaps with empty strings or existing values
-        meta_subset = meta_subset.set_index(sample_column)
-
-        # Optional: Validate hashes if provided in metadata
-        if "sample_hash" in meta_subset.columns:
-            incoming_hashes = meta_subset["sample_hash"].reindex(
-                self.sample_names, fill_value=""
-            )
-            stored_hashes = self.sample_hashes
-            mismatches = []
-            for i, (inc, sto) in enumerate(zip(incoming_hashes, stored_hashes)):
-                if inc and sto and inc != sto:
-                    mismatches.append(
-                        f"{self.sample_names[i]}: meta={inc}, store={sto}"
-                    )
-            if mismatches:
-                raise ValueError(
-                    f"Sample hash mismatch for: {', '.join(mismatches)}. "
-                    "The metadata provided does not seem to match the BAM files used to create this dataset."
-                )
-
-        for col in meta_subset.columns:
-            target_col = col if col != "assay" else "assay"
-            key = f"metadata_{target_col}"
-
-            # If merging and column exists, start with existing values
-            if merge and key in self.root.attrs:
-                current_values = list(self.root.attrs[key])
-                # Update only provided samples
-                for i, sample in enumerate(self.sample_names):
-                    if sample in meta_subset.index:
-                        current_values[i] = str(meta_subset.loc[sample, col])
-                values = _to_str_list(current_values)
-            else:
-                # Full overwrite or new column: reindex filling with ""
-                values = _to_str_list(
-                    meta_subset[col].reindex(self.sample_names, fill_value="").tolist()
-                )
-
-            self.root.attrs[key] = values
-            logger.info(f"Updated metadata column: {target_col}")
-
-    def update_metadata(self, updates: dict[str, list[Any] | dict[str, Any]]) -> None:
-        """
-        Update metadata columns using a dictionary.
-
-        Parameters
-        ----------
-        updates : dict
-            Mapping of column names to either:
-            - A list of values (must align exactly with self.sample_names)
-            - A dict of {sample_name: value} (subsets allowed, others preserved or filled with "")
-        """
-        for col, values in updates.items():
-            target_col = col if col != "assay" else "assay"
-            key = f"metadata_{target_col}"
-
-            if isinstance(values, dict):
-                # Start with existing values if available
-                if key in self.root.attrs:
-                    final_values = list(self.root.attrs[key])
-                    for i, sample in enumerate(self.sample_names):
-                        if sample in values:
-                            final_values[i] = str(values[sample])
-                else:
-                    final_values = [str(values.get(s, "")) for s in self.sample_names]
-            elif isinstance(values, (list, np.ndarray)):
-                if len(values) != self.n_samples:
-                    raise ValueError(
-                        f"Update for {col} has {len(values)} items but store has {self.n_samples}"
-                    )
-                final_values = _to_str_list(values)
-            else:
-                raise TypeError(f"Values for {col} must be list or dict")
-
-            self.root.attrs[key] = _to_str_list(final_values)
-            logger.info(f"Updated metadata column: {target_col}")
-
     @classmethod
     def metadata_from_csv(cls, path: Path | str, **kwargs) -> pd.DataFrame:
         """Helper to load metadata from CSV."""
         return pd.read_csv(path, **kwargs)
-
-    def metadata_to_csv(self, path: Path | str) -> None:
-        """Export current metadata to CSV."""
-        self.get_metadata().to_csv(path)
 
     @classmethod
     def metadata_from_json(cls, path: Path | str) -> pd.DataFrame:
@@ -1110,308 +961,3 @@ class BamStore:
         with open(path) as f:
             data = json.load(f)
         return pd.DataFrame(data)
-
-    def metadata_to_json(self, path: Path | str) -> None:
-        """Export current metadata to JSON."""
-        self.get_metadata().reset_index().to_json(path, orient="records", indent=2)
-    def to_xarray(
-        self,
-        chromosomes: list[str] | None = None,
-        chunks: str | dict | None = None,
-    ) -> dict[str, xr.DataArray]:
-        """
-        Extract the BAM store as a dictionary of per-chromosome Xarray DataArrays.
-
-        Each DataArray uses lazy dask arrays for efficient memory usage. All samples
-        must be marked complete; incomplete samples will raise an error.
-
-        Parameters
-        ----------
-        chromosomes : list[str], optional
-            Specific chromosomes to extract. If None, extracts all chromosomes.
-        chunks : str or dict, optional
-            Dask chunking strategy. Default matches store's chunk_len (per-sample chunks).
-            Can be "auto" for automatic optimization or a dict like {"sample": 1, "position": chunk_len}.
-
-        Returns
-        -------
-        dict[str, xr.DataArray]
-            Dictionary mapping chromosome name to DataArray.
-            Each DataArray has:
-            - Dimensions: (sample, position)
-            - Coordinates: sample (names), position (0 to chrom_size), plus all metadata columns
-            - Attributes: sample_hashes only
-
-        Raises
-        ------
-        RuntimeError
-            If any sample is marked incomplete.
-        ValueError
-            If requested chromosomes are not in the store.
-
-        Example
-        -------
-        >>> store = BamStore.open("/path/to/store.zarr")
-        >>> xr_dict = store.to_xarray(chromosomes=["chr1", "chr22"])
-        >>> chr1_data = xr_dict["chr1"]
-        >>> # Access metadata as coordinates
-        >>> chr1_data.coords["cell_type"]
-        >>> # Filter by metadata
-        >>> chr1_data.sel(cell_type="A549")
-        """
-        # Strict check: all samples must be complete
-        if not self.completed_mask.all():
-            incomplete_indices = np.where(~self.completed_mask)[0]
-            incomplete_names = [self.sample_names[i] for i in incomplete_indices]
-            raise RuntimeError(
-                f"Cannot extract Xarray: {len(incomplete_names)} sample(s) incomplete: {incomplete_names}"
-            )
-
-        # Default to all chromosomes; validate if subset requested
-        chroms_to_extract = chromosomes if chromosomes is not None else self.chromosomes
-        invalid_chroms = set(chroms_to_extract) - set(self.chromosomes)
-        if invalid_chroms:
-            raise ValueError(
-                f"Requested chromosomes not in store: {invalid_chroms}. Available: {self.chromosomes}"
-            )
-
-        # Default chunking: match store's chunk_len (per-sample chunks)
-        if chunks is None:
-            chunks = {"sample": 1, "position": self.chunk_len}
-
-        # Extract metadata
-        metadata_df = self.get_metadata()
-        
-        result = {}
-        for chrom in chroms_to_extract:
-            chrom_size = self.chromsizes[chrom]
-            # Load zarr array as dask array with lazy evaluation
-            zarr_array = self.root[chrom]
-            dask_arr = da.from_array(zarr_array, chunks=chunks)
-            # Re-chunk with auto strategy if requested
-            if chunks == "auto":
-                dask_arr = dask_arr.rechunk("auto")
-            elif isinstance(chunks, dict):
-                # Convert named dimensions to axis indices for dask
-                chunks_by_axis = {}
-                dim_names = ("sample", "position")
-                for dim_name, chunk_size in chunks.items():
-                    if dim_name in dim_names:
-                        axis_idx = dim_names.index(dim_name)
-                        chunks_by_axis[axis_idx] = chunk_size
-                dask_arr = dask_arr.rechunk(chunks_by_axis)
-
-            # Build coordinates dict with sample metadata
-            coords = {
-                "sample": self.sample_names,
-                "position": np.arange(chrom_size),
-            }
-            # Add all metadata columns as coordinates
-            for col in metadata_df.columns:
-                if col != "sample_id":  # sample_id is already in "sample" coordinate
-                    coords[col] = ("sample", metadata_df[col].values)
-
-            # Create DataArray with coordinates
-            da_xr = xr.DataArray(
-                dask_arr,
-                dims=("sample", "position"),
-                coords=coords,
-                attrs={
-                    "sample_hashes": self.sample_hashes,
-                },
-            )
-            result[chrom] = da_xr
-
-        logger.info(f"Extracted {len(result)} chromosomes as Xarray DataArrays with {len(metadata_df.columns)} metadata columns")
-        return result
-
-    def extract_region(
-        self,
-        region: str | None = None,
-        chrom: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        samples: list[str] | list[int] | None = None,
-        as_xarray: bool = True,
-        strand: str | None = None,
-    ) -> xr.DataArray | np.ndarray:
-        """
-        Extract signal data for a specific genomic region.
-        
-        Parameters
-        ----------
-        region : str, optional
-            Genomic region in format "chr:start-end" or "chr:start,start-end,end".
-            Commas in coordinates are removed automatically.
-            Alternative to specifying chrom/start/end separately.
-        chrom : str, optional
-            Chromosome name (alternative to region string).
-        start : int, optional
-            Start position (0-based, inclusive). If None, defaults to 0.
-        end : int, optional
-            End position (0-based, exclusive). If None, defaults to chromosome end.
-        samples : list of str or int, optional
-            Sample names or indices to extract. If None, extracts all completed samples.
-        as_xarray : bool, default True
-            If True, return xr.DataArray with coordinates (lazy dask array).
-            If False, return computed np.ndarray.
-        strand : {"+" or "-"}, optional
-            Return strand-specific coverage. Requires the store to have been built
-            with ``stranded`` set. ``"+"`` returns sense-strand coverage from
-            the ``{chrom}_fwd`` array; ``"-"`` returns antisense coverage from
-            ``{chrom}_rev``. If None (default), returns total coverage.
-        
-        Returns
-        -------
-        xr.DataArray or np.ndarray
-            Extracted region data with dimensions (sample, position).
-            
-        Raises
-        ------
-        ValueError
-            If region format is invalid, chromosome not found, or both region and chrom specified.
-        RuntimeError
-            If any requested sample is incomplete.
-            
-        Examples
-        --------
-        >>> # String format
-        >>> data = store.extract_region("chr9:77,418,764-78,339,335")
-        >>> 
-        >>> # Separate parameters
-        >>> data = store.extract_region(chrom="chr9", start=77418764, end=78339335)
-        >>> 
-        >>> # Whole chromosome
-        >>> data = store.extract_region(chrom="chr1")
-        >>> 
-        >>> # Subset samples
-        >>> data = store.extract_region("chr1:1000-2000", samples=["s1", "s2"])
-        >>> 
-        >>> # Get numpy array instead of xarray
-        >>> arr = store.extract_region("chr1:1000-2000", as_xarray=False)
-        """
-        from ..utils import parse_genomic_region
-        
-        # Parse region or use separate parameters
-        if region is not None and chrom is not None:
-            raise ValueError("Specify either 'region' or 'chrom', not both")
-        
-        if region is not None:
-            chrom, parsed_start, parsed_end = parse_genomic_region(region)
-            # If start/end were in region string, use them (override None defaults)
-            if parsed_start is not None:
-                start = parsed_start
-            if parsed_end is not None:
-                end = parsed_end
-        
-        if chrom is None:
-            raise ValueError("Must specify either 'region' or 'chrom'")
-        
-        # Validate chromosome exists
-        if chrom not in self.chromsizes:
-            raise ValueError(
-                f"Chromosome '{chrom}' not in store. Available: {list(self.chromsizes.keys())}"
-            )
-        
-        # Default start/end to whole chromosome
-        chrom_size = self.chromsizes[chrom]
-        if start is None:
-            start = 0
-        if end is None:
-            end = chrom_size
-        
-        # Validate coordinates
-        if start < 0:
-            raise ValueError(f"Start position must be >= 0, got {start}")
-        if end > chrom_size:
-            raise ValueError(
-                f"End position {end} exceeds chromosome size {chrom_size} for {chrom}"
-            )
-        if end <= start:
-            raise ValueError(f"End position {end} must be greater than start {start}")
-        
-        # Resolve sample indices
-        if samples is None:
-            # Use all samples
-            sample_indices = np.arange(len(self.sample_names))
-            sample_names = self.sample_names
-        else:
-            # Parse sample names or indices
-            sample_indices = []
-            sample_names = []
-            for s in samples:
-                if isinstance(s, str):
-                    if s not in self.sample_names:
-                        raise ValueError(f"Sample '{s}' not found in store")
-                    idx = self.sample_names.index(s)
-                    sample_indices.append(idx)
-                    sample_names.append(s)
-                elif isinstance(s, int):
-                    if s < 0 or s >= len(self.sample_names):
-                        raise ValueError(f"Sample index {s} out of range [0, {len(self.sample_names)})")
-                    sample_indices.append(s)
-                    sample_names.append(self.sample_names[s])
-                else:
-                    raise TypeError(f"Samples must be strings or integers, got {type(s)}")
-            sample_indices = np.array(sample_indices)
-        
-        # Check all requested samples are complete
-        completed = self.meta["completed"][:]
-        incomplete_samples = [sample_names[i] for i, idx in enumerate(sample_indices) if not completed[idx]]
-        if incomplete_samples:
-            raise RuntimeError(
-                f"Cannot extract region: {len(incomplete_samples)} sample(s) incomplete: {incomplete_samples}"
-            )
-        
-        # Extract data from zarr store
-        if strand is not None:
-            if strand not in ("+", "-"):
-                raise ValueError(f"strand must be '+', '-', or None, got {strand!r}")
-            has_any_stranded = any(v for v in self._strandedness_map.values() if v)
-            if not has_any_stranded:
-                raise RuntimeError(
-                    "This store was not built with stranded; no strand-specific arrays available."
-                )
-            array_key = f"{chrom}_fwd" if strand == "+" else f"{chrom}_rev"
-            zarr_array = self.root[array_key]
-        else:
-            zarr_array = self.root[chrom]
-        # Slice: [sample_indices, start:end]
-        data_slice = zarr_array[sample_indices.tolist(), start:end]
-        
-        if not as_xarray:
-            # Return computed numpy array
-            return np.array(data_slice)
-        
-        # Wrap in xarray DataArray with lazy dask array
-        dask_arr = da.from_array(data_slice, chunks=(1, -1))  # chunk by sample
-        
-        # Build coordinates with metadata
-        metadata_df = self.get_metadata()
-        metadata_subset = metadata_df.iloc[sample_indices]
-        
-        coords = {
-            "sample": sample_names,
-            "position": np.arange(start, end),
-        }
-        
-        # Add metadata columns as coordinates
-        for col in metadata_subset.columns:
-            if col != "sample_id":  # sample_id redundant with "sample" coordinate
-                coords[col] = ("sample", np.asarray(metadata_subset[col]))
-        
-        # Create DataArray
-        da_xr = xr.DataArray(
-            dask_arr,
-            dims=("sample", "position"),
-            coords=coords,
-            attrs={
-                "chromosome": chrom,
-                "start": start,
-                "end": end,
-                "sample_hashes": [self.sample_hashes[i] for i in sample_indices],
-            },
-        )
-        
-        logger.info(f"Extracted region {chrom}:{start}-{end} ({end-start} bp) for {len(sample_names)} sample(s)")
-        return da_xr
