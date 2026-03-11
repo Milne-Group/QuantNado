@@ -698,6 +698,7 @@ class QuantNado:
         samples: list[str] | None = None,
         strand_aware: bool = False,
         strand: str | None = None,
+        max_workers: int = 1,
     ) -> xr.DataArray:
         """
         Extract signal over genomic ranges.
@@ -745,6 +746,8 @@ class QuantNado:
             annotation.  Use this to obtain separate fwd/rev DataArrays for
             :py:meth:`metaplot` ``data_rev`` or :py:meth:`tornadoplot` ``data_rev``.
             Coverage only; ignored for methylation.
+        max_workers : int, default 1
+            Number of chromosome groups to extract in parallel for coverage data.
 
         Returns
         -------
@@ -790,6 +793,7 @@ class QuantNado:
             sample_indices=_sample_indices,
             strand_aware=strand_aware,
             force_strand=strand,
+            max_workers=max_workers,
         )
 
     def count_features(

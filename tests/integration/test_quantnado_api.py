@@ -206,6 +206,12 @@ def test_extract_fixed_width(qn):
     assert result.shape[1] == 4
 
 
+def test_extract_with_max_workers(qn):
+    ranges = pd.DataFrame({"contig": ["chr1", "chr2"], "start": [0, 0], "end": [4, 3]})
+    result = qn.extract(ranges_df=ranges, max_workers=2)
+    assert result.shape == (2, 4, 2)
+
+
 # ---------------------------------------------------------------------------
 # count_features
 # ---------------------------------------------------------------------------

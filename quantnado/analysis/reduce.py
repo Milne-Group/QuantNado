@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import dask.array as da
@@ -440,6 +441,259 @@ def _bin_array(arr: da.Array, bin_size: int, agg_func: str = "mean", axis: int =
 	raise ValueError(f"Unknown aggregation function: {agg_func}")
 
 
+def _estimate_interval_batch_size(
+	target_bases: int,
+	n_samples: int,
+	*,
+	stranded: bool = False,
+	target_bytes: int = 64 * 1024**2,
+	max_intervals: int = 512,
+	min_intervals: int = 16,
+) -> int:
+	"""Choose a conservative interval batch size for extraction gathers."""
+	if target_bases <= 0:
+		return max_intervals
+
+	arrays_per_batch = 2 if stranded else 1
+	bytes_per_value = np.dtype(np.float32).itemsize
+	bytes_per_base = 8 + arrays_per_batch * max(1, n_samples) * bytes_per_value
+	batch_size = target_bytes // max(1, target_bases * bytes_per_base)
+	batch_size = max(1, int(batch_size))
+	return int(min(max(batch_size, min_intervals), max_intervals))
+
+
+def _iter_interval_slices(n_intervals: int, batch_size: int):
+	"""Yield contiguous slices over the interval axis."""
+	for start in range(0, n_intervals, batch_size):
+		yield slice(start, min(n_intervals, start + batch_size))
+
+
+def _iter_interval_slices_by_span(
+	start_positions: np.ndarray,
+	width: int,
+	batch_size: int,
+	max_span: int,
+):
+	"""Yield slices over sorted intervals bounded by count and genomic span."""
+	n_intervals = start_positions.shape[0]
+	if n_intervals == 0:
+		return
+
+	batch_start = 0
+	batch_min = int(start_positions[0])
+	batch_max_end = batch_min + width
+
+	for idx in range(1, n_intervals):
+		current_start = int(start_positions[idx])
+		current_end = current_start + width
+		span = max(batch_max_end, current_end) - batch_min
+		if (idx - batch_start) >= batch_size or span > max_span:
+			yield slice(batch_start, idx)
+			batch_start = idx
+			batch_min = current_start
+			batch_max_end = current_end
+		else:
+			batch_max_end = max(batch_max_end, current_end)
+
+	yield slice(batch_start, n_intervals)
+
+
+def _bin_array_numpy(arr: np.ndarray, bin_size: int, agg_func: str = "mean", axis: int = 0) -> np.ndarray:
+	"""Bin a NumPy array along a specified axis into fixed-size bins."""
+	n_pos = int(arr.shape[axis])
+	if n_pos == 0:
+		new_shape = list(arr.shape)
+		new_shape[axis] = 0
+		return np.empty(tuple(new_shape), dtype=arr.dtype)
+
+	n_bins = n_pos // bin_size
+	if n_bins == 0:
+		new_shape = list(arr.shape)
+		new_shape[axis] = 0
+		return np.empty(tuple(new_shape), dtype=arr.dtype)
+
+	slc = [slice(None)] * arr.ndim
+	slc[axis] = slice(0, n_bins * bin_size)
+	trimmed = arr[tuple(slc)]
+
+	new_shape = trimmed.shape[:axis] + (n_bins, bin_size) + trimmed.shape[axis + 1 :]
+	reshaped = trimmed.reshape(new_shape)
+	agg_axis = axis + 1
+
+	if agg_func == "mean":
+		valid = ~np.isnan(reshaped)
+		counts = valid.sum(axis=agg_axis, dtype=np.int32)
+		sums = np.where(valid, reshaped, 0.0).sum(axis=agg_axis, dtype=np.float32)
+		means = np.full(sums.shape, np.nan, dtype=np.float32)
+		np.divide(sums, counts, out=means, where=counts > 0)
+		return means
+	if agg_func == "sum":
+		return np.nansum(reshaped, axis=agg_axis)
+	if agg_func == "max":
+		return np.nanmax(reshaped, axis=agg_axis)
+	if agg_func == "min":
+		return np.nanmin(reshaped, axis=agg_axis)
+	if agg_func == "median":
+		return np.nanpercentile(reshaped, 50, axis=agg_axis)
+
+	raise ValueError(f"Unknown aggregation function: {agg_func}")
+
+
+def _read_contig_matrix(zarr_array, sample_indices: np.ndarray, start: int, end: int) -> np.ndarray:
+	"""Read a contiguous positions-by-samples slice from a per-chromosome Zarr array."""
+	if end <= start:
+		return np.empty((0, len(sample_indices)), dtype=np.float32)
+
+	def _read_basic(sample_sel: slice) -> np.ndarray:
+		return np.asarray(
+			zarr_array.get_basic_selection((sample_sel, slice(start, end))),
+			dtype=np.float32,
+		)
+
+	def _read_sorted_runs(sorted_sample_indices: np.ndarray) -> np.ndarray:
+		run_breaks = np.flatnonzero(np.diff(sorted_sample_indices) != 1) + 1
+		run_starts = np.concatenate(([0], run_breaks))
+		run_ends = np.concatenate((run_breaks, [sorted_sample_indices.size]))
+		run_blocks = [
+			_read_basic(slice(int(sorted_sample_indices[run_start]), int(sorted_sample_indices[run_end - 1]) + 1))
+			for run_start, run_end in zip(run_starts, run_ends, strict=False)
+		]
+		return np.concatenate(run_blocks, axis=0).T
+
+	sample_indices = np.asarray(sample_indices, dtype=np.int64)
+	if sample_indices.size == 1:
+		sample_start = int(sample_indices[0])
+		block = _read_basic(slice(sample_start, sample_start + 1))
+		return block.T
+
+	order = np.argsort(sample_indices, kind="mergesort")
+	sorted_indices = sample_indices[order]
+	restore_order = np.empty_like(order)
+	restore_order[order] = np.arange(order.size)
+
+	span_start = int(sorted_indices[0])
+	span_end = int(sorted_indices[-1]) + 1
+	span_len = span_end - span_start
+
+	# Prefer plain slicing when selected samples are contiguous or nearly contiguous.
+	if np.array_equal(sorted_indices, np.arange(span_start, span_end, dtype=np.int64)):
+		block = _read_sorted_runs(sorted_indices)
+		return block[:, restore_order]
+
+	if span_len <= max(sorted_indices.size * 4, sorted_indices.size + 8):
+		block = _read_basic(slice(span_start, span_end))
+		return block[(sorted_indices - span_start), :].T[:, restore_order]
+
+	merged = _read_sorted_runs(sorted_indices)
+	return merged.T[:, restore_order]
+
+
+def _gather_numpy_batch(
+	arr: np.ndarray,
+	start_positions: np.ndarray,
+	width: int,
+	*,
+	valid_lengths: np.ndarray | None = None,
+	source_start: int,
+	arr_len: int,
+) -> np.ndarray:
+	"""Gather fixed-width windows from a NumPy positions-by-samples array with NaN padding."""
+	n_intervals = start_positions.shape[0]
+	n_samples = arr.shape[1]
+	if n_intervals == 0 or width == 0:
+		return np.empty((n_intervals, width, n_samples), dtype=np.float32)
+
+	offsets = np.arange(width, dtype=np.int64)
+	abs_indices = start_positions[:, None] + offsets[None, :]
+	valid = (abs_indices >= 0) & (abs_indices < arr_len)
+	if valid_lengths is not None:
+		valid &= offsets[None, :] < valid_lengths[:, None]
+
+	if arr.shape[0] == 0:
+		return np.full((n_intervals, width, n_samples), np.nan, dtype=np.float32)
+
+	safe = np.clip(abs_indices - source_start, 0, arr.shape[0] - 1)
+	gathered = arr[safe]
+	return np.where(valid[:, :, None], gathered, np.nan).astype(np.float32, copy=False)
+
+
+def _gather_binned_numpy_batch(
+	arr: np.ndarray,
+	start_positions: np.ndarray,
+	*,
+	total_width: int,
+	bin_size: int,
+	agg_func: str,
+	source_start: int,
+	arr_len: int,
+	valid_lengths: np.ndarray | None = None,
+	target_bytes: int = 16 * 1024**2,
+) -> np.ndarray:
+	"""Gather and aggregate fixed-size bins without materializing the full per-base window."""
+	n_intervals = start_positions.shape[0]
+	n_samples = arr.shape[1]
+	if n_intervals == 0 or total_width == 0:
+		return np.empty((n_intervals, 0, n_samples), dtype=np.float32)
+
+	n_bins = total_width // bin_size
+	if n_bins == 0:
+		return np.empty((n_intervals, 0, n_samples), dtype=np.float32)
+
+	if agg_func in {"mean", "sum"}:
+		bin_offsets = np.arange(n_bins, dtype=np.int64) * bin_size
+		bin_starts = start_positions[:, None] + bin_offsets[None, :]
+		bin_ends = bin_starts + bin_size
+
+		valid_starts = np.clip(bin_starts, 0, arr_len)
+		valid_ends = np.clip(bin_ends, 0, arr_len)
+		if valid_lengths is not None:
+			interval_ends = start_positions + valid_lengths
+			valid_ends = np.minimum(valid_ends, interval_ends[:, None])
+
+		counts = np.maximum(valid_ends - valid_starts, 0).astype(np.int32, copy=False)
+		local_starts = np.clip(valid_starts - source_start, 0, arr.shape[0])
+		local_ends = np.clip(valid_ends - source_start, 0, arr.shape[0])
+		prefix = np.concatenate(
+			(
+				np.zeros((1, n_samples), dtype=np.float32),
+				np.cumsum(arr, axis=0, dtype=np.float32),
+			),
+			axis=0,
+		)
+		binned = prefix[local_ends] - prefix[local_starts]
+		if agg_func == "sum":
+			return binned.astype(np.float32, copy=False)
+
+		means = np.full(binned.shape, np.nan, dtype=np.float32)
+		np.divide(binned, counts[:, :, None], out=means, where=counts[:, :, None] > 0)
+		return means
+
+	bytes_per_bin = max(1, n_intervals) * max(1, n_samples) * bin_size * np.dtype(np.float32).itemsize
+	bins_per_chunk = max(1, min(n_bins, target_bytes // max(1, bytes_per_bin)))
+	chunk_outputs: list[np.ndarray] = []
+
+	for bin_start in range(0, n_bins, bins_per_chunk):
+		chunk_bins = min(bins_per_chunk, n_bins - bin_start)
+		chunk_width = chunk_bins * bin_size
+		chunk_starts = start_positions + bin_start * bin_size
+		chunk_valid_lengths = None
+		if valid_lengths is not None:
+			remaining = valid_lengths - bin_start * bin_size
+			chunk_valid_lengths = np.clip(remaining, 0, chunk_width)
+
+		chunk = _gather_numpy_batch(
+			arr,
+			chunk_starts,
+			chunk_width,
+			valid_lengths=chunk_valid_lengths,
+			source_start=source_start,
+			arr_len=arr_len,
+		)
+		chunk_outputs.append(_bin_array_numpy(chunk, bin_size, agg_func=agg_func, axis=1))
+
+	return chunk_outputs[0] if len(chunk_outputs) == 1 else np.concatenate(chunk_outputs, axis=1)
+
+
 def extract_byranges_signal(
 	dataset,
 	ranges_df: pd.DataFrame | pr.PyRanges | None = None,
@@ -459,6 +713,7 @@ def extract_byranges_signal(
 	sample_indices: np.ndarray | None = None,
 	strand_aware: bool = False,
 	force_strand: str | None = None,
+	max_workers: int = 1,
 ) -> xr.DataArray:
 	"""
 	Extract raw per-position signal over genomic ranges.
@@ -517,6 +772,9 @@ def extract_byranges_signal(
 		(``"-"`` → ``{chrom}_rev``) strand array regardless of their strand annotation.
 		Takes precedence over ``strand_aware``.  Falls back to total coverage when
 		stranded arrays are absent.
+	max_workers : int, default 1
+		Number of chromosome groups to extract in parallel. Useful when ranges span
+		multiple contigs stored as separate arrays.
 
 	Returns
 	-------
@@ -563,6 +821,273 @@ def extract_byranges_signal(
 		ranges_df, intervals_path, feature_type, gtf_path, start_col, end_col, contig_col
 	)
 	sample_indices, sample_labels, root = _select_samples(dataset, include_incomplete, sample_indices)
+	root_keys = set(root.keys())
+	contig_lengths = {k: int(root[k].shape[1]) for k in root_keys if k != "metadata"}
+	contig_groups = list(ranges_df.groupby(contig_col, observed=True))
+
+	def _extract_contig_group(contig: str, group: pd.DataFrame):
+		if contig not in contig_lengths:
+			return None
+
+		orig_idx = group.index.to_numpy()
+		starts = np.asarray(group[start_col], dtype=np.int64)
+		ends = np.asarray(group[end_col], dtype=np.int64)
+		strands = np.asarray(group["Strand"], dtype=object) if has_strand else None
+		names = np.asarray(group[name_col], dtype=object) if name_col is not None else None
+
+		use_forced_strand = (
+			force_strand in ("+", "-")
+			and f"{contig}_fwd" in root_keys
+			and f"{contig}_rev" in root_keys
+		)
+		use_stranded = (
+			not use_forced_strand
+			and strand_aware
+			and has_strand
+			and f"{contig}_fwd" in root_keys
+			and f"{contig}_rev" in root_keys
+		)
+
+		if use_forced_strand:
+			arr_source = root[f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev"]
+		elif use_stranded:
+			arr_fwd_source = root[f"{contig}_fwd"]
+			arr_rev_source = root[f"{contig}_rev"]
+		else:
+			arr_source = root[contig]
+
+		arr_len = contig_lengths[contig]
+		chunk_len = int(root.attrs.get("chunk_len", max(1, target_bases)))
+		max_batch_span = max(target_bases, min(chunk_len, max(target_bases * 8, 65536)))
+		batch_size = _estimate_interval_batch_size(
+			target_bases=target_bases,
+			n_samples=len(sample_indices),
+			stranded=use_stranded,
+		)
+
+		clipped_starts = np.maximum(starts, 0)
+		clipped_ends = np.minimum(ends, arr_len)
+		valid = clipped_ends > clipped_starts
+		if not np.all(valid):
+			orig_idx = orig_idx[valid]
+			starts = starts[valid]
+			ends = ends[valid]
+			clipped_starts = clipped_starts[valid]
+			clipped_ends = clipped_ends[valid]
+			if has_strand:
+				strands = strands[valid]
+			if names is not None:
+				names = names[valid]
+
+		if starts.size == 0:
+			return None
+
+		sort_idx = np.argsort(clipped_starts, kind="mergesort")
+		orig_idx = orig_idx[sort_idx]
+		starts = starts[sort_idx]
+		ends = ends[sort_idx]
+		clipped_starts = clipped_starts[sort_idx]
+		clipped_ends = clipped_ends[sort_idx]
+		if has_strand:
+			strands = strands[sort_idx]
+		if names is not None:
+			names = names[sort_idx]
+
+		if _total_width is not None:
+			batch_outputs: list[np.ndarray] = []
+			if anchor == AnchorPoint.MIDPOINT:
+				anchor_all = (starts + ends) // 2
+			elif anchor == AnchorPoint.START:
+				anchor_all = np.where(strands == "-", ends, starts) if has_strand else starts
+			elif anchor == AnchorPoint.END:
+				anchor_all = np.where(strands == "-", starts, ends) if has_strand else ends
+			else:
+				raise ValueError(f"Unknown anchor point: {anchor}")
+
+			extract_starts_all = anchor_all - _upstream
+			for batch_slice in _iter_interval_slices_by_span(
+				extract_starts_all,
+				_total_width,
+				batch_size,
+				max_batch_span,
+			):
+				batch_strands = strands[batch_slice] if has_strand else None
+				extract_starts = extract_starts_all[batch_slice]
+				region_start = int(max(0, int(extract_starts.min())))
+				region_end = int(min(arr_len, int((extract_starts + _total_width).max())))
+
+				if use_stranded:
+					arr_fwd_batch = _read_contig_matrix(arr_fwd_source, sample_indices, region_start, region_end)
+					arr_rev_batch = _read_contig_matrix(arr_rev_source, sample_indices, region_start, region_end)
+					if bin_size is not None:
+						gathered_fwd = _gather_binned_numpy_batch(
+							arr_fwd_batch,
+							extract_starts,
+							total_width=_total_width,
+							bin_size=bin_size,
+							agg_func=bin_agg_str,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+						gathered_rev = _gather_binned_numpy_batch(
+							arr_rev_batch,
+							extract_starts,
+							total_width=_total_width,
+							bin_size=bin_size,
+							agg_func=bin_agg_str,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+					else:
+						gathered_fwd = _gather_numpy_batch(
+							arr_fwd_batch,
+							extract_starts,
+							_total_width,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+						gathered_rev = _gather_numpy_batch(
+							arr_rev_batch,
+							extract_starts,
+							_total_width,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+					signal = np.where((batch_strands == "+")[:, None, None], gathered_fwd, gathered_rev)
+				else:
+					arr_batch = _read_contig_matrix(arr_source, sample_indices, region_start, region_end)
+					if bin_size is not None:
+						signal = _gather_binned_numpy_batch(
+							arr_batch,
+							extract_starts,
+							total_width=_total_width,
+							bin_size=bin_size,
+							agg_func=bin_agg_str,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+					else:
+						signal = _gather_numpy_batch(
+							arr_batch,
+							extract_starts,
+							_total_width,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+
+				batch_outputs.append(signal)
+
+			out = batch_outputs[0] if len(batch_outputs) == 1 else np.concatenate(batch_outputs, axis=0)
+		else:
+			lengths = clipped_ends - clipped_starts
+			if bin_size is not None:
+				lengths = (lengths // bin_size) * bin_size
+				valid_len = lengths > 0
+				if not np.all(valid_len):
+					orig_idx = orig_idx[valid_len]
+					starts = starts[valid_len]
+					ends = ends[valid_len]
+					clipped_starts = clipped_starts[valid_len]
+					clipped_ends = clipped_ends[valid_len]
+					lengths = lengths[valid_len]
+					if has_strand:
+						strands = strands[valid_len]
+					if names is not None:
+						names = names[valid_len]
+				if lengths.size == 0:
+					return None
+
+			batch_outputs = []
+			for batch_slice in _iter_interval_slices_by_span(
+				clipped_starts,
+				target_bases,
+				batch_size,
+				max_batch_span,
+			):
+				batch_clipped_starts = clipped_starts[batch_slice]
+				batch_lengths = lengths[batch_slice]
+				batch_strands = strands[batch_slice] if has_strand else None
+				region_start = int(batch_clipped_starts.min())
+				region_end = int(min(arr_len, int((batch_clipped_starts + target_bases).max())))
+
+				if use_stranded:
+					arr_fwd_batch = _read_contig_matrix(arr_fwd_source, sample_indices, region_start, region_end)
+					arr_rev_batch = _read_contig_matrix(arr_rev_source, sample_indices, region_start, region_end)
+					if bin_size is not None:
+						gathered_fwd = _gather_binned_numpy_batch(
+							arr_fwd_batch,
+							batch_clipped_starts,
+							total_width=target_bases,
+							bin_size=bin_size,
+							agg_func=bin_agg_str,
+							source_start=region_start,
+							arr_len=arr_len,
+							valid_lengths=batch_lengths,
+						)
+						gathered_rev = _gather_binned_numpy_batch(
+							arr_rev_batch,
+							batch_clipped_starts,
+							total_width=target_bases,
+							bin_size=bin_size,
+							agg_func=bin_agg_str,
+							source_start=region_start,
+							arr_len=arr_len,
+							valid_lengths=batch_lengths,
+						)
+					else:
+						gathered_fwd = _gather_numpy_batch(
+							arr_fwd_batch,
+							batch_clipped_starts,
+							target_bases,
+							valid_lengths=batch_lengths,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+						gathered_rev = _gather_numpy_batch(
+							arr_rev_batch,
+							batch_clipped_starts,
+							target_bases,
+							valid_lengths=batch_lengths,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+					signal = np.where((batch_strands == "+")[:, None, None], gathered_fwd, gathered_rev)
+				else:
+					arr_batch = _read_contig_matrix(arr_source, sample_indices, region_start, region_end)
+					if bin_size is not None:
+						signal = _gather_binned_numpy_batch(
+							arr_batch,
+							batch_clipped_starts,
+							total_width=target_bases,
+							bin_size=bin_size,
+							agg_func=bin_agg_str,
+							source_start=region_start,
+							arr_len=arr_len,
+							valid_lengths=batch_lengths,
+						)
+					else:
+						signal = _gather_numpy_batch(
+							arr_batch,
+							batch_clipped_starts,
+							target_bases,
+							valid_lengths=batch_lengths,
+							source_start=region_start,
+							arr_len=arr_len,
+						)
+
+				batch_outputs.append(signal)
+
+			out = batch_outputs[0] if len(batch_outputs) == 1 else np.concatenate(batch_outputs, axis=0)
+
+		return (
+			out,
+			orig_idx,
+			starts,
+			ends,
+			np.asarray([contig] * starts.shape[0]),
+			strands if has_strand else None,
+			names,
+		)
 
 	# Log chromosome overlap
 	ranges_contigs = set(ranges_df[contig_col].unique())
@@ -580,7 +1105,6 @@ def extract_byranges_signal(
 	# Determine global extraction width.
 	# If bin_size is provided, drop remainder bases (exact multiple of bin_size only).
 	if _total_width is None:
-		contig_lengths = {k: int(root[k].shape[1]) for k in root.keys() if k != "metadata"}
 		contig_len = ranges_df[contig_col].map(contig_lengths)
 		starts_all = np.asarray(ranges_df[start_col], dtype=np.int64)
 		ends_all = np.asarray(ranges_df[end_col], dtype=np.int64)
@@ -589,9 +1113,9 @@ def extract_byranges_signal(
 		if not np.any(valid_contig):
 			raise ValueError("No valid contigs found for extraction")
 
-		clipped_starts = np.maximum(starts_all[valid_contig], 0)
-		clipped_ends = np.minimum(ends_all[valid_contig], contig_len_arr[valid_contig].astype(np.int64))
-		lengths = clipped_ends - clipped_starts
+		clipped_starts_all = np.maximum(starts_all[valid_contig], 0)
+		clipped_ends_all = np.minimum(ends_all[valid_contig], contig_len_arr[valid_contig].astype(np.int64))
+		lengths = clipped_ends_all - clipped_starts_all
 		lengths = lengths[lengths > 0]
 		if lengths.size == 0:
 			raise ValueError("No valid intervals found for extraction")
@@ -609,8 +1133,7 @@ def extract_byranges_signal(
 	else:
 		target_bases = int(_total_width)
 
-	# Extract per contig (Dask parallelizes across contigs)
-	outputs: list[da.Array] = []
+	outputs: list[np.ndarray] = []
 	idx_order: list[np.ndarray] = []
 	starts_meta: list[np.ndarray] = []
 	ends_meta: list[np.ndarray] = []
@@ -618,171 +1141,34 @@ def extract_byranges_signal(
 	strands_meta: list[np.ndarray] = []
 	names_meta: list[np.ndarray] = []
 
-	for contig, group in ranges_df.groupby(contig_col, observed=True):
-		if contig not in root:
+	if max_workers > 1 and len(contig_groups) > 1:
+		with ThreadPoolExecutor(max_workers=max_workers) as pool:
+			futures = [pool.submit(_extract_contig_group, contig, group) for contig, group in contig_groups]
+			results = [future.result() for future in as_completed(futures)]
+	else:
+		results = [_extract_contig_group(contig, group) for contig, group in contig_groups]
+
+	for result in results:
+		if result is None:
 			continue
-
-		orig_idx = group.index.to_numpy()
-		starts = np.asarray(group[start_col], dtype=np.int64)
-		ends = np.asarray(group[end_col], dtype=np.int64)
-		strands = np.asarray(group["Strand"], dtype=object) if has_strand else None
-		names = np.asarray(group[name_col], dtype=object) if name_col is not None else None
-
-		# Select source array: forced strand, strand-aware per-interval, or total
-		use_forced_strand = (
-			force_strand in ("+", "-")
-			and f"{contig}_fwd" in root
-			and f"{contig}_rev" in root
-		)
-		use_stranded = (
-			not use_forced_strand
-			and strand_aware
-			and has_strand
-			and f"{contig}_fwd" in root
-			and f"{contig}_rev" in root
-		)
-		if use_forced_strand:
-			akey = f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev"
-			arr = da.from_zarr(root[akey])[sample_indices, :].transpose(1, 0).astype(np.float32)
-		elif use_stranded:
-			arr_fwd = da.from_zarr(root[f"{contig}_fwd"])[sample_indices, :].transpose(1, 0).astype(np.float32)
-			arr_rev = da.from_zarr(root[f"{contig}_rev"])[sample_indices, :].transpose(1, 0).astype(np.float32)
-			arr = arr_fwd  # used for shape/length queries; replaced per-interval below
-		else:
-			arr = da.from_zarr(root[contig])[sample_indices, :].transpose(1, 0)
-		# Extraction introduces NaNs (padding/masking), so use a float dtype.
-		if not np.issubdtype(arr.dtype, np.floating):
-			arr = arr.astype(np.float32)
-		arr_len = int(arr.shape[0])
-
-		# Keep existing semantics: clip for validity, but store original start/end metadata.
-		clipped_starts = np.maximum(starts, 0)
-		clipped_ends = np.minimum(ends, arr_len)
-		valid = clipped_ends > clipped_starts
-		if not np.all(valid):
-			orig_idx = orig_idx[valid]
-			starts = starts[valid]
-			ends = ends[valid]
-			clipped_starts = clipped_starts[valid]
-			clipped_ends = clipped_ends[valid]
-			if has_strand:
-				strands = strands[valid]
-			if names is not None:
-				names = names[valid]
-			group = group.loc[valid]
-
-		if starts.size == 0:
-			continue
-
-		if _total_width is not None:
-			if anchor == AnchorPoint.MIDPOINT:
-				anchor_pos = (starts + ends) // 2
-			elif anchor == AnchorPoint.START:
-				anchor_pos = np.where(strands == "-", ends, starts) if has_strand else starts
-			elif anchor == AnchorPoint.END:
-				anchor_pos = np.where(strands == "-", starts, ends) if has_strand else ends
-			else:
-				raise ValueError(f"Unknown anchor point: {anchor}")
-
-			extract_starts = anchor_pos - _upstream
-			pad_left = int(max(0, -int(extract_starts.min())))
-			pad_right = int(max(0, int(extract_starts.max() + _total_width) - arr_len))
-
-			if use_stranded:
-				if pad_left or pad_right:
-					arr_fwd = da.pad(arr_fwd, ((pad_left, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
-					arr_rev = da.pad(arr_rev, ((pad_left, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
-				start_idx = (extract_starts + pad_left).astype(np.int64)
-				offsets = np.arange(_total_width, dtype=np.int64)
-				indices = start_idx[:, None] + offsets[None, :]
-				n_intervals = start_idx.shape[0]
-				gathered_fwd = da.take(arr_fwd, indices.reshape(-1), axis=0).reshape((n_intervals, _total_width, arr_fwd.shape[1]))
-				gathered_rev = da.take(arr_rev, indices.reshape(-1), axis=0).reshape((n_intervals, _total_width, arr_rev.shape[1]))
-				is_plus = da.from_array((strands == "+")[:, None, None])
-				gathered = da.where(is_plus, gathered_fwd, gathered_rev)
-			else:
-				if pad_left or pad_right:
-					arr = da.pad(arr, ((pad_left, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
-				start_idx = (extract_starts + pad_left).astype(np.int64)
-				offsets = np.arange(_total_width, dtype=np.int64)
-				indices = start_idx[:, None] + offsets[None, :]
-				gathered = da.take(arr, indices.reshape(-1), axis=0).reshape(
-					(start_idx.shape[0], _total_width, arr.shape[1])
-				)
-			signal = gathered
-
-			if bin_size is not None:
-				signal = _bin_array(signal, bin_size, agg_func=bin_agg_str, axis=1)
-
-			out = signal
-		else:
-			lengths = clipped_ends - clipped_starts
-			if bin_size is not None:
-				lengths = (lengths // bin_size) * bin_size
-				valid_len = lengths > 0
-				if not np.all(valid_len):
-					orig_idx = orig_idx[valid_len]
-					starts = starts[valid_len]
-					ends = ends[valid_len]
-					clipped_starts = clipped_starts[valid_len]
-					clipped_ends = clipped_ends[valid_len]
-					lengths = lengths[valid_len]
-					if has_strand:
-						strands = strands[valid_len]
-					if names is not None:
-						names = names[valid_len]
-					group = group.loc[valid_len]
-				if lengths.size == 0:
-					continue
-
-			start_idx = clipped_starts.astype(np.int64)
-			offsets = np.arange(target_bases, dtype=np.int64)
-			indices = start_idx[:, None] + offsets[None, :]
-
-			if use_stranded:
-				pad_right = int(max(0, int(start_idx.max() + target_bases) - arr_len))
-				if pad_right:
-					arr_fwd = da.pad(arr_fwd, ((0, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
-					arr_rev = da.pad(arr_rev, ((0, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
-				n_intervals = start_idx.shape[0]
-				gathered_fwd = da.take(arr_fwd, indices.reshape(-1), axis=0).reshape((n_intervals, target_bases, arr_fwd.shape[1]))
-				gathered_rev = da.take(arr_rev, indices.reshape(-1), axis=0).reshape((n_intervals, target_bases, arr_rev.shape[1]))
-				is_plus = da.from_array((strands == "+")[:, None, None])
-				gathered = da.where(is_plus, gathered_fwd, gathered_rev)
-			else:
-				pad_right = int(max(0, int(start_idx.max() + target_bases) - arr_len))
-				if pad_right:
-					arr = da.pad(arr, ((0, pad_right), (0, 0)), mode="constant", constant_values=np.nan)
-				gathered = da.take(arr, indices.reshape(-1), axis=0).reshape(
-					(start_idx.shape[0], target_bases, arr.shape[1])
-				)
-
-			mask = offsets[None, :] < lengths[:, None]
-			mask_da = da.from_array(mask, chunks=(min(mask.shape[0], 256), mask.shape[1]))
-			signal = da.where(mask_da[:, :, None], gathered, np.nan)
-
-			if bin_size is not None:
-				signal = _bin_array(signal, bin_size, agg_func=bin_agg_str, axis=1)
-
-			out = signal
-
+		out, orig_idx, starts, ends, contig_meta, strands, names = result
 		outputs.append(out)
 		idx_order.append(orig_idx)
 		starts_meta.append(starts)
 		ends_meta.append(ends)
-		contigs_meta.append(np.asarray([contig] * starts.shape[0]))
+		contigs_meta.append(contig_meta)
 		if has_strand:
 			strands_meta.append(strands)
-		if names is not None:
+		if name_col is not None and names is not None:
 			names_meta.append(names)
 
 	if not outputs:
 		raise ValueError("No valid intervals found for extraction")
 
-	stacked = da.concatenate(outputs, axis=0)
+	stacked = np.concatenate(outputs, axis=0)
 	range_index = np.concatenate(idx_order)
 	sort_order = np.argsort(range_index)
-	stacked = da.take(stacked, sort_order, axis=0)
+	stacked = stacked[sort_order]
 
 	starts_cat = np.concatenate(starts_meta)[sort_order]
 	ends_cat = np.concatenate(ends_meta)[sort_order]
