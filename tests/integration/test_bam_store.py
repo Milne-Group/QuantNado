@@ -292,6 +292,20 @@ def test_extract_region_as_numpy(tmp_path, chromsizes, sample_names, monkeypatch
     np.testing.assert_array_equal(np_result, xr_result.values)
 
 
+def test_extract_region_normalise_cpm(tmp_path, chromsizes, sample_names, monkeypatch):
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    store = BamStore(tmp_path / "ds", chromsizes, sample_names)
+    store.process_samples(["1", "2"])
+
+    region = store.extract_region(
+        "chr1:0-2",
+        normalise="cpm",
+        library_sizes={"s1": 1_000_000, "s2": 2_000_000},
+    )
+    np.testing.assert_allclose(region.values, np.array([[1.0, 1.0], [1.0, 1.0]]))
+    assert region.attrs["normalised"] == "cpm"
+
+
 def test_extract_region_metadata_coordinates(tmp_path, chromsizes, sample_names, monkeypatch):
     monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)

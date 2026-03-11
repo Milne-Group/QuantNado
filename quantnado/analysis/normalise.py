@@ -24,6 +24,7 @@ Examples
 """
 
 from __future__ import annotations
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -303,14 +304,27 @@ def _normalise_xr_dataarray(
     method: str,
     lib_sizes: pd.Series,
 ) -> xr.DataArray:
+    """
+    Normalise a per-position / binned xr.DataArray across the sample axis.
+
+    Assumes the last axis of `data` is the sample axis (signal layout:
+    (interval, position/bin, sample)). `method` is one of {'cpm','rpkm'}.
+    `lib_sizes` is a pd.Series indexed by sample label (or compatible with
+    _scale_per_sample implementation).
+
+    Returns a DataArray with the same dims/coords but normalized values and
+    `attrs["normalised"] = method`.
+    """
+
     if method == "tpm":
         raise ValueError(
             "TPM is not defined for per-position signal (extract() output). "
             "Use 'cpm' or 'rpkm' for signal tracks, or normalise a count matrix instead."
         )
 
+    # sample labels and per-sample scale (function expected to return 1D array-like)
     sample_labels = list(data["sample"].values)
-    scale = _scale_per_sample(lib_sizes, sample_labels)  # (n_samples,)
+    scale = _scale_per_sample(lib_sizes, sample_labels)  # expected shape: (n_samples,)
 
     arr = data.data
     if not isinstance(arr, da.Array):
@@ -318,20 +332,46 @@ def _normalise_xr_dataarray(
     if not np.issubdtype(arr.dtype, np.floating):
         arr = arr.astype(np.float32)
 
-    # signal dims: (interval, position/bin, sample) — scale over last axis
-    scale_da = da.from_array(scale, chunks=-1).reshape(1, 1, -1)
+    # sanity checks
+    if "sample" not in data.dims:
+        raise ValueError("Input DataArray must have a 'sample' dimension.")
+    n_samples = int(data.sizes["sample"])
+    scale = np.asarray(scale)
+    if scale.ndim != 1:
+        raise ValueError(f"Scale must be 1D, got shape {scale.shape}.")
+    if scale.shape[0] != n_samples:
+        raise ValueError(f"Scale length ({scale.shape[0]}) does not match number of samples ({n_samples}).")
+
+    # Build reshape shape so scale broadcasts over the last axis of `arr`,
+    # regardless of number of leading axes.
+    # Example: arr.ndim == 3 -> reshape_shape = (1, 1, -1)
+    reshape_shape = tuple([1] * (arr.ndim - 1) + [-1])
+
+    # create dask array for scale with a single chunk spanning the sample axis
+    scale_da = da.from_array(scale, chunks=-1).reshape(reshape_shape)
+
+    # normalise across last axis
     normed_arr = arr / scale_da
 
     if method == "rpkm":
         # Infer bin size in kb from the position/bin coordinate spacing.
         # For 50bp bins: spacing = 50 → bin_size_kb = 0.05
         # For per-position signal (no binning): spacing = 1bp → bin_size_kb = 0.001
-        pos_dim = next((d for d in data.dims if d in ("relative_position", "bin", "position")), None)
+        pos_dim: str | None = next(
+            (d for d in data.dims if d in ("relative_position", "bin", "position")), None
+        )
         if pos_dim is not None and data.sizes[pos_dim] > 1:
             coords = data.coords[pos_dim].values
-            bin_size_kb = abs(float(coords[1] - coords[0])) / 1000.0
+            # coords might be non-numeric (but normally numeric); cast safely
+            try:
+                spacing = float(coords[1] - coords[0])
+                bin_size_kb = abs(spacing) / 1000.0
+            except Exception:
+                # fallback: assume 1 bp if we cannot compute spacing
+                bin_size_kb = 1.0 / 1000.0
         else:
             bin_size_kb = 1.0 / 1000.0  # assume 1bp
+
         normed_arr = normed_arr / bin_size_kb
 
     result = xr.DataArray(

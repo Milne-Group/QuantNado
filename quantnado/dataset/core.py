@@ -341,6 +341,9 @@ class BaseStore:
         samples: list[str] | list[int] | None = None,
         as_xarray: bool = True,
         strand: str | None = None,
+        normalise: str | None = None,
+        normalize: str | None = None,
+        library_sizes: pd.Series | dict | None = None,
     ) -> xr.DataArray | np.ndarray:
         """
         Extract signal data for a specific genomic region.
@@ -367,6 +370,14 @@ class BaseStore:
             with ``stranded`` set. ``"+"`` returns sense-strand coverage from
             the ``{chrom}_fwd`` array; ``"-"`` returns antisense coverage from
             ``{chrom}_rev``. If None (default), returns total coverage.
+        normalise : {"cpm", "rpkm"}, optional
+            Normalise the extracted signal before returning it. If omitted,
+            raw coverage is returned.
+        normalize : {"cpm", "rpkm"}, optional
+            American-English alias for ``normalise``.
+        library_sizes : pd.Series or dict, optional
+            Total mapped reads per sample, indexed by sample name. Overrides
+            automatic lookup from the store when ``normalise`` is used.
         
         Returns
         -------
@@ -381,6 +392,10 @@ class BaseStore:
             If any requested sample is incomplete.
         """
         from ..utils import parse_genomic_region
+
+        if normalise is not None and normalize is not None and normalise != normalize:
+            raise ValueError("Specify only one normalisation method: 'normalise' or 'normalize'")
+        normalise = normalise if normalise is not None else normalize
         
         # Parse region or use separate parameters
         if region is not None and chrom is not None:
@@ -475,10 +490,29 @@ class BaseStore:
             zarr_array = self.root[array_key]
         else:
             zarr_array = self.root[chrom]
-        
+            
         if not as_xarray:
             # Return computed numpy array (eagerly slice zarr)
-            return zarr_array[sample_indices.tolist(), start:end]
+            result_np = zarr_array[sample_indices.tolist(), start:end]
+            if normalise is None:
+                return result_np
+
+            from ..analysis.normalise import normalise as _normalise
+
+            result_xr = xr.DataArray(
+                result_np,
+                dims=("sample", "position"),
+                coords={
+                    "sample": sample_names,
+                    "position": np.arange(start, end),
+                },
+            )
+            return _normalise(
+                result_xr,
+                self,
+                method=normalise,
+                library_sizes=library_sizes,
+            ).values
         
         # Wrap in xarray DataArray with lazy dask array (lazy slice)
         # Default chunking: get from root attrs or use DEFAULT_CHUNK_LEN
@@ -514,7 +548,17 @@ class BaseStore:
             },
         )
         
-        return da_xr
+        if normalise is None:
+            return da_xr
+
+        from ..analysis.normalise import normalise as _normalise
+
+        return _normalise(
+            da_xr,
+            self,
+            method=normalise,
+            library_sizes=library_sizes,
+        )
 
 
 
