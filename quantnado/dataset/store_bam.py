@@ -543,6 +543,13 @@ class BamStore:
             fill_value=0,
             overwrite=True,
         )
+        self.meta.create_array(
+            name="mean_read_length",
+            shape=(self.n_samples,),
+            dtype=np.float32,
+            fill_value=np.nan,
+            overwrite=True,
+        )
 
         if any(v for v in self._strandedness_map.values() if v):
             for chrom, size in self.chromsizes.items():
@@ -627,6 +634,18 @@ class BamStore:
         reads = self.meta["total_reads"][:].astype(float)
         reads[~self.completed_mask] = np.nan
         return pd.Series(reads, index=self.sample_names, name="library_size")
+
+    @property
+    def mean_read_lengths(self) -> pd.Series | None:
+        """Mean read length per sample, estimated from up to 10 000 reads per BAM.
+
+        Returns ``None`` for stores built before this field was added.
+        """
+        if "mean_read_length" not in self.meta:
+            return None
+        lengths = self.meta["mean_read_length"][:].astype(float)
+        lengths[~self.completed_mask] = np.nan
+        return pd.Series(lengths, index=self.sample_names, name="mean_read_length")
 
     def _process_chromosome(
         self, bam_file: str, contig: str, contig_size: int, library_type: str | None = None
@@ -736,11 +755,20 @@ class BamStore:
         )
 
         total_reads: int | None = None
+        mean_read_length: float | None = None
         try:
             with pysam.AlignmentFile(bam_file, "rb") as bam:
                 total_reads = bam.mapped
+                lengths = []
+                for read in bam.fetch():
+                    if not read.is_unmapped and read.query_length:
+                        lengths.append(read.query_length)
+                        if len(lengths) >= 10_000:
+                            break
+                if lengths:
+                    mean_read_length = float(np.mean(lengths))
         except Exception as e:
-            logger.warning(f"Could not read total mapped reads for {bam_file}: {e}")
+            logger.warning(f"Could not compute BAM stats for {bam_file}: {e}")
 
         return sample_idx, {
             "sparsity": float(np.mean(sparsity_values)) if sparsity_values else np.nan,
@@ -749,6 +777,7 @@ class BamStore:
             "chr_fwd": chr_fwd,
             "chr_rev": chr_rev,
             "total_reads": total_reads,
+            "mean_read_length": mean_read_length,
         }
 
     def _write_sample_result(self, sample_idx: int, results: dict[str, Any]) -> None:
@@ -773,6 +802,9 @@ class BamStore:
 
         if results.get("total_reads") is not None and "total_reads" in self.meta:
             self.meta["total_reads"][sample_idx] = results["total_reads"]
+
+        if results.get("mean_read_length") is not None and "mean_read_length" in self.meta:
+            self.meta["mean_read_length"][sample_idx] = results["mean_read_length"]
 
         self.meta["completed"][sample_idx] = True
 

@@ -37,6 +37,44 @@ from loguru import logger
 # Library size retrieval
 # ---------------------------------------------------------------------------
 
+def get_mean_read_lengths(dataset) -> pd.Series:
+    """
+    Return mean read length per sample as a ``pd.Series`` indexed by sample name.
+
+    Reads ``metadata/mean_read_length`` from the underlying Zarr store (written during
+    BAM construction from up to 10 000 sampled reads).  Raises ``RuntimeError`` for
+    older stores that pre-date this field.
+
+    Parameters
+    ----------
+    dataset : QuantNado | BamStore | MultiomicsStore
+
+    Returns
+    -------
+    pd.Series
+        Mean read lengths in base-pairs, indexed by sample name.
+
+    Raises
+    ------
+    RuntimeError
+        If the store does not contain ``mean_read_length`` metadata.
+    """
+    bam_store = _resolve_bam_store(dataset)
+
+    meta = bam_store.meta
+    if "mean_read_length" not in meta:
+        raise RuntimeError(
+            "This store does not contain 'mean_read_length' metadata (it was built before "
+            "read-length tracking was added). Either rebuild the store from BAM files, "
+            "or pass mean_read_lengths explicitly to normalise()."
+        )
+
+    lengths = meta["mean_read_length"][:].astype(np.float64)
+    completed = bam_store.completed_mask
+    lengths[~completed] = np.nan
+    return pd.Series(lengths, index=bam_store.sample_names, name="mean_read_length")
+
+
 def get_library_sizes(dataset) -> pd.Series:
     """
     Return total mapped reads per sample as a ``pd.Series`` indexed by sample name.
@@ -102,6 +140,7 @@ def normalise(
     method: str = "cpm",
     library_sizes: pd.Series | dict | None = None,
     feature_lengths: pd.Series | np.ndarray | None = None,
+    mean_read_lengths: pd.Series | dict | None = None,
 ) -> xr.Dataset | xr.DataArray | pd.DataFrame:
     """
     Normalise coverage signal or feature counts.
@@ -163,12 +202,22 @@ def normalise(
     if method in {"cpm", "rpkm"}:
         lib_sizes = _resolve_library_sizes(dataset, library_sizes)
 
+    # Auto-resolve mean_read_lengths for DataArray RPKM
+    if isinstance(data, xr.DataArray) and method == "rpkm" and mean_read_lengths is None and dataset is not None:
+        try:
+            mean_read_lengths = get_mean_read_lengths(dataset)
+        except (RuntimeError, AttributeError):
+            pass  # falls back to bin_size with a warning in _normalise_xr_dataarray
+
+    if isinstance(mean_read_lengths, dict):
+        mean_read_lengths = pd.Series(mean_read_lengths, name="mean_read_length")
+
     if isinstance(data, pd.DataFrame):
         return _normalise_dataframe(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths)
     if isinstance(data, xr.Dataset):
         return _normalise_xr_dataset(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths)
     if isinstance(data, xr.DataArray):
-        return _normalise_xr_dataarray(data, method=method, lib_sizes=lib_sizes)
+        return _normalise_xr_dataarray(data, method=method, lib_sizes=lib_sizes, mean_read_lengths=mean_read_lengths)
 
     raise TypeError(
         f"data must be xr.Dataset, xr.DataArray, or pd.DataFrame, got {type(data).__name__}"
@@ -302,6 +351,7 @@ def _normalise_xr_dataarray(
     data: xr.DataArray,
     method: str,
     lib_sizes: pd.Series,
+    mean_read_lengths: pd.Series | None = None,
 ) -> xr.DataArray:
     if method == "tpm":
         raise ValueError(
@@ -323,16 +373,35 @@ def _normalise_xr_dataarray(
     normed_arr = arr / scale_da
 
     if method == "rpkm":
-        # Infer bin size in kb from the position/bin coordinate spacing.
-        # For 50bp bins: spacing = 50 → bin_size_kb = 0.05
-        # For per-position signal (no binning): spacing = 1bp → bin_size_kb = 0.001
-        pos_dim = next((d for d in data.dims if d in ("relative_position", "bin", "position")), None)
-        if pos_dim is not None and data.sizes[pos_dim] > 1:
-            coords = data.coords[pos_dim].values
-            bin_size_kb = abs(float(coords[1] - coords[0])) / 1000.0
+        # Resolve bin_size from attrs (set by extract()) or infer from coordinate spacing.
+        bin_size_bp = data.attrs.get("bin_size")
+        if bin_size_bp is None:
+            pos_dim = next((d for d in data.dims if d in ("relative_position", "bin", "position")), None)
+            if pos_dim is not None and data.sizes[pos_dim] > 1:
+                coords = data.coords[pos_dim].values
+                bin_size_bp = abs(float(coords[1] - coords[0]))
+            else:
+                bin_size_bp = 1.0  # assume 1bp
+        bin_size_bp = float(bin_size_bp)
+
+        # Effective feature length = min(bin_size, read_length):
+        #   - bin_size <= read_length (e.g. bin=1, L=150): long reads span the whole bin,
+        #     so mean_depth ≈ reads_in_bin → RPKM = CPM / bin_size_kb
+        #   - bin_size > read_length (e.g. bin=200, L=50): depth = N * L / B →
+        #     reads_in_bin = depth * B / L → RPKM = CPM / read_length_kb
+        if mean_read_lengths is not None:
+            missing = set(sample_labels) - set(mean_read_lengths.index)
+            if missing:
+                raise ValueError(f"mean_read_lengths missing for samples: {sorted(missing)}")
+            effective_lengths_kb = np.array(
+                [min(bin_size_bp, float(mean_read_lengths[s])) for s in sample_labels],
+                dtype=np.float64,
+            ) / 1000.0
         else:
-            bin_size_kb = 1.0 / 1000.0  # assume 1bp
-        normed_arr = normed_arr / bin_size_kb
+            effective_lengths_kb = np.full(len(sample_labels), bin_size_bp / 1000.0, dtype=np.float64)
+
+        rl_da = da.from_array(effective_lengths_kb, chunks=-1).reshape(1, 1, -1)
+        normed_arr = normed_arr / rl_da
 
     result = xr.DataArray(
         normed_arr,
