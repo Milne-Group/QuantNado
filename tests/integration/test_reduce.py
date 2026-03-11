@@ -133,6 +133,81 @@ class TestExtractBinning:
             result = extract_byranges_signal(simple_store_extract, ranges_df=ranges, fixed_width=20, bin_size=10, bin_agg=method)
             assert np.all(np.isfinite(result.compute()))
 
+    def test_many_intervals_variable_length_binning_preserves_order_and_values(self, simple_store_extract):
+        starts = np.arange(600, dtype=np.int64) % 90
+        ranges = pd.DataFrame(
+            {
+                "Chromosome": ["chr1"] * starts.size,
+                "Start": starts,
+                "End": starts + 10,
+            }
+        )
+        result = extract_byranges_signal(simple_store_extract, ranges_df=ranges, bin_size=5)
+        data = result.compute().values
+
+        assert result.shape == (600, 2, 2)
+        np.testing.assert_array_equal(result.coords["start"].values, starts)
+        np.testing.assert_array_equal(result.coords["end"].values, starts + 10)
+        np.testing.assert_allclose(data[:, 0, 0], starts + 2)
+        np.testing.assert_allclose(data[:, 1, 0], starts + 7)
+        np.testing.assert_allclose(data[:, 0, 1], (starts + 2) * 2)
+        np.testing.assert_allclose(data[:, 1, 1], (starts + 7) * 2)
+
+    def test_many_intervals_fixed_width_binning_preserves_values(self, simple_store_extract):
+        starts = (np.arange(600, dtype=np.int64) % 76) + 5
+        ranges = pd.DataFrame(
+            {
+                "Chromosome": ["chr1"] * starts.size,
+                "Start": starts,
+                "End": starts + 10,
+            }
+        )
+        result = extract_byranges_signal(
+            simple_store_extract,
+            ranges_df=ranges,
+            fixed_width=20,
+            anchor=AnchorPoint.MIDPOINT,
+            bin_size=5,
+        )
+        data = result.compute().values
+
+        assert result.shape == (600, 4, 2)
+        np.testing.assert_allclose(data[:, 0, 0], starts - 3)
+        np.testing.assert_allclose(data[:, 1, 0], starts + 2)
+        np.testing.assert_allclose(data[:, 2, 0], starts + 7)
+        np.testing.assert_allclose(data[:, 3, 0], starts + 12)
+        np.testing.assert_allclose(data[:, :, 1], data[:, :, 0] * 2)
+
+
+class TestExtractStrandedBatching:
+    def test_many_intervals_strand_aware_uses_expected_arrays(self, simple_store_extract_stranded):
+        starts = np.arange(600, dtype=np.int64) % 90
+        strands = np.where(np.arange(starts.size) % 2 == 0, "+", "-")
+        ranges = pd.DataFrame(
+            {
+                "Chromosome": ["chr1"] * starts.size,
+                "Start": starts,
+                "End": starts + 10,
+                "Strand": strands,
+            }
+        )
+        result = extract_byranges_signal(
+            simple_store_extract_stranded,
+            ranges_df=ranges,
+            bin_size=5,
+            strand_aware=True,
+        )
+        data = result.compute().values
+
+        expected_s1 = np.where(strands == "+", starts + 2, starts + 1002)
+        expected_s1_bin2 = np.where(strands == "+", starts + 7, starts + 1007)
+
+        assert result.shape == (600, 2, 2)
+        np.testing.assert_array_equal(result.coords["strand"].values, strands)
+        np.testing.assert_allclose(data[:, 0, 0], expected_s1)
+        np.testing.assert_allclose(data[:, 1, 0], expected_s1_bin2)
+        np.testing.assert_allclose(data[:, :, 1], data[:, :, 0] * 2)
+
 
 # ---------------------------------------------------------------------------
 # reduce_byranges_signal

@@ -101,7 +101,7 @@ class QuantNado:
     # ========== Construction ==========
 
     @classmethod
-    def open(cls, path: str | Path, read_only: bool = True) -> "QuantNado":
+    def open_dataset(cls, path: str | Path, read_only: bool = True) -> "QuantNado":
         """
         Open an existing QuantNado dataset.
 
@@ -126,6 +126,9 @@ class QuantNado:
         if zarr_path.exists():
             return cls(BamStore.open(zarr_path, read_only=read_only))
         return cls(MultiomicsStore.open(path))
+
+    # Alias for backward compatibility (optional, but requested rename)
+    open = open_dataset
 
     @classmethod
     def from_bam_files(
@@ -591,6 +594,9 @@ class QuantNado:
         end: int | None = None,
         samples: list[str] | list[int] | None = None,
         as_xarray: bool = True,
+        normalise: str | None = None,
+        normalize: str | None = None,
+        library_sizes: pd.Series | dict | None = None,
     ) -> xr.DataArray | Any:
         """
         Extract coverage signal for a specific genomic region.
@@ -605,6 +611,14 @@ class QuantNado:
             Sample names or indices. If None, uses all completed samples.
         as_xarray : bool, default True
             Return DataArray; if False return numpy array.
+        normalise : {"cpm", "rpkm"}, optional
+            Normalise the extracted signal before returning it. If omitted,
+            raw coverage is returned.
+        normalize : {"cpm", "rpkm"}, optional
+            American-English alias for ``normalise``.
+        library_sizes : pd.Series or dict, optional
+            Total mapped reads per sample, indexed by sample name. Overrides
+            automatic lookup from the store when ``normalise`` is used.
 
         Returns
         -------
@@ -617,6 +631,9 @@ class QuantNado:
             end=end,
             samples=samples,
             as_xarray=as_xarray,
+            normalise=normalise,
+            normalize=normalize,
+            library_sizes=library_sizes,
         )
 
     # ========== Analysis Methods ==========
@@ -681,6 +698,7 @@ class QuantNado:
         samples: list[str] | None = None,
         strand_aware: bool = False,
         strand: str | None = None,
+        max_workers: int = 1,
     ) -> xr.DataArray:
         """
         Extract signal over genomic ranges.
@@ -728,6 +746,8 @@ class QuantNado:
             annotation.  Use this to obtain separate fwd/rev DataArrays for
             :py:meth:`metaplot` ``data_rev`` or :py:meth:`tornadoplot` ``data_rev``.
             Coverage only; ignored for methylation.
+        max_workers : int, default 1
+            Number of chromosome groups to extract in parallel for coverage data.
 
         Returns
         -------
@@ -773,6 +793,7 @@ class QuantNado:
             sample_indices=_sample_indices,
             strand_aware=strand_aware,
             force_strand=strand,
+            max_workers=max_workers,
         )
 
     def count_features(

@@ -81,3 +81,27 @@ def simple_store_extract(tmp_path, monkeypatch):
     store = BamStore(tmp_path / "ds_extract", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     return store
+
+
+@pytest.fixture
+def simple_store_extract_stranded(tmp_path, monkeypatch):
+    """Stranded BamStore with deterministic forward and reverse signals."""
+    chromsizes = {"chr1": 100}
+    sample_names = ["s1", "s2"]
+
+    def _fake_chrom(self, bam_file, contig, size, library_type=None):
+        val = int(bam_file)
+        base = np.arange(size, dtype=np.uint16) * val
+        fwd = np.arange(size, dtype=np.uint32) * val
+        rev = (1000 + np.arange(size, dtype=np.uint32)) * val
+        return contig, base, 0.0, fwd, rev
+
+    monkeypatch.setattr(BamStore, "_process_chromosome", _fake_chrom)
+    store = BamStore(
+        tmp_path / "ds_extract_stranded",
+        chromsizes,
+        sample_names,
+        stranded={"s1": "F", "s2": "F"},
+    )
+    store.process_samples(["1", "2"])
+    return store

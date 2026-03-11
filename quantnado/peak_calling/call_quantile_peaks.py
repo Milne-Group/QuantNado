@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import pyranges1 as pr
-from crested import import_bigwigs
+# from crested import import_bigwigs (lazy import in call_peaks_from_bigwig_dir)
 from loguru import logger
 
 
@@ -112,6 +112,7 @@ def call_peaks_from_bigwig_dir(
     logger.info("Importing all bigWig signals...")
 
     
+    from crested import import_bigwigs
     adata = import_bigwigs(
         regions_file=str(tmp_regions_bed),
         bigwigs_folder=str(bigwig_dir),

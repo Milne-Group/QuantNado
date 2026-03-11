@@ -5,9 +5,10 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from .store_bam import BamStore, DEFAULT_CHUNK_LEN
+from .store_bam import BamStore
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
+from .constants import DEFAULT_CHUNK_LEN
 
 
 class MultiomicsStore:

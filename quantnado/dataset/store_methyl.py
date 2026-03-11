@@ -13,10 +13,9 @@ from loguru import logger
 from zarr.codecs import BloscCodec
 from zarr.storage import LocalStore
 
-from .metadata import extract_metadata
+from .core import BaseStore
+from .constants import DEFAULT_CHUNK_LEN
 from .store_bam import _compute_sample_hash, _to_str_list
-
-DEFAULT_CHUNK_LEN = 65536
 
 
 def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[str, pd.DataFrame]:
@@ -39,8 +38,8 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
     path = Path(path)
     with open(path) as _fh:
         _data = "".join(
-            l for l in _fh 
-            if not (l.startswith(("track ", "browser ")) or "type=" in l)
+            line for line in _fh 
+            if not (line.startswith(("track ", "browser ")) or "type=" in line)
         )
     df = pd.read_csv(io.StringIO(_data), sep="\t", header=None, dtype=str)
     df = df.reset_index(drop=True)
@@ -247,7 +246,7 @@ def _read_split_cxreport(
     return {chrom: grp[cols].reset_index(drop=True) for chrom, grp in agg.groupby("chrom")}
 
 
-class MethylStore:
+class MethylStore(BaseStore):
     """
     Zarr-backed methylation store for CpG-level data from MethylDackel bedGraph files.
 
@@ -281,8 +280,19 @@ class MethylStore:
         read_only: bool = False,
         mc_hmc_split: bool = False,
     ) -> None:
-        self.store_path = self._normalize_path(store_path)
-        self.sample_names = [str(s) for s in sample_names]
+        self.path = Path(store_path)
+        self.store_path = self._normalize_path(self.path)
+
+        # Initialize BaseStore attributes
+        if self.store_path.exists() and not overwrite:
+            self.root = zarr.open_group(str(self.store_path), mode="r" if read_only else "r+")
+            self._init_common_attributes(sample_names)
+        else:
+            self.sample_names = [str(s) for s in sample_names]
+            self._setup_sample_lookup()
+            self.completed_mask_raw = np.zeros(len(self.sample_names), dtype=bool)
+            self._metadata_cache = None
+
         self.n_samples = len(self.sample_names)
         self.sample_hash = _compute_sample_hash(self.sample_names)
         self.compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
@@ -786,7 +796,7 @@ class MethylStore:
 
         all_sample_names = list(methyldackel_sample_names) + list(mc_hmc_sample_names)
         if len(set(all_sample_names)) != len(all_sample_names):
-            raise ValueError(f"Duplicate sample names across bedgraph and CXreport files")
+            raise ValueError("Duplicate sample names across bedgraph and CXreport files")
 
         store = cls(
             store_path=store_path,
@@ -887,11 +897,6 @@ class MethylStore:
             )
             self.root.attrs[f"metadata_{col}"] = values
             logger.info(f"Updated metadata column: {col}")
-
-    def get_metadata(self) -> pd.DataFrame:
-        """Retrieve all metadata columns as a DataFrame."""
-        return extract_metadata(self.root)
-
     # ---- Data access ----
 
     def get_positions(self, chrom: str) -> np.ndarray:

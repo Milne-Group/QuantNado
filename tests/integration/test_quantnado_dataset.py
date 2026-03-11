@@ -7,7 +7,7 @@ import pytest
 import zarr
 import xarray as xr
 
-from quantnado.analysis.core import QuantNadoDataset as AnalysisCore
+from quantnado.dataset.core import BaseStore as AnalysisCore
 from quantnado.dataset.core import QuantNadoDataset as DatasetCore
 
 
@@ -273,6 +273,26 @@ class TestExtractRegion:
         result = ds.extract_region("chr1:10-20", as_xarray=False)
         assert isinstance(result, np.ndarray)
         assert result.shape == (2, 10)
+
+    def test_normalise_cpm_returns_scaled_xarray(self, ds):
+        result = ds.extract_region(
+            "chr1:0-3",
+            normalise="cpm",
+            library_sizes={"s1": 1_000_000, "s2": 2_000_000},
+        )
+        expected = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
+        np.testing.assert_allclose(result.values, expected)
+        assert result.attrs["normalised"] == "cpm"
+
+    def test_normalise_cpm_returns_scaled_numpy(self, ds):
+        result = ds.extract_region(
+            "chr1:0-3",
+            as_xarray=False,
+            normalise="cpm",
+            library_sizes={"s1": 1_000_000, "s2": 2_000_000},
+        )
+        expected = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
+        np.testing.assert_allclose(result, expected)
 
     def test_samples_by_name(self, ds):
         result = ds.extract_region("chr1:0-10", samples=["s1"])
