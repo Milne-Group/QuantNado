@@ -124,7 +124,7 @@ Full documentation is available at [milne-group.github.io/QuantNado](https://mil
 
 | Dependency | Purpose |
 |---|---|
-| `zarr`, `icechunk` | Zarr v3 storage backend |
+| `zarr`| Zarr v3 storage backend |
 | `xarray`, `dask` | Lazy array operations |
 | `pandas`, `numpy` | Data structures |
 | `pysam`, `bamnado` | BAM file I/O |
