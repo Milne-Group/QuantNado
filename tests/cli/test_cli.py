@@ -45,7 +45,9 @@ def test_create_dataset_help():
 def test_call_peaks_help():
     result = runner.invoke(app, ["call-peaks", "--help"])
     assert result.exit_code == 0
-    assert "--bigwig-dir" in _strip_ansi(result.output)
+    output = _strip_ansi(result.output)
+    assert "--zarr" in output
+    assert "--window-overlap" in output
 
 
 # ---------------------------------------------------------------------------
@@ -252,21 +254,17 @@ def test_call_peaks_basic(tmp_path, monkeypatch):
         calls.append(kwargs)
 
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_bigwig_dir",
+        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
         fake_call_peaks,
     )
 
-    bw_dir = tmp_path / "bigwigs"
-    bw_dir.mkdir()
-    chromsizes = tmp_path / "hg38.sizes"
-    chromsizes.write_text("chr1\t248956422\n")
+    zarr_path = tmp_path / "input.zarr"
     out_dir = tmp_path / "peaks"
 
     result = runner.invoke(app, [
         "call-peaks",
-        "--bigwig-dir", str(bw_dir),
+        "--zarr", str(zarr_path),
         "--output-dir", str(out_dir),
-        "--chromsizes", str(chromsizes),
         "--quantile", "0.98",
         "--log-file", str(tmp_path / "peaks.log"),
     ])
@@ -277,14 +275,13 @@ def test_call_peaks_basic(tmp_path, monkeypatch):
 
 def test_call_peaks_propagates_exception(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_bigwig_dir",
+        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("peak error")),
     )
     result = runner.invoke(app, [
         "call-peaks",
-        "--bigwig-dir", str(tmp_path),
+        "--zarr", str(tmp_path / "input.zarr"),
         "--output-dir", str(tmp_path / "out"),
-        "--chromsizes", str(tmp_path / "cs.txt"),
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code == 1
@@ -473,30 +470,26 @@ def test_call_peaks_blacklist_and_merge_flags(tmp_path, monkeypatch):
         calls.append(kwargs)
 
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_bigwig_dir",
+        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
         fake_call_peaks,
     )
 
-    bw_dir = tmp_path / "bigwigs"
-    bw_dir.mkdir()
-    chromsizes = tmp_path / "hg38.sizes"
-    chromsizes.write_text("chr1\t248956422\n")
+    zarr_path = tmp_path / "input.zarr"
     blacklist = tmp_path / "blacklist.bed"
     blacklist.write_text("")
     out_dir = tmp_path / "peaks"
 
     result = runner.invoke(app, [
         "call-peaks",
-        "--bigwig-dir", str(bw_dir),
+        "--zarr", str(zarr_path),
         "--output-dir", str(out_dir),
-        "--chromsizes", str(chromsizes),
         "--blacklist", str(blacklist),
         "--merge",
         "--log-file", str(tmp_path / "peaks.log"),
     ])
     assert result.exit_code == 0, result.output
     assert calls[0]["merge"] is True
-    assert calls[0]["blacklist_file"] == str(blacklist)
+    assert calls[0]["blacklist_file"] == blacklist
 
 
 def test_combine_metadata_main_merges_csvs(tmp_path):
