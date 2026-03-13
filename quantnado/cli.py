@@ -58,8 +58,9 @@ def call_peaks(
     blacklist: Path | None = typer.Option(None, "--blacklist", help="Path to a BED file with regions to exclude"),
     # quantile options
     tilesize: int = typer.Option(128, "--tilesize", help="[quantile] Size of genomic tiles in bp"),
+    window_overlap: int = typer.Option(8, "--window-overlap", help="[quantile] Overlap between adjacent windows in bp"),
     quantile: float = typer.Option(0.98, "--quantile", help="[quantile] Quantile threshold for peak calling"),
-    merge: bool = typer.Option(False, "--merge/--no-merge", help="[quantile] Merge overlapping peaks after calling"),
+    merge: bool = typer.Option(True, "--merge/--no-merge", help="[quantile] Merge overlapping and adjacent peaks after calling"),
     # seacr options
     control_zarr: Path | None = typer.Option(None, "--control-zarr", help="[seacr] Path to a control (IgG) QuantNado zarr store"),
     fdr_threshold: float = typer.Option(0.01, "--fdr", help="[seacr] Numeric FDR threshold (0–1) used when no control zarr is provided"),
@@ -85,6 +86,7 @@ def call_peaks(
                 output_dir=output_dir,
                 blacklist_file=blacklist,
                 tilesize=tilesize,
+                window_overlap=window_overlap,
                 quantile=quantile,
                 merge=merge,
             )

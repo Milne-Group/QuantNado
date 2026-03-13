@@ -19,12 +19,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+from math import sqrt, pi
 
 import numpy as np
 import pandas as pd
 import pyranges1 as pr
 from loguru import logger
-from scipy import ndimage, stats
+from scipy import ndimage
 
 
 # ---------------------------------------------------------------------------
@@ -57,11 +58,11 @@ def _compute_islands(cov: np.ndarray, chrom: str) -> list[dict]:
         island_cov = cov[istart:iend]
         max_val = float(maxes[idx])
 
-        # Locate the first contiguous run of max signal → MaxRegion
+        # MaxRegion: span from first to last base with max signal (matching shell awk:
+        # when equal-max positions exist, coord extends to cover all of them)
         max_pos = np.where(island_cov == max_val)[0]
         mr_start = istart + int(max_pos[0])
-        gaps = np.where(np.diff(max_pos) > 1)[0]
-        mr_end = istart + int(max_pos[gaps[0]] if len(gaps) else max_pos[-1]) + 1
+        mr_end = istart + int(max_pos[-1]) + 1
         coord = f"{chrom}:{mr_start}-{mr_end}"
 
         # Num = number of constant-value runs (RLE length)
@@ -137,21 +138,56 @@ def _lorenz_peak_value(vec: np.ndarray) -> float:
 
     # Distance from y=x diagonal is proportional to (count − quant)
     candidate = float(sub_vals[np.argmax(sub_count - sub_quant)])
-    fallback = float(sorted_asc[int(0.9 * n)])
+    # R uses sort(vec)[as.integer(0.9*n)] with 1-based indexing → 0-based index floor(0.9*n)-1
+    fallback = float(sorted_asc[int(0.9 * n) - 1])
     return candidate if candidate > fallback else fallback
 
 
-def _mode_via_kde(vec: np.ndarray, cutoff: float) -> float:
-    """Estimate the mode of vec[vec <= cutoff] using a Gaussian KDE.
+def _nrd0_bandwidth(vec: np.ndarray) -> float:
+    """R density() default bandwidth (nrd0) for a 1D sample."""
+    vec = np.asarray(vec, dtype=float)
+    n = len(vec)
+    if n < 2:
+        return 1.0
 
-    Uses Silverman's bandwidth rule to match SEACR_1.3.R's density() default.
+    sd = float(np.std(vec, ddof=1))
+    q75, q25 = np.percentile(vec, [75, 25])
+    iqr = float(q75 - q25)
+    scale = min(sd, iqr / 1.34) if iqr > 0 else sd
+    if scale <= 0:
+        scale = abs(float(vec[0])) if float(vec[0]) != 0 else 1.0
+    return float(0.9 * scale * (n ** (-0.2)))
+
+
+def _mode_via_kde(vec: np.ndarray, cutoff: float) -> float:
+    """Estimate the mode of vec[vec <= cutoff] to mirror R density().
+
+    This uses the same defaults as R's density():
+      - Gaussian kernel
+      - bandwidth = nrd0
+      - n = 512 grid points
+      - grid range extended by cut * bw on both sides (cut=3)
     """
-    sub = vec[vec <= cutoff]
-    if len(sub) < 2:
-        return float(sub[0]) if len(sub) == 1 else float(cutoff)
-    kde = stats.gaussian_kde(sub, bw_method="silverman")
-    grid = np.linspace(float(sub.min()), float(sub.max()), 512)
-    return float(grid[np.argmax(kde(grid))])
+    sub = np.asarray(vec[vec <= cutoff], dtype=float)
+    if len(sub) == 0:
+        return float(cutoff)
+    if len(sub) == 1:
+        return float(sub[0])
+
+    bw = _nrd0_bandwidth(sub)
+    if bw <= 0:
+        return float(np.median(sub))
+
+    n_grid = 512
+    cut = 3.0
+    lo = float(sub.min()) - cut * bw
+    hi = float(sub.max()) + cut * bw
+    grid = np.linspace(lo, hi, n_grid)
+
+    # Gaussian kernel density estimate with explicit bandwidth, matching R's density shape.
+    u = (grid[:, None] - sub[None, :]) / bw
+    y = np.exp(-0.5 * u * u).sum(axis=1) / (len(sub) * bw * sqrt(2.0 * pi))
+    return float(grid[int(np.argmax(y))])
 
 
 def _compute_norm_constant(expvec: np.ndarray, ctrlvec: np.ndarray) -> float:
@@ -293,26 +329,138 @@ def _thresholds_from_control(
     if norm:
         norm_constant = _compute_norm_constant(exp_auc, ctrl_auc)
         ctrl_auc = ctrl_auc * norm_constant
-        logger.debug(f"SEACR normalisation constant: {norm_constant:.4f}")
+        logger.debug(f"\nSEACR normalisation constant: {norm_constant:.4f}")
 
     both_auc = np.concatenate([exp_auc, ctrl_auc])
     exp_sorted = np.sort(exp_auc)
     both_sorted = np.sort(both_auc)
 
-    x = np.sort(np.unique(both_auc))
-    pr = _pctremain(x, exp_sorted, both_sorted)
+    def _pr(vals: np.ndarray) -> np.ndarray:
+        return _pctremain(vals, exp_sorted, both_sorted)
 
-    valid = (pr < 1.0) & ~np.isnan(pr)
+    def _pick_first_tied(values: np.ndarray, metric: np.ndarray) -> float:
+        """Pick first value among ties at metric maximum, matching R's x[which(...)][1]."""
+        max_metric = np.nanmax(metric)
+        idx = np.where(np.isclose(metric, max_metric, rtol=0.0, atol=1e-12))[0]
+        return float(values[int(idx[0])])
+
+    def _relaxed_from(primary: float, domain: np.ndarray) -> float:
+        z = domain[domain <= primary]
+        if len(z) == 0:
+            return primary
+
+        pr_primary = float(_pr(np.array([primary]))[0])
+        pr_z = _pr(z)
+        mid = (pr_primary + float(np.nanmin(pr_z))) / 2.0
+        delta = np.abs(mid - pr_z)
+        z2 = float(z[int(np.where(np.isclose(delta, np.nanmin(delta), rtol=0.0, atol=1e-12))[0][0])])
+
+        if primary != z2:
+            z_sub = z[z > z2]
+            if len(z_sub) == 0:
+                return primary
+            target = float(z_sub.max()) - 0.5 * float(z_sub.max() - z_sub.min())
+            d = np.abs(z_sub - target)
+            return float(z_sub[int(np.where(np.isclose(d, np.nanmin(d), rtol=0.0, atol=1e-12))[0][0])])
+        return primary
+
+    x = np.unique(both_auc)
+    pr_x = _pr(x)
+
+    valid = (pr_x < 1.0) & ~np.isnan(pr_x)
     if not np.any(valid):
         x0 = float(x[-1])
     else:
-        x0 = float(x[valid][np.argmax(pr[valid])])
+        x_valid = x[valid]
+        pr_valid = pr_x[valid]
+        x0 = _pick_first_tied(x_valid, pr_valid)
 
-    z0 = _find_relaxed_threshold(x, pr, x0)
-    x0, z0 = _anti_spurious_check(x, pr, x0, z0)
+    z0 = _relaxed_from(x0, x)
+
+    # Anti-spurious branch — direct translation of SEACR_1.3.R frame/a/a0/b/b0 logic.
+    if len(x) > 1:
+        frame_thresh = x[:-1]
+        frame_pct = pr_x[:-1]
+        frame_diff = np.abs(np.diff(pr_x))
+        frame_valid = ~np.isnan(frame_pct) & ~np.isnan(frame_diff)
+
+        f_thresh = frame_thresh[frame_valid]
+        f_diff = frame_diff[frame_valid]
+
+        if len(f_thresh) > 0:
+            i = 2
+            output = 0.0
+            test3 = 0.99
+            while output == 0.0 and i < 12:
+                test3 = float("0." + ("9" * i))
+                output = float(np.quantile(f_diff, test3))
+                i += 1
+
+            q = float(np.quantile(f_diff, test3))
+            a = f_thresh[(f_diff != 0) & (f_diff < q)]
+
+            if len(a) > 0:
+                pr_a = _pr(a)
+                a_valid = (pr_a < 1.0) & ~np.isnan(pr_a)
+
+                if np.any(a_valid):
+                    a0 = _pick_first_tied(a[a_valid], pr_a[a_valid])
+                    b = a[a <= a0]
+
+                    if len(b) > 0:
+                        pr_a0 = float(_pr(np.array([a0]))[0])
+                        pr_b = _pr(b)
+                        mid_b = (pr_a0 + float(np.nanmin(pr_b))) / 2.0
+                        delta_b = np.abs(mid_b - pr_b)
+                        b2 = float(
+                            b[
+                                int(
+                                    np.where(
+                                        np.isclose(
+                                            delta_b,
+                                            np.nanmin(delta_b),
+                                            rtol=0.0,
+                                            atol=1e-12,
+                                        )
+                                    )[0][0]
+                                )
+                            ]
+                        )
+
+                        if a0 != b2:
+                            b_sub = b[b > b2]
+                            if len(b_sub) > 0:
+                                target_b = float(b_sub.max()) - 0.5 * float(b_sub.max() - b_sub.min())
+                                d_b = np.abs(b_sub - target_b)
+                                b0 = float(
+                                    b_sub[
+                                        int(
+                                            np.where(
+                                                np.isclose(
+                                                    d_b,
+                                                    np.nanmin(d_b),
+                                                    rtol=0.0,
+                                                    atol=1e-12,
+                                                )
+                                            )[0][0]
+                                        )
+                                    ]
+                                )
+                            else:
+                                b0 = a0
+                        else:
+                            b0 = a0
+
+                        max_pr_a = float(np.nanmax(pr_a[a_valid]))
+                        x_valid2 = (pr_x < 1.0) & ~np.isnan(pr_x)
+                        max_pr_x = float(np.nanmax(pr_x[x_valid2])) if np.any(x_valid2) else 0.0
+
+                        if max_pr_x > 0 and (max_pr_a / max_pr_x) > 0.95:
+                            x0 = a0
+                            z0 = b0
 
     # d0: minimum num value where control enrichment exceeds experiment
-    d_vals = np.sort(np.unique(np.concatenate([exp_num, ctrl_num])))
+    d_vals = np.unique(np.concatenate([exp_num, ctrl_num]))
     exp_num_sorted = np.sort(exp_num)
     ctrl_num_sorted = np.sort(ctrl_num)
     pr2 = 1.0 - (_ecdf(exp_num_sorted, d_vals) - _ecdf(ctrl_num_sorted, d_vals))
@@ -340,7 +488,7 @@ def _thresholds_from_fdr(
     x0 = float(np.quantile(exp_auc, 1.0 - fdr))
     z0 = float(np.quantile(exp_num, 1.0 - fdr))
 
-    logger.debug(f"SEACR FDR={fdr} thresholds — stringent AUC: {x0:.4g}, relaxed num: {z0:.4g}")
+    logger.debug(f"\nSEACR FDR={fdr} thresholds — stringent AUC: {x0:.4g}, relaxed num: {z0:.4g}")
     return x0, z0, 0.0
 
 
@@ -357,29 +505,54 @@ def _merge_nearby_islands(df: pd.DataFrame, gap: float) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Assign a group ID: increment whenever chrom changes or gap is exceeded
-    prev_end = df["End"].shift(fill_value=-gap - 1)
-    new_group = (df["Chromosome"] != df["Chromosome"].shift()) | (df["Start"] >= prev_end + gap)
-    group_id = new_group.cumsum()
+    chrom = df["Chromosome"].to_numpy()
+    start = df["Start"].to_numpy(dtype=np.int64, copy=False)
+    end = df["End"].to_numpy(dtype=np.int64, copy=False)
+    auc = df["AUC"].to_numpy(dtype=np.float64, copy=False)
+    max_signal = df["MaxSignal"].to_numpy(dtype=np.float64, copy=False)
+    max_region = df["MaxRegion"].to_numpy(dtype=object, copy=False)
 
-    # Tag each row with the MaxRegion of its group's highest-signal island,
-    # then aggregate in a single groupby pass.
-    max_signal_idx = df.groupby(group_id, sort=False)["MaxSignal"].transform("idxmax")
-    df = df.copy()
-    df["_MaxRegion"] = df.loc[max_signal_idx, "MaxRegion"].to_numpy()
+    prev_end = np.empty(len(df), dtype=np.float64)
+    prev_end[0] = -gap - 1.0
+    prev_end[1:] = end[:-1]
 
-    return (
-        df.groupby(group_id, sort=False)
-        .agg(
-            Chromosome=("Chromosome", "first"),
-            Start=("Start", "first"),
-            End=("End", "last"),
-            AUC=("AUC", "sum"),
-            MaxSignal=("MaxSignal", "max"),
-            MaxRegion=("_MaxRegion", "first"),
+    chrom_change = np.empty(len(df), dtype=bool)
+    chrom_change[0] = True
+    chrom_change[1:] = chrom[1:] != chrom[:-1]
+    new_group = chrom_change | (start >= (prev_end + gap))
+
+    group_starts = np.flatnonzero(new_group)
+    group_ends = np.r_[group_starts[1:], len(df)]
+
+    merged_auc = np.add.reduceat(auc, group_starts)
+    merged_max_signal = np.maximum.reduceat(max_signal, group_starts)
+    merged_rows: list[dict] = []
+
+    for group_idx, (gstart, gend) in enumerate(zip(group_starts, group_ends, strict=False)):
+        group_max = merged_max_signal[group_idx]
+        local_max_idx = np.flatnonzero(max_signal[gstart:gend] == group_max)
+        first_max_idx = gstart + int(local_max_idx[0])
+        last_max_idx = gstart + int(local_max_idx[-1])
+
+        first_region = str(max_region[first_max_idx])
+        if first_max_idx != last_max_idx:
+            last_end = str(max_region[last_max_idx]).rsplit("-", 1)[1]
+            merged_region = f"{first_region.rsplit('-', 1)[0]}-{last_end}"
+        else:
+            merged_region = first_region
+
+        merged_rows.append(
+            {
+                "Chromosome": chrom[gstart],
+                "Start": int(start[gstart]),
+                "End": int(end[gend - 1]),
+                "AUC": float(merged_auc[group_idx]),
+                "MaxSignal": float(group_max),
+                "MaxRegion": merged_region,
+            }
         )
-        .reset_index(drop=True)
-    )
+
+    return pd.DataFrame(merged_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +607,7 @@ def call_seacr_peaks_from_zarr(
     if norm not in ("norm", "non"):
         raise ValueError(f"norm must be 'norm' or 'non', got {norm!r}")
 
-    store = BamStore(zarr_path)
+    store = BamStore.open(zarr_path, read_only=True)
     chromsizes = {chrom: size for chrom, size in store.chromsizes.items() if "_" not in chrom}
 
     sample_names = store.sample_names
@@ -448,13 +621,13 @@ def call_seacr_peaks_from_zarr(
 
     logger.info(f"Found {len(valid_samples)} completed sample(s) in {zarr_path}")
 
-    # ------------------------------------------------------------------ load optional blacklist
+    # -------------- load optional blacklist --------------
     blacklist_pr = None
     if blacklist_file and Path(blacklist_file).exists():
         logger.info(f"Loading blacklist: {blacklist_file}")
         blacklist_pr = pr.read_bed(str(blacklist_file))
 
-    # ------------------------------------------------------------------ load experimental islands
+    # -------------- load experimental islands --------------
     # islands_by_sample[sample] = list of island dicts
     islands_by_sample: dict[str, list[dict]] = {s: [] for s in valid_samples}
 
@@ -468,13 +641,13 @@ def call_seacr_peaks_from_zarr(
         for i, sample in enumerate(valid_samples):
             islands_by_sample[sample].extend(_compute_islands(cov[i], chrom))
 
-    # ------------------------------------------------------------------ load control islands
+    # -------------- load control islands --------------
     ctrl_auc_arr: np.ndarray | None = None
     ctrl_num_arr: np.ndarray | None = None
     ctrl_islands_df: pd.DataFrame | None = None
 
     if control_zarr_path is not None:
-        ctrl_store = BamStore(Path(control_zarr_path))
+        ctrl_store = BamStore.open(Path(control_zarr_path), read_only=True)
         ctrl_samples = [s for s, c in zip(ctrl_store.sample_names, ctrl_store.completed_mask) if c]
         ctrl_indices = [i for i, c in enumerate(ctrl_store.completed_mask) if c]
 
@@ -496,7 +669,7 @@ def call_seacr_peaks_from_zarr(
                 ctrl_num_arr = ctrl_islands_df["Num"].to_numpy()
                 logger.info(f"Control: {len(ctrl_islands_df):,} islands")
 
-    # ------------------------------------------------------------------ per-sample peak calling
+    # -------------- per-sample peak calling --------------
     results: list[str] = []
 
     for sample in valid_samples:
@@ -513,15 +686,19 @@ def call_seacr_peaks_from_zarr(
 
         # Determine thresholds
         if ctrl_auc_arr is not None and ctrl_num_arr is not None:
-            x0, z0, d0, _ = _thresholds_from_control(
+            x0, z0, d0, norm_constant = _thresholds_from_control(
                 exp_auc,
                 exp_num,
                 ctrl_auc_arr,
                 ctrl_num_arr,
                 norm=(norm == "norm"),
             )
+            # Normalize control AUC for filtering (matches shell awk: the control bed
+            # is multiplied by the norm constant *before* the AUC > thresh filter)
+            ctrl_auc_filt = ctrl_auc_arr * norm_constant if norm_constant is not None else ctrl_auc_arr
         else:
             x0, z0, d0 = _thresholds_from_fdr(exp_auc, exp_num, fdr_threshold)
+            ctrl_auc_filt = None
 
         auc_thresh = x0 if stringency == "stringent" else z0
 
@@ -546,23 +723,23 @@ def call_seacr_peaks_from_zarr(
         logger.debug(f"[{sample}] {len(merged):,} islands after merging (gap={gap:.1f} bp)")
 
         # Remove experiment islands overlapping control islands (control-enriched blacklist)
-        if ctrl_islands_df is not None:
-            # Filter control islands the same way (stringent AUC threshold only, d0=0)
-            ctrl_keep = ctrl_islands_df["AUC"] > x0
+        if ctrl_islands_df is not None and ctrl_auc_filt is not None:
+            # Filter using (possibly normalised) ctrl AUC against the stringent threshold,
+            # matching the shell script which normalises the control bed before applying awk.
+            ctrl_keep = ctrl_auc_filt > x0
             ctrl_filtered = ctrl_islands_df[ctrl_keep]
             if not ctrl_filtered.empty:
                 exp_pr = pr.PyRanges(
-                    merged.rename(columns={"Start": "Start", "End": "End"})[
-                        ["Chromosome", "Start", "End", "AUC", "MaxSignal", "MaxRegion"]
-                    ].astype({"Start": int, "End": int})
+                    merged[["Chromosome", "Start", "End", "AUC", "MaxSignal", "MaxRegion"]]
+                    .astype({"Start": int, "End": int})
                 )
                 ctrl_pr = pr.PyRanges(
                     ctrl_filtered[["Chromosome", "Start", "End"]].astype({"Start": int, "End": int})
                 )
-                exp_pr = exp_pr.subtract_overlaps(ctrl_pr, strand_behavior="ignore")
-                merged = pd.DataFrame(exp_pr).rename(
-                    columns={"Chromosome": "Chromosome", "Start": "Start", "End": "End"}
-                )
+                # Match bedtools intersect -wa -v semantics from SEACR_1.3.sh:
+                # keep only experiment peaks with no overlap to control peaks.
+                exp_pr = exp_pr.overlap(ctrl_pr, strand_behavior="ignore", invert=True)
+                merged = pd.DataFrame(exp_pr)
                 logger.debug(f"[{sample}] {len(merged):,} islands after control subtraction")
 
         if merged.empty:
@@ -584,7 +761,12 @@ def call_seacr_peaks_from_zarr(
 
         # Write BED: chr start end AUC max_signal max_region
         out_cols = ["Chromosome", "Start", "End", "AUC", "MaxSignal", "MaxRegion"]
-        out_df = merged[[c for c in out_cols if c in merged.columns]]
+        out_df = merged[[c for c in out_cols if c in merged.columns]].copy()
+        # Match awk's default numeric formatting used by SEACR_1.3.sh
+        # (OFMT/CONVFMT = "%.6g"): 6 significant digits, no fixed decimals.
+        out_df["AUC"] = out_df["AUC"].map(lambda x: format(float(x), ".6g"))
+        out_df["MaxSignal"] = out_df["MaxSignal"].map(lambda x: format(float(x), ".6g"))
+
         output_bed = output_dir / f"{sample}.{stringency}.bed"
         out_df.to_csv(output_bed, sep="\t", header=False, index=False)
 

@@ -7,6 +7,45 @@ import pyranges1 as pr
 from loguru import logger
 
 
+def _merge_adjacent_regions(peaks_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge overlapping or directly adjacent intervals within each chromosome."""
+    if peaks_df.empty:
+        return peaks_df
+
+    peaks_df = peaks_df.sort_values(["Chromosome", "Start", "End"]).reset_index(drop=True)
+    merged_parts: list[pd.DataFrame] = []
+
+    for chrom, grp in peaks_df.groupby("Chromosome", sort=False):
+        starts = grp["Start"].to_numpy(dtype=np.int64, copy=False)
+        ends = grp["End"].to_numpy(dtype=np.int64, copy=False)
+
+        if len(starts) == 1:
+            merged_parts.append(pd.DataFrame({"Chromosome": [chrom], "Start": starts, "End": ends}))
+            continue
+
+        prev_max_end = np.maximum.accumulate(ends[:-1])
+        new_group = np.empty(len(starts), dtype=bool)
+        new_group[0] = True
+        # Start a new region only when there is a strict gap; adjacency is merged.
+        new_group[1:] = starts[1:] > prev_max_end
+
+        group_starts = np.flatnonzero(new_group)
+        merged_starts = starts[group_starts]
+        merged_ends = np.maximum.reduceat(ends, group_starts)
+
+        merged_parts.append(
+            pd.DataFrame(
+                {
+                    "Chromosome": np.repeat(chrom, len(merged_starts)),
+                    "Start": merged_starts,
+                    "End": merged_ends,
+                }
+            )
+        )
+
+    return pd.concat(merged_parts, ignore_index=True)
+
+
 def call_quantile_peaks(
     signal: pd.Series,
     chroms: pd.Series,
@@ -52,9 +91,10 @@ def call_quantile_peaks(
     peaks_df = peaks_df.astype({"Start": int, "End": int, "Chromosome": str})
     peaks_df = peaks_df.sort_values(["Chromosome", "Start"]).reset_index(drop=True)
 
-    pr_obj = pr.PyRanges(peaks_df)
     if merge:
-        pr_obj = pr_obj.merge_overlaps()
+        peaks_df = _merge_adjacent_regions(peaks_df[["Chromosome", "Start", "End"]])
+
+    pr_obj = pr.PyRanges(peaks_df)
 
     if blacklist_file and blacklist_file.exists():
         logger.debug(f"[{signal.name}] Subtracting blacklist regions: {blacklist_file}")
@@ -70,13 +110,14 @@ def call_peaks_from_zarr(
     output_dir: Path,
     blacklist_file: Optional[Path] = None,
     tilesize: int = 128,
+    window_overlap: int = 8,
     quantile: float = 0.98,
     merge: bool = True,
 ) -> list[str]:
     """Call quantile-based peaks from a QuantNado zarr coverage store.
 
-    Reads per-base coverage from zarr, computes mean depth per tile, applies
-    RPKM normalisation (mean_depth × 1e9 / library_size), then log1p.
+    Reads per-base coverage from zarr, computes mean depth in sliding windows,
+    applies RPKM normalisation (mean_depth × 1e9 / library_size), then log1p.
     """
     from ..dataset.store_bam import BamStore
     from ..analysis.normalise import get_library_sizes
@@ -86,7 +127,15 @@ def call_peaks_from_zarr(
     blacklist_file = Path(blacklist_file) if blacklist_file else None
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    store = BamStore(zarr_path)
+    if tilesize <= 0:
+        raise ValueError(f"tilesize must be > 0, got {tilesize}")
+    if window_overlap < 0 or window_overlap >= tilesize:
+        raise ValueError(
+            f"window_overlap must be >= 0 and < tilesize (tilesize={tilesize}), got {window_overlap}"
+        )
+    step = tilesize - window_overlap
+
+    store = BamStore.open(zarr_path, read_only=True)
     chromsizes = {
         chrom: size
         for chrom, size in store.chromsizes.items()
@@ -119,48 +168,55 @@ def call_peaks_from_zarr(
     for chrom, chrom_len in chromsizes.items():
         if chrom not in store.chromosomes:
             continue
-        logger.debug(f"Tiling {chrom} ({chrom_len:,} bp)")
+        logger.debug(
+            f"Sliding-window tiling {chrom} ({chrom_len:,} bp): size={tilesize}, overlap={window_overlap}, step={step}"
+        )
 
         chrom_arr = store.root[chrom]
         # shape: (n_valid_samples, chrom_len)
         cov = chrom_arr[valid_indices, :chrom_len].astype(np.float32)
 
-        n_complete = chrom_len // tilesize
-        trimmed = n_complete * tilesize
+        tile_starts = np.arange(0, chrom_len, step, dtype=np.int64)
+        tile_ends = np.minimum(tile_starts + tilesize, chrom_len).astype(np.int64)
 
-        # complete tiles: (n_valid, n_complete, tilesize) → mean → (n_valid, n_complete)
-        tile_means = cov[:, :trimmed].reshape(len(valid_indices), n_complete, tilesize).mean(axis=2)
-
-        tile_starts = np.arange(n_complete, dtype=np.int32) * tilesize
-        tile_ends = tile_starts + tilesize
-
-        if chrom_len % tilesize != 0:
-            last_mean = cov[:, trimmed:].mean(axis=1, keepdims=True)
-            tile_means = np.concatenate([tile_means, last_mean], axis=1)
-            tile_starts = np.append(tile_starts, trimmed)
-            tile_ends = np.append(tile_ends, chrom_len)
-
-        n_tiles = tile_means.shape[1]
+        # Fast sliding-window means via cumulative sums.
+        csum = np.pad(np.cumsum(cov, axis=1, dtype=np.float64), ((0, 0), (1, 0)), mode="constant")
+        window_sums = csum[:, tile_ends] - csum[:, tile_starts]
+        window_lengths = (tile_ends - tile_starts).astype(np.float64)
+        tile_means = window_sums / window_lengths[np.newaxis, :]
 
         # Apply blacklist: drop tiles overlapping blacklist
         if blacklist_pr is not None:
-            tiles_pr = pr.PyRanges(pd.DataFrame({
-                "Chromosome": chrom,
-                "Start": tile_starts,
-                "End": tile_ends,
-            }))
+            tiles_pr = pr.PyRanges(
+                pd.DataFrame(
+                    {
+                        "Chromosome": np.repeat(chrom, len(tile_starts)),
+                        "Start": tile_starts,
+                        "End": tile_ends,
+                    }
+                )
+            )
             keep_pr = tiles_pr.subtract_overlaps(blacklist_pr, strand_behavior="ignore")
             keep_df = pd.DataFrame(keep_pr)
             if keep_df.empty:
                 continue
-            # Match kept tiles back to indices by start position
-            keep_set = set(keep_df["Start"].tolist())
-            keep_mask = np.array([s in keep_set for s in tile_starts])
+            keep_pairs = set(
+                zip(
+                    keep_df["Start"].to_numpy(dtype=np.int64),
+                    keep_df["End"].to_numpy(dtype=np.int64),
+                    strict=False,
+                )
+            )
+            keep_mask = np.fromiter(
+                (((int(s), int(e)) in keep_pairs) for s, e in zip(tile_starts, tile_ends, strict=False)),
+                dtype=bool,
+                count=len(tile_starts),
+            )
             tile_means = tile_means[:, keep_mask]
             tile_starts = tile_starts[keep_mask]
             tile_ends = tile_ends[keep_mask]
-            n_tiles = tile_means.shape[1]
 
+        n_tiles = tile_means.shape[1]
         all_chroms.extend([chrom] * n_tiles)
         all_starts.extend(tile_starts.tolist())
         all_ends.extend(tile_ends.tolist())
@@ -176,8 +232,9 @@ def call_peaks_from_zarr(
     signals_df = pd.DataFrame(signals_by_sample)
     rpkm_df = signals_df.multiply(1e9 / lib_sizes_arr, axis=1)
     log_rpkm_df = np.log1p(rpkm_df)
-    log_rpkm_df.to_parquet(output_dir / f"log_rpkm_{tilesize}bp.parquet", index=False)
-    logger.info(f"Saved log-RPKM tile signal to {output_dir / f'log_rpkm_{tilesize}bp.parquet'}")
+    parquet_path = output_dir / f"log_rpkm_{tilesize}bp_{window_overlap}bp_overlap.parquet"
+    log_rpkm_df.to_parquet(parquet_path, index=False)
+    logger.info(f"Saved log-RPKM tile signal to {parquet_path}")
 
     results = []
     for sample_name in valid_samples:
