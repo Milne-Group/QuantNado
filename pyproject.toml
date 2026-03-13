@@ -20,7 +20,6 @@ dynamic = ["version"]
 
 dependencies = [
     "bamnado==0.4.4",
-    "crested==1.6.1",
     "dask-ml>=2025,<2027",
     "dask>=2026",
     "icechunk>=1.1",
@@ -37,6 +36,7 @@ dependencies = [
     "typer>=0.24",
     "xarray>=2026",
     "zarr>=3.0,<4.0",
+    "plotnado>=0.3"
 ]
 
 [project.optional-dependencies]

@@ -4,7 +4,6 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import pyranges1 as pr
-from crested import import_bigwigs
 from loguru import logger
 
 
@@ -18,7 +17,7 @@ def call_quantile_peaks(
     blacklist_file: Optional[Path] = None,
     merge: bool = True,
 ) -> Optional[pr.PyRanges]:
-    """Call quantile-based peaks from a single bigWig signal."""
+    """Call quantile-based peaks from a single sample's tile signal."""
     logger.info(f"Calling peaks for sample: {signal.name}")
 
     nonzero = signal[signal > 0]
@@ -66,83 +65,139 @@ def call_quantile_peaks(
     return pr_obj if len(pr_obj) > 0 else None
 
 
-def call_peaks_from_bigwig_dir(
-    bigwig_dir: Path,
+def call_peaks_from_zarr(
+    zarr_path: Path,
     output_dir: Path,
-    chromsizes_file: Path,
     blacklist_file: Optional[Path] = None,
     tilesize: int = 128,
     quantile: float = 0.98,
-    tmp_dir: Path = Path("tmp"),
+    merge: bool = True,
 ) -> list[str]:
-    """Call quantile-based peaks from all bigWig files in a directory."""
-    bigwig_dir = Path(bigwig_dir)
+    """Call quantile-based peaks from a QuantNado zarr coverage store.
+
+    Reads per-base coverage from zarr, computes mean depth per tile, applies
+    RPKM normalisation (mean_depth × 1e9 / library_size), then log1p.
+    """
+    from ..dataset.store_bam import BamStore
+    from ..analysis.normalise import get_library_sizes
+
+    zarr_path = Path(zarr_path)
     output_dir = Path(output_dir)
-    chromsizes_file = Path(chromsizes_file)
     blacklist_file = Path(blacklist_file) if blacklist_file else None
-    tmp_dir = Path(tmp_dir)
-
     output_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    chromsizes = (
-        pd.read_csv(chromsizes_file, sep="\t", names=["Chromosome", "End"])
-        .query("~Chromosome.str.contains('_')", engine="python")
-        .assign(Start=0)[["Chromosome", "Start", "End"]]
-    )
+    store = BamStore(zarr_path)
+    chromsizes = {
+        chrom: size
+        for chrom, size in store.chromsizes.items()
+        if "_" not in chrom
+    }
 
-    logger.info(f"Tiling genome with tilesize {tilesize} bp...")
-    full_ranges = pr.PyRanges(chromsizes)
-    tiled = full_ranges.tile_ranges(tilesize, use_strand=False)
-    tiled = tiled.intersect_overlaps(full_ranges, strand_behavior="ignore")
-    if blacklist_file and Path(blacklist_file).exists():
-        logger.info(f"Applying blacklist from: {blacklist_file}")
-        blacklist = pr.read_bed(str(blacklist_file))
-        tiled = tiled.subtract_overlaps(blacklist, strand_behavior="ignore")
-    tiled_df = pd.DataFrame(tiled)
-    tmp_regions_bed = tmp_dir / "tiled_regions.bed"
-    tiled.to_bed(tmp_regions_bed)
-    logger.info(f"Tiled regions saved to: {tmp_regions_bed}")
+    library_sizes = get_library_sizes(store)
+    sample_names = store.sample_names
+    completed = store.completed_mask
+    valid_samples = [s for s, c in zip(sample_names, completed) if c]
+    valid_indices = [i for i, c in enumerate(completed) if c]
 
-    bigwig_paths = sorted(bigwig_dir.glob("*.bw")) + sorted(bigwig_dir.glob("*.bigWig"))
-    if not bigwig_paths:
-        logger.error(f"No .bw or .bigWig files found in {bigwig_dir}")
+    if not valid_samples:
+        logger.error("No completed samples found in store.")
         return []
-    logger.info(f"Found {len(bigwig_paths)} bigWig file(s)")
-    logger.info("Importing all bigWig signals...")
 
-    
-    adata = import_bigwigs(
-        regions_file=str(tmp_regions_bed),
-        bigwigs_folder=str(bigwig_dir),
-        chromsizes_file=str(chromsizes_file),
-        target="mean",
-    )
+    lib_sizes_arr = np.array([library_sizes[s] for s in valid_samples], dtype=np.float64)
+    logger.info(f"Found {len(valid_samples)} completed sample(s) in {zarr_path}")
 
-    adata.X = np.log1p(adata.X)
-    df = adata.T.to_df().reset_index()
-    df.to_parquet(output_dir / f"logged_rpkm_{tilesize}bp.parquet", index=False)
-    sample_names = df.columns[1:]
+    blacklist_pr = None
+    if blacklist_file and blacklist_file.exists():
+        logger.info(f"Loading blacklist: {blacklist_file}")
+        blacklist_pr = pr.read_bed(str(blacklist_file))
+
+    signals_by_sample: dict[str, list[float]] = {s: [] for s in valid_samples}
+    all_chroms: list[str] = []
+    all_starts: list[int] = []
+    all_ends: list[int] = []
+
+    for chrom, chrom_len in chromsizes.items():
+        if chrom not in store.chromosomes:
+            continue
+        logger.debug(f"Tiling {chrom} ({chrom_len:,} bp)")
+
+        chrom_arr = store.root[chrom]
+        # shape: (n_valid_samples, chrom_len)
+        cov = chrom_arr[valid_indices, :chrom_len].astype(np.float32)
+
+        n_complete = chrom_len // tilesize
+        trimmed = n_complete * tilesize
+
+        # complete tiles: (n_valid, n_complete, tilesize) → mean → (n_valid, n_complete)
+        tile_means = cov[:, :trimmed].reshape(len(valid_indices), n_complete, tilesize).mean(axis=2)
+
+        tile_starts = np.arange(n_complete, dtype=np.int32) * tilesize
+        tile_ends = tile_starts + tilesize
+
+        if chrom_len % tilesize != 0:
+            last_mean = cov[:, trimmed:].mean(axis=1, keepdims=True)
+            tile_means = np.concatenate([tile_means, last_mean], axis=1)
+            tile_starts = np.append(tile_starts, trimmed)
+            tile_ends = np.append(tile_ends, chrom_len)
+
+        n_tiles = tile_means.shape[1]
+
+        # Apply blacklist: drop tiles overlapping blacklist
+        if blacklist_pr is not None:
+            tiles_pr = pr.PyRanges(pd.DataFrame({
+                "Chromosome": chrom,
+                "Start": tile_starts,
+                "End": tile_ends,
+            }))
+            keep_pr = tiles_pr.subtract_overlaps(blacklist_pr, strand_behavior="ignore")
+            keep_df = pd.DataFrame(keep_pr)
+            if keep_df.empty:
+                continue
+            # Match kept tiles back to indices by start position
+            keep_set = set(keep_df["Start"].tolist())
+            keep_mask = np.array([s in keep_set for s in tile_starts])
+            tile_means = tile_means[:, keep_mask]
+            tile_starts = tile_starts[keep_mask]
+            tile_ends = tile_ends[keep_mask]
+            n_tiles = tile_means.shape[1]
+
+        all_chroms.extend([chrom] * n_tiles)
+        all_starts.extend(tile_starts.tolist())
+        all_ends.extend(tile_ends.tolist())
+
+        for i, s in enumerate(valid_samples):
+            signals_by_sample[s].extend(tile_means[i].tolist())
+
+    chroms_series = pd.Series(all_chroms, name="Chromosome")
+    starts_series = pd.Series(all_starts, name="Start")
+    ends_series = pd.Series(all_ends, name="End")
+
+    # RPKM: mean_depth × 1e9 / library_size (tile-length-independent)
+    signals_df = pd.DataFrame(signals_by_sample)
+    rpkm_df = signals_df.multiply(1e9 / lib_sizes_arr, axis=1)
+    log_rpkm_df = np.log1p(rpkm_df)
+    log_rpkm_df.to_parquet(output_dir / f"log_rpkm_{tilesize}bp.parquet", index=False)
+    logger.info(f"Saved log-RPKM tile signal to {output_dir / f'log_rpkm_{tilesize}bp.parquet'}")
 
     results = []
-    for i, sample_name in enumerate(sample_names):
-        logger.info(f"Processing sample: {sample_name}")
-        signal = df[sample_name]
+    for sample_name in valid_samples:
+        signal = log_rpkm_df[sample_name]
+        signal.name = sample_name
 
         pr_obj = call_quantile_peaks(
             signal=signal,
-            chroms=tiled_df["Chromosome"],
-            starts=tiled_df["Start"],
-            ends=tiled_df["End"],
+            chroms=chroms_series,
+            starts=starts_series,
+            ends=ends_series,
             tilesize=tilesize,
             quantile=quantile,
-            blacklist_file=blacklist_file,
+            merge=merge,
         )
 
         if pr_obj is not None:
             output_bed = output_dir / f"{sample_name}.bed"
             pr_obj.to_bed(output_bed)
-            logger.success(f"Peak BED saved to: [{output_bed}]")
+            logger.success(f"Peak BED saved to: {output_bed}")
             results.append(str(output_bed))
         else:
             logger.warning(f"[{sample_name}] No peaks detected.")
