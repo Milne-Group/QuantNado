@@ -23,6 +23,12 @@ from .core import BaseStore
 from quantnado.utils import estimate_chunk_len, is_network_fs
 
 
+def _to_str_list(items: Iterable[Any]) -> list[str]:
+    """Convert a sequence of items to strings for Zarr attributes."""
+    import pandas as pd
+    return [str(i) if not pd.isna(i) else "" for i in items]
+
+
 BIN_SIZE = 1
 CONSTRUCTION_ARRAY_DTYPE = np.uint32
 DEFAULT_CONSTRUCTION_COMPRESSION = "default"
@@ -379,7 +385,7 @@ class BamStore(BaseStore):
         """
         Ensures that the BAM type information is available as a per-sample dict mapping sample name to BAM type.
         """
-        match isinstance(self.bam_type):
+        match self.bam_type:
             case BamType():
                 return {s: self.bam_type for s in self.sample_names}
             
@@ -398,7 +404,7 @@ class BamStore(BaseStore):
                 
                 if unknown:
                     raise ValueError(f"Unknown sample names in bam_type dict: {sorted(unknown)}")
-                return {s: self.bam_type.get(s) if self.bam_type.get(s) else None for s in self.sample_names}
+                return {s: self.bam_type.get(s, BamType.UNSTRANDED) for s in self.sample_names}
             
             case None:
                 return {s: BamType.UNSTRANDED for s in self.sample_names}
@@ -430,22 +436,22 @@ class BamStore(BaseStore):
         # Read required root attributes
         try:
             sample_names = list(group.attrs["sample_names"])
-            chromsizes = dict(group.attrs["chromsizes"])
+            chromsizes = {str(k): int(v) for k, v in group.attrs["chromsizes"].items()}
             chunk_len = int(group.attrs["chunk_len"])
         except KeyError as e:
             raise ValueError(f"Missing required attribute in store: {e}")
-        # stranded may be stored as a dict (new format) or string (old format)
+        # Reconstruct bam_type from the stored stranded attribute.
+        # The value is a per-sample dict where "stranded" means STRANDED and "" means UNSTRANDED.
         raw_strand = group.attrs.get("stranded")
         if isinstance(raw_strand, dict):
-            # Convert back to a per-sample dict, dropping empty strings → None
-            stranded: "str | dict[str, str] | None" = {
-                s: (lt if lt else None) for s, lt in raw_strand.items()
+            bam_type: BamType | dict[str, BamType] = {
+                s: (BamType.STRANDED if v == BamType.STRANDED else BamType.UNSTRANDED)
+                for s, v in raw_strand.items()
             }
-            # If all values are None, simplify to None
-            if not any(stranded.values()):
-                stranded = None
+            if all(bt == BamType.UNSTRANDED for bt in bam_type.values()):
+                bam_type = BamType.UNSTRANDED
         else:
-            stranded = raw_strand or None
+            bam_type = BamType.UNSTRANDED
         # Return BamStore instance
         return cls(
             store_path=store_path,
@@ -455,7 +461,7 @@ class BamStore(BaseStore):
             overwrite=False,
             resume=True,
             read_only=read_only,
-            stranded=stranded,
+            bam_type=bam_type,
         )
     def _check_writable(self):
         if getattr(self, "read_only", False):
