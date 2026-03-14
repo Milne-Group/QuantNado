@@ -23,6 +23,18 @@ from .core import BaseStore
 from quantnado.utils import estimate_chunk_len, is_network_fs
 
 
+def _copy_read_filter(rf: "bamnado.ReadFilter") -> "bamnado.ReadFilter":
+    """Return a new ReadFilter with the same settings as *rf*."""
+    new_rf = bamnado.ReadFilter()
+    for attr in (
+        "min_mapq", "proper_pair", "min_length", "max_length", "strand",
+        "min_fragment_length", "max_fragment_length", "blacklist_bed",
+        "whitelisted_barcodes", "read_group", "filter_tag", "filter_tag_value",
+    ):
+        setattr(new_rf, attr, getattr(rf, attr))
+    return new_rf
+
+
 def _to_str_list(items: Iterable[Any]) -> list[str]:
     """Convert a sequence of items to strings for Zarr attributes."""
     import pandas as pd
@@ -638,9 +650,9 @@ class BamStore(BaseStore):
             read_filter = bamnado.ReadFilter()
         
         if is_stranded:
-            read_filter_fwd = read_filter.copy()
+            read_filter_fwd = _copy_read_filter(read_filter)
             read_filter_fwd.strand = Strandedness.FORWARD.value
-            read_filter_rev = read_filter.copy()
+            read_filter_rev = _copy_read_filter(read_filter)
             read_filter_rev.strand = Strandedness.REVERSE.value
             filters = [read_filter_fwd, read_filter_rev]
         else:
@@ -743,7 +755,7 @@ class BamStore(BaseStore):
         if bam_type == BamType.MICRO_CAPTURE_C and self.viewpoint_map:
             vp = self.viewpoint_map.get(sample_name)
             if vp:
-                read_filter = read_filter.copy()
+                read_filter = _copy_read_filter(read_filter)
                 read_filter.filter_tag = self.viewpoint_tag
                 read_filter.filter_tag_value = vp
 
