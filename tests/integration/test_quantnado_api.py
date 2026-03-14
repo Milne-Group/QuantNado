@@ -25,7 +25,7 @@ def qn(simple_store):
 
 
 def test_open_wraps_bamstore(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1])), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.full(a[3], int(a[1])), None))
     BamStore(tmp_path / "ds", chromsizes, sample_names).process_samples(["1", "2"])
 
     qn = QuantNado.open(tmp_path / "ds")
@@ -38,7 +38,7 @@ def test_from_bam_files(tmp_path, monkeypatch):
         "quantnado.dataset.store_bam._get_chromsizes_from_bam",
         lambda path: {"chr1": 10},
     )
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
 
     bam = tmp_path / "s1.bam"
     bam.write_text("dummy")
@@ -52,7 +52,7 @@ def test_from_bam_files_with_local_staging(tmp_path, monkeypatch):
         "quantnado.dataset.store_bam._get_chromsizes_from_bam",
         lambda path: {"chr1": 10},
     )
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
 
     bam = tmp_path / "s1.bam"
     bam.write_text("dummy")

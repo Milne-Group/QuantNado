@@ -244,6 +244,8 @@ class BamStore(BaseStore):
         count_fragments: bool = False,
         viewpoints: set[str] | None = None,
         viewpoint_tag: str = "VP",
+        sample_bam_map: dict[str, str] | None = None,
+        viewpoint_map: dict[str, str] | None = None,
     ) -> None:
         """
         Initialize BamStore by creating a new Zarr store or loading an existing one.
@@ -298,6 +300,8 @@ class BamStore(BaseStore):
         self.count_fragments = count_fragments
         self.viewpoints = viewpoints
         self.viewpoint_tag = viewpoint_tag
+        self.sample_bam_map = sample_bam_map
+        self.viewpoint_map = viewpoint_map
 
         # Set up BAM read filter (same for all samples; can be customized if needed)
         if not bam_filter:
@@ -351,7 +355,7 @@ class BamStore(BaseStore):
         """
         Ensures that the BAM filter information is available as a per-sample dict mapping sample name to BAM filter.
         """
-        match isinstance(self.bam_filter):
+        match self.bam_filter:
             case bamnado.ReadFilter():
                 return {s: self.bam_filter for s in self.sample_names}
             case list():
@@ -509,7 +513,8 @@ class BamStore(BaseStore):
             overwrite=True,
         )
 
-        if any(v for v in self._strandedness_map.values() if v):
+        has_stranded = any(bt == BamType.STRANDED for bt in self.bam_type_map.values())
+        if has_stranded:
             for chrom, size in self.chromsizes.items():
                 for suffix in ("_fwd", "_rev"):
                     self.root.create_array(
@@ -524,7 +529,7 @@ class BamStore(BaseStore):
 
         # Persist stranded as a per-sample dict so it round-trips correctly
         strandedness_for_attrs = {
-            s: (lt or "") for s, lt in self._strandedness_map.items()
+            s: (bt.value if bt == BamType.STRANDED else "") for s, bt in self.bam_type_map.items()
         }
         self.root.attrs.update(
             {
@@ -650,8 +655,8 @@ class BamStore(BaseStore):
         # Correct for contig size discrepancies
         signal_arrays_aligned = []
         for signal in signal_arrays:
-             len_signal = signal.shape[0]
-             if len_signal != contig_size:
+            len_signal = signal.shape[0]
+            if len_signal != contig_size:
                 logger.warning(
                     f"Signal length for {contig} differs from chromsizes ({len_signal} vs {contig_size}); aligning"
                 )
@@ -659,9 +664,8 @@ class BamStore(BaseStore):
                     signal = signal[:contig_size]
                 else:
                     signal = np.pad(signal, (0, contig_size - len_signal), mode="constant")
-                signal_arrays_aligned.append(signal)
-                del signal
-        
+            signal_arrays_aligned.append(signal)
+
         del signal_arrays
 
         # Calculate appropriate data types
@@ -728,6 +732,15 @@ class BamStore(BaseStore):
         is_stranded = bam_type == BamType.STRANDED
         use_fragment = self.count_fragments
 
+        # Build the per-sample read filter, then add VP tag filtering for MCC.
+        read_filter = self.bam_filter_map[sample_name]
+        if bam_type == BamType.MICRO_CAPTURE_C and self.viewpoint_map:
+            vp = self.viewpoint_map.get(sample_name)
+            if vp:
+                read_filter = read_filter.copy()
+                read_filter.filter_tag = self.viewpoint_tag
+                read_filter.filter_tag_value = vp
+
         sparsity_values: list[float] = []
         contigs = list(chromsizes_dict.keys())
 
@@ -740,7 +753,7 @@ class BamStore(BaseStore):
                     size,
                     is_stranded,
                     use_fragment=use_fragment,
-                    read_filter=self.bam_filter,
+                    read_filter=read_filter,
                 )
                 self._store_chromosome_data(sample_idx, contig, fwd, rev)
                 sparsity_values.append(sparsity)
@@ -759,7 +772,7 @@ class BamStore(BaseStore):
                         chromsizes_dict[contig],
                         is_stranded,
                         use_fragment=use_fragment,
-                        read_filter=self.bam_filter,
+                        read_filter=read_filter,
                     ): contig
                     for contig in contigs
                 }
@@ -794,7 +807,7 @@ class BamStore(BaseStore):
 
     def process_samples(
         self,
-        bam_files: list[str],
+        bam_files: list[str] | None = None,
         max_workers: int = 1,
     ) -> None:
         """Process BAM files and write signal data to the zarr store.
@@ -805,15 +818,25 @@ class BamStore(BaseStore):
 
         Within each sample, chromosome processing is parallelised using
         ``max_workers`` threads (bamnado releases the GIL).
+
+        When the store was built from MCC data via ``from_bam_files``, the
+        BAM-file-to-sample routing is stored in ``self.sample_bam_map`` and
+        ``bam_files`` may be omitted.
         """
-        if len(bam_files) != self.n_samples:
-            raise ValueError("bam_files length must match number of sample_names")
+        if self.sample_bam_map is not None:
+            resolved_bam_files = [self.sample_bam_map[s] for s in self.sample_names]
+        elif bam_files is not None:
+            if len(bam_files) != self.n_samples:
+                raise ValueError("bam_files length must match number of sample_names")
+            resolved_bam_files = bam_files
+        else:
+            raise ValueError("bam_files must be provided when sample_bam_map is not set")
 
         chromsizes_dict = self.chromsizes
         completed = self.completed_mask
 
         for sample_idx, (bam_file, sample_name) in enumerate(
-            zip(bam_files, self.sample_names)
+            zip(resolved_bam_files, self.sample_names)
         ):
             if completed[sample_idx]:
                 logger.info(
@@ -904,18 +927,46 @@ class BamStore(BaseStore):
         else:
             sample_names = [Path(f).stem for f in bam_files]
 
-        # If we have MCC data we need to treat this in a different way
-        # Because there are technically multiple viewpoints (i.e. samples) per BAM file.
-        # Need to calculate the viewpoints present in each BAM file and then treat each viewpoint as a separate sample with its own metadata.
-        if any(bt == BamType.MCC for bt in bam_type):
-            _sample_names = []
-            viewpoints = set()
-            for bam_file, sample_name in zip(bam_files, sample_names):
-                vp = _get_viewpoints_from_mcc_bam(bam_file)
-                sn = [f"{sample_name}_{v}" for v in vp]
-                _sample_names.extend(sn)
-                viewpoints.update(vp)
-            sample_names = _sample_names
+        # Normalise bam_type to a per-file list so we can iterate it alongside bam_files.
+        if isinstance(bam_type, BamType):
+            per_file_bam_types: list[BamType] = [bam_type] * len(bam_files)
+        elif isinstance(bam_type, list):
+            per_file_bam_types = bam_type
+        elif isinstance(bam_type, dict):
+            per_file_bam_types = [bam_type.get(s, BamType.UNSTRANDED) for s in sample_names]
+        else:
+            per_file_bam_types = [BamType.UNSTRANDED] * len(bam_files)
+
+        # If we have MCC data we need to treat this in a different way.
+        # Each BAM file contains reads for multiple viewpoints (VP tag), so we expand
+        # each MCC file into one virtual sample per viewpoint.
+        sample_bam_map: dict[str, str] | None = None
+        viewpoint_map: dict[str, str] | None = None
+        viewpoints: set[str] | None = None
+        if any(bt == BamType.MICRO_CAPTURE_C for bt in per_file_bam_types):
+            _sample_bam_map: dict[str, str] = {}
+            _viewpoint_map: dict[str, str] = {}
+            _viewpoints: set[str] = set()
+            expanded_sample_names: list[str] = []
+            expanded_bam_type: dict[str, BamType] = {}
+            for bam_file, sample_name, bt in zip(bam_files, sample_names, per_file_bam_types):
+                if bt == BamType.MICRO_CAPTURE_C:
+                    for vp in _get_viewpoints_from_mcc_bam(bam_file):
+                        virtual = f"{sample_name}_{vp}"
+                        expanded_sample_names.append(virtual)
+                        _sample_bam_map[virtual] = str(bam_file)
+                        _viewpoint_map[virtual] = vp
+                        expanded_bam_type[virtual] = BamType.MICRO_CAPTURE_C
+                        _viewpoints.add(vp)
+                else:
+                    expanded_sample_names.append(sample_name)
+                    _sample_bam_map[sample_name] = str(bam_file)
+                    expanded_bam_type[sample_name] = bt
+            sample_names = expanded_sample_names
+            bam_type = expanded_bam_type
+            sample_bam_map = _sample_bam_map
+            viewpoint_map = _viewpoint_map
+            viewpoints = _viewpoints
 
         if store_path is None:
             raise ValueError("store_path must be provided.")
@@ -961,9 +1012,14 @@ class BamStore(BaseStore):
                 bam_type=bam_type,
                 bam_filter=bam_filters,
                 count_fragments=count_fragments,
-                viewpoints=viewpoints if any(bt == BamType.MCC for bt in bam_type) else None,
+                viewpoints=viewpoints,
+                sample_bam_map=sample_bam_map,
+                viewpoint_map=viewpoint_map,
             )
-            store.process_samples(bam_files, max_workers=max_workers)
+            if sample_bam_map is not None:
+                store.process_samples(max_workers=max_workers)
+            else:
+                store.process_samples(bam_files, max_workers=max_workers)
 
             if metadata is not None:
                 if isinstance(metadata, list):

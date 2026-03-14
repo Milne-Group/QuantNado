@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from loguru import logger
 
-from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_bam import BamStore, BamType
 
 # Ensure the project root is on sys.path so imports work when running locally.
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,10 +51,10 @@ def sample_names():
 def simple_store(tmp_path, monkeypatch, chromsizes, sample_names):
     """BamStore with constant per-sample values (s1=1, s2=2) everywhere."""
 
-    def _fake_chrom(self, bam_file, contig, size, library_type=None):
+    def _fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
         val = int(bam_file)
-        arr = np.full(size, val, dtype=np.uint16)
-        return contig, arr, 0.0, None, None
+        arr = np.full(contig_size, val, dtype=np.uint16)
+        return 0.0, arr, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", _fake_chrom)
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
@@ -72,10 +72,10 @@ def simple_store_extract(tmp_path, monkeypatch):
     chromsizes = {"chr1": 100}
     sample_names = ["s1", "s2"]
 
-    def _fake_chrom(self, bam_file, contig, size, library_type=None):
+    def _fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
         val = int(bam_file)
-        arr = np.arange(size, dtype=np.uint16) * val
-        return contig, arr, 0.0, None, None
+        arr = np.arange(contig_size, dtype=np.uint16) * val
+        return 0.0, arr, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", _fake_chrom)
     store = BamStore(tmp_path / "ds_extract", chromsizes, sample_names)
@@ -89,19 +89,21 @@ def simple_store_extract_stranded(tmp_path, monkeypatch):
     chromsizes = {"chr1": 100}
     sample_names = ["s1", "s2"]
 
-    def _fake_chrom(self, bam_file, contig, size, library_type=None):
+    def _fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
         val = int(bam_file)
-        base = np.arange(size, dtype=np.uint16) * val
-        fwd = np.arange(size, dtype=np.uint32) * val
-        rev = (1000 + np.arange(size, dtype=np.uint32)) * val
-        return contig, base, 0.0, fwd, rev
+        if is_stranded:
+            fwd = np.arange(contig_size, dtype=np.uint32) * val
+            rev = (1000 + np.arange(contig_size, dtype=np.uint32)) * val
+            return 0.0, fwd, rev
+        arr = np.arange(contig_size, dtype=np.uint16) * val
+        return 0.0, arr, None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", _fake_chrom)
     store = BamStore(
         tmp_path / "ds_extract_stranded",
         chromsizes,
         sample_names,
-        stranded={"s1": "F", "s2": "F"},
+        bam_type={"s1": BamType.STRANDED, "s2": BamType.STRANDED},
     )
     store.process_samples(["1", "2"])
     return store
