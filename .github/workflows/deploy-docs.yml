@@ -16,11 +16,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v2
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v2
+        with:
+          enable-cache: true
 
       - id: cache-id
         run: echo "cache_id=$(date --utc '+%V')" >> $GITHUB_OUTPUT
@@ -38,9 +40,8 @@ jobs:
           sudo apt-get install -y gcc git cmake make libtool g++ perl coreutils \
             libcurl4-openssl-dev libbz2-dev liblzma-dev zlib1g-dev
 
-      - name: Install package with docs dependencies
-        run: |
-          SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 uv pip install -e ".[dev]"
+      - name: Sync dependencies
+        run: uv sync --all-extras
 
       - name: Build and deploy
         run: |
