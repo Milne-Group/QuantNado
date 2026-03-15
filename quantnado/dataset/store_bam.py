@@ -666,7 +666,7 @@ class BamStore(BaseStore):
                 scale_factor=1.0,
                 use_fragment=use_fragment,
                 ignore_scaffold_chromosomes=False,
-                read_filters=[f],
+                read_filter=f,
             ))
         
         # Correct for contig size discrepancies

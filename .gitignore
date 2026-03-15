@@ -10,8 +10,11 @@
 */_version.py
 202*
 build/
-data/
+/data/
 epiquant/
+# Allow test data BAM files
+!tests/data/
+!tests/data/**
 example/multiomics_run/
 logs/
 modality

@@ -107,3 +107,33 @@ def simple_store_extract_stranded(tmp_path, monkeypatch):
     )
     store.process_samples(["1", "2"])
     return store
+
+
+# ---------------------------------------------------------------------------
+# Subsampled BAM file for MCC integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def mock_mcc_bam(tmp_path_factory):
+    """Use a subsampled BAM file for MCC (Micro-Capture C) tests.
+
+    The test data BAM contains ~260k reads subsampled from the real
+    OCI-AML3-control-1-1-A.bam file, preserving VP tags and chromosome distribution
+    to validate the API with real data.
+    """
+    test_bam = Path(__file__).resolve().parent / "data" / "OCI-AML3-control-1-1-A_subsample.bam"
+
+    if not test_bam.exists():
+        pytest.skip(f"Test BAM file not found at {test_bam}")
+
+    # Copy to temp directory to avoid modifying test data
+    bam_dir = tmp_path_factory.mktemp("bam")
+    bam_path = bam_dir / "OCI-AML3-control-1-1-A.bam"
+
+    import shutil
+    shutil.copy2(test_bam, bam_path)
+    if test_bam.with_suffix(".bam.bai").exists():
+        shutil.copy2(test_bam.with_suffix(".bam.bai"), bam_path.with_suffix(".bam.bai"))
+
+    return bam_path

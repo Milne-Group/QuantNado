@@ -16,6 +16,8 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: astral-sh/setup-uv@v2
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -23,7 +25,7 @@ jobs:
       - id: cache-id
         run: echo "cache_id=$(date --utc '+%V')" >> $GITHUB_OUTPUT
 
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           key: mkdocs-material-${{ steps.cache-id.outputs.cache_id }}
           path: .cache
@@ -38,10 +40,9 @@ jobs:
 
       - name: Install package with docs dependencies
         run: |
-          SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 pip install -e ".[dev]"
+          SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 uv pip install -e ".[dev]"
 
-      - name: Build
-        run: mkdocs build
-
-      - name: Deploy
-        run: mkdocs gh-deploy --force
+      - name: Build and deploy
+        run: |
+          uv run mkdocs build
+          uv run mkdocs gh-deploy --force
