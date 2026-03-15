@@ -10,7 +10,6 @@ import tempfile
 import uuid
 from enum import Enum, StrEnum
 
-import data
 import pysam
 import bamnado
 import numpy as np
