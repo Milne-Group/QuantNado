@@ -23,7 +23,13 @@ from quantnado.utils import estimate_chunk_len, is_network_fs
 
 
 def _copy_read_filter(rf: "bamnado.ReadFilter") -> "bamnado.ReadFilter":
-    """Return a new ReadFilter with the same settings as *rf*."""
+    """Return a new ReadFilter with the same settings as *rf*.
+
+    Delegates to ``ReadFilter.copy()`` (bamnado >=0.5.6).  Falls back to
+    manual attribute copying for older versions that lack the method.
+    """
+    if hasattr(rf, "copy"):
+        return rf.copy()
     new_rf = bamnado.ReadFilter()
     for attr in (
         "min_mapq", "proper_pair", "min_length", "max_length", "strand",
@@ -695,10 +701,10 @@ class BamStore(BaseStore):
             fwd_data = signal_arrays_aligned[0].astype(dtype_fwd, copy=False)
             sparsity_fwd = float((np.sum(fwd_data == 0) / fwd_data.size) * 100)
             del signal_arrays_aligned[0]
-            rev_data = signal_arrays_aligned[1].astype(dtype_fwd, copy=False)
+            rev_data = signal_arrays_aligned[0].astype(dtype_fwd, copy=False)
             sparsity_rev = float((np.sum(rev_data == 0) / rev_data.size) * 100)
             sparsity = (sparsity_fwd + sparsity_rev) / 2
-            del signal_arrays_aligned[1]
+            del signal_arrays_aligned[0]
             return sparsity, fwd_data, rev_data
         else:
             max_val = signal_arrays_aligned[0].max()

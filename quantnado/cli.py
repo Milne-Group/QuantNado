@@ -14,7 +14,7 @@ from loguru import logger
 import traceback
 from pathlib import Path
 
-from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_bam import BamStore, BamType
 from quantnado.utils import classify_methylation_files, setup_logging
 from quantnado._version import __version__
 
@@ -122,15 +122,25 @@ def create_dataset(
     vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
     # Coverage options
     filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
-    stranded: str | None = typer.Option(
+    bam_type: str | None = typer.Option(
         None,
-        "--stranded",
+        "--bam-type",
         help=(
-            "Strand-specific coverage configuration as JSON. "
-            "List form: '[\"sample1\",\"sample2\"]' (uses library type 'U'). "
-            "Dict form: '{\"sample1\":\"R\",\"sample2\":\"R\"}' mapping each sample name to "
-            "its library type: 'R' (ISR/dUTP/TruSeq), 'F' (ISF/ligation), or 'U'."
+            "BAM type for coverage processing. "
+            "Single value: 'unstranded' (default), 'stranded', or 'mcc' (Micro-Capture C) — applies to all BAM files. "
+            "Comma-separated list: 'stranded,unstranded' — one entry per BAM file in order. "
+            "Comma-separated key:value pairs: 'sample1:stranded,sample2:mcc' — per sample name."
         ),
+    ),
+    count_fragments: bool = typer.Option(
+        False,
+        "--count-fragments/--no-count-fragments",
+        help="Count fragments (insert-level) instead of individual reads.",
+    ),
+    viewpoint_tag: str = typer.Option(
+        "VP",
+        "--viewpoint-tag",
+        help="SAM tag used to identify MCC viewpoints (default: VP). Only relevant when --bam-type includes 'mcc'.",
     ),
     # Process control
     overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite", help="Overwrite existing sub-stores."),
@@ -173,18 +183,55 @@ def create_dataset(
     """
     _setup_cli_logging(log_file, verbose)
 
-    import json
+    def _parse_bam_type(raw: str | None) -> BamType | list[BamType] | dict[str, BamType]:
+        """Convert the --bam-type CLI string into the form BamStore expects.
 
-    stranded_parsed: list[str] | dict[str, str] | None = None
-    if stranded is not None:
+        Accepted formats:
+            single:  "stranded"
+            list:    "stranded,unstranded"
+            dict:    "sample1:stranded,sample2:mcc"
+        """
+        if raw is None:
+            return BamType.UNSTRANDED
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        # Single bare value
+        if len(parts) == 1 and ":" not in parts[0]:
+            try:
+                return BamType(parts[0].lower())
+            except ValueError:
+                logger.error(
+                    f"--bam-type '{parts[0]}' is not a valid BAM type. "
+                    f"Valid values: {[e.value for e in BamType]}"
+                )
+                raise typer.Exit(code=1)
+        # Detect dict form (any part contains ":")
+        if any(":" in p for p in parts):
+            result: dict[str, BamType] = {}
+            for part in parts:
+                if ":" not in part:
+                    logger.error(
+                        f"--bam-type: '{part}' is missing a sample name — "
+                        "use 'sample:type' pairs, e.g. 'sample1:stranded,sample2:mcc'"
+                    )
+                    raise typer.Exit(code=1)
+                sample, _, type_str = part.partition(":")
+                try:
+                    result[sample.strip()] = BamType(type_str.strip().lower())
+                except ValueError:
+                    logger.error(
+                        f"--bam-type: '{type_str.strip()}' is not a valid BAM type. "
+                        f"Valid values: {[e.value for e in BamType]}"
+                    )
+                    raise typer.Exit(code=1)
+            return result
+        # List form
         try:
-            stranded_parsed = json.loads(stranded)
-        except json.JSONDecodeError as exc:
-            logger.error(f"--stranded must be valid JSON (list or dict): {exc}")
+            return [BamType(p.lower()) for p in parts]
+        except ValueError as exc:
+            logger.error(f"--bam-type list contains invalid value: {exc}")
             raise typer.Exit(code=1)
-        if not isinstance(stranded_parsed, (list, dict)):
-            logger.error("--stranded must be a JSON list or object.")
-            raise typer.Exit(code=1)
+
+    bam_type_parsed = _parse_bam_type(bam_type)
 
     def _split(s: str | None) -> list[str]:
         return [v.strip() for v in s.split(",") if v.strip()] if s else []
@@ -249,7 +296,8 @@ def create_dataset(
             resume=resume,
             max_workers=max_workers,
             test=test,
-            stranded=stranded_parsed,
+            bam_type=bam_type_parsed,
+            count_fragments=count_fragments,
         )
         logger.success(f"Multiomics store created: {output}")
     except Exception as e:

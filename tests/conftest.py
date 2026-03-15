@@ -110,6 +110,35 @@ def simple_store_extract_stranded(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Subsampled BAM file for unstranded/stranded/fragment integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def mv411_bam(tmp_path_factory):
+    """Subsampled (~6k reads, chrY + chr22) BAM from MV411-CAT_MLL-N-1.
+
+    Used to test unstranded coverage, stranded coverage, and fragment counting
+    with a real non-MCC BAM file.
+    """
+    test_bam = Path(__file__).resolve().parent / "data" / "MV411-CAT_MLL-N-1_subsample.bam"
+
+    if not test_bam.exists():
+        pytest.skip(f"Test BAM file not found at {test_bam}")
+
+    bam_dir = tmp_path_factory.mktemp("mv411")
+    bam_path = bam_dir / "MV411-CAT_MLL-N-1.bam"
+
+    import shutil
+    shutil.copy2(test_bam, bam_path)
+    bai = test_bam.with_suffix(".bam.bai")
+    if bai.exists():
+        shutil.copy2(bai, bam_path.with_suffix(".bam.bai"))
+
+    return bam_path
+
+
+# ---------------------------------------------------------------------------
 # Subsampled BAM file for MCC integration tests
 # ---------------------------------------------------------------------------
 

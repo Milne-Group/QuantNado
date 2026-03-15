@@ -1,7 +1,10 @@
 """Unit tests for QuantNado enums."""
 import pytest
 
+import bamnado
+
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
+from quantnado.dataset.store_bam import BamType, _copy_read_filter
 
 
 class TestFeatureType:
@@ -62,6 +65,56 @@ class TestReductionMethod:
             ReductionMethod.MIN,
             ReductionMethod.MEDIAN,
         }
+
+
+class TestBamType:
+    def test_values(self):
+        assert BamType.UNSTRANDED == "unstranded"
+        assert BamType.STRANDED == "stranded"
+        assert BamType.MICRO_CAPTURE_C == "mcc"
+
+    def test_from_string(self):
+        assert BamType("unstranded") is BamType.UNSTRANDED
+        assert BamType("stranded") is BamType.STRANDED
+        assert BamType("mcc") is BamType.MICRO_CAPTURE_C
+
+    def test_is_str(self):
+        assert isinstance(BamType.STRANDED, str)
+
+    def test_invalid_raises(self):
+        with pytest.raises(ValueError):
+            BamType("paired")
+
+    def test_all_members(self):
+        assert set(BamType) == {BamType.UNSTRANDED, BamType.STRANDED, BamType.MICRO_CAPTURE_C}
+
+
+class TestCopyReadFilter:
+    """Tests for _copy_read_filter (delegates to ReadFilter.copy() in bamnado >=0.5.6)."""
+
+    def test_copy_produces_independent_object(self):
+        rf = bamnado.ReadFilter(min_mapq=30)
+        rf_copy = _copy_read_filter(rf)
+        assert rf_copy is not rf
+
+    def test_copy_preserves_min_mapq(self):
+        rf = bamnado.ReadFilter(min_mapq=42)
+        assert _copy_read_filter(rf).min_mapq == 42
+
+    def test_copy_preserves_all_set_attributes(self):
+        rf = bamnado.ReadFilter(min_mapq=20)
+        rf.filter_tag = "VP"
+        rf.filter_tag_value = "RUNX1"
+        rf_copy = _copy_read_filter(rf)
+        assert rf_copy.min_mapq == 20
+        assert rf_copy.filter_tag == "VP"
+        assert rf_copy.filter_tag_value == "RUNX1"
+
+    def test_copy_is_independent_mutation(self):
+        rf = bamnado.ReadFilter(min_mapq=10)
+        rf_copy = _copy_read_filter(rf)
+        rf_copy.min_mapq = 99
+        assert rf.min_mapq == 10, "Mutating copy should not affect original"
 
 
 class TestAnchorPoint:

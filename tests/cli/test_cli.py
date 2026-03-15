@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from quantnado.cli import app, combine_metadata_main, make_zarr_main
-from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_bam import BamStore, BamType
 from quantnado.dataset.store_multiomics import MultiomicsStore
 
 
@@ -522,3 +522,183 @@ def test_combine_metadata_main_merges_csvs(tmp_path):
     reloaded = pd.read_csv(out)
     assert set(reloaded["sample_id"]) == {"s1", "s2"}
     assert len(reloaded) == 2
+
+
+# ---------------------------------------------------------------------------
+# --bam-type flag
+# ---------------------------------------------------------------------------
+
+
+def _fake_from_files_capture(calls, monkeypatch):
+    def fake(**kwargs):
+        calls.append(kwargs)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake)
+
+
+def test_create_dataset_bam_type_default_is_unstranded(tmp_path, monkeypatch):
+    """Omitting --bam-type passes BamType.UNSTRANDED to from_files."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["bam_type"] == BamType.UNSTRANDED
+
+
+def test_create_dataset_bam_type_bare_string(tmp_path, monkeypatch):
+    """--bam-type stranded passes BamType.STRANDED to from_files."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--bam-type", "stranded",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["bam_type"] == BamType.STRANDED
+
+
+def test_create_dataset_bam_type_mcc(tmp_path, monkeypatch):
+    """--bam-type mcc passes BamType.MICRO_CAPTURE_C to from_files."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--bam-type", "mcc",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["bam_type"] == BamType.MICRO_CAPTURE_C
+
+
+def test_create_dataset_bam_type_csv_list(tmp_path, monkeypatch):
+    """--bam-type comma-separated list is parsed into a list of BamType."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    b1, b2 = tmp_path / "a.bam", tmp_path / "b.bam"
+    b1.write_text("dummy")
+    b2.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--bam", f"{b1},{b2}",
+        "--output", str(tmp_path / "out"),
+        "--bam-type", "stranded,unstranded",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["bam_type"] == [BamType.STRANDED, BamType.UNSTRANDED]
+
+
+def test_create_dataset_bam_type_csv_dict(tmp_path, monkeypatch):
+    """--bam-type key:value pairs are parsed into a dict of BamType per sample."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--bam-type", "s:stranded",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["bam_type"] == {"s": BamType.STRANDED}
+
+
+def test_create_dataset_bam_type_csv_dict_multi(tmp_path, monkeypatch):
+    """Multiple key:value pairs are all parsed correctly."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    b1, b2 = tmp_path / "rna.bam", tmp_path / "mcc.bam"
+    b1.write_text("dummy")
+    b2.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", f"{b1},{b2}",
+        "--output", str(tmp_path / "out"),
+        "--bam-type", "rna:stranded,mcc:mcc",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["bam_type"] == {"rna": BamType.STRANDED, "mcc": BamType.MICRO_CAPTURE_C}
+
+
+def test_create_dataset_bam_type_invalid_value_exits(tmp_path, monkeypatch):
+    """An unrecognised BAM type string should exit non-zero."""
+    _fake_from_files_capture([], monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--bam-type", "paired_end",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code != 0
+
+
+def test_create_dataset_bam_type_invalid_dict_value_exits(tmp_path, monkeypatch):
+    """An unrecognised type in a key:value pair should exit non-zero."""
+    _fake_from_files_capture([], monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--bam-type", "s:bad_type",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# --count-fragments and --viewpoint-tag flags
+# ---------------------------------------------------------------------------
+
+
+def test_create_dataset_count_fragments_flag(tmp_path, monkeypatch):
+    """--count-fragments passes count_fragments=True to from_files."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--count-fragments",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["count_fragments"] is True
+
+
+def test_create_dataset_count_fragments_default_false(tmp_path, monkeypatch):
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert calls[0]["count_fragments"] is False
+
+
+def test_create_dataset_help_shows_bam_type_and_count_fragments():
+    result = runner.invoke(app, ["create-dataset", "--help"])
+    out = _strip_ansi(result.output)
+    assert "bam-type" in out
+    assert "count-frag" in out      # may be truncated to --count-fragme… in narrow terminals
+    assert "viewpoint-tag" in out
+    assert "--stranded" not in out  # old flag must be gone

@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from .store_bam import BamStore
+from .store_bam import BamStore, BamType
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
 from .constants import DEFAULT_CHUNK_LEN
@@ -98,7 +98,8 @@ class MultiomicsStore:
         log_file: "Path | None" = None,
         max_workers: int = 1,
         test: bool = False,
-        stranded: list[str] | dict[str, str] | None = None,
+        bam_type: BamType | list[BamType] | dict[str, BamType] = BamType.UNSTRANDED,
+        count_fragments: bool = False,
     ) -> "MultiomicsStore":
         """
         Create a MultiomicsStore from genomic data files.
@@ -153,19 +154,17 @@ class MultiomicsStore:
             Samples are processed sequentially to keep memory usage low.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
-        stranded : list of str or dict, optional
-            Strand-specific coverage configuration.  Pass a **list** of sample names
-            to use ``"U"`` (raw alignment orientation), or a **dict** mapping
-            sample names to library types (``"R"``, ``"F"``, or ``"U"``).
-            Use a dict for RNA-seq so read1/read2 orientation is taken into account.
+        bam_type : BamType or list or dict, default BamType.UNSTRANDED
+            BAM type for coverage processing.  Pass a single :class:`BamType`
+            to apply to all samples, a list in the same order as *bam_files*,
+            or a dict mapping sample names to :class:`BamType` values.
 
-            - ``"R"`` (ISR/dUTP/TruSeq Stranded): read1 aligns to reverse strand.
-            - ``"F"`` (ISF/ligation): read1 aligns to forward strand.
-            - ``"U"``: split purely by raw alignment orientation.
-
-            Example::
-
-                stranded={"rna-rep1": "R", "rna-rep2": "R"}
+            - ``BamType.UNSTRANDED``: combined-strand coverage (default).
+            - ``BamType.STRANDED``: separate forward and reverse coverage arrays.
+            - ``BamType.MICRO_CAPTURE_C``: MCC mode — each BAM is expanded into
+              one virtual sample per viewpoint (VP tag).
+        count_fragments : bool, default False
+            Count fragments (insert-level) instead of individual reads.
         """
         if not any([bam_files, vcf_files, methyldackel_files, cxreport_files, mc_files, hmc_files]):
             raise ValueError(
@@ -200,7 +199,8 @@ class MultiomicsStore:
                 log_file=log_file,
                 max_workers=max_workers,
                 test=test,
-                stranded=stranded,
+                bam_type=bam_type,
+                count_fragments=count_fragments,
             )
 
         # Route methylation: mixed (bedgraph + cx), bedgraph-only, cxreport, or split cx
@@ -395,7 +395,7 @@ class MultiomicsStore:
                 if (
                     modality == "coverage"
                     and self.coverage is not None
-                    and bool(self.coverage._strandedness_map.get(sid))
+                    and self.coverage.bam_type_map.get(sid) == BamType.STRANDED
                 ):
                     label = "stranded_coverage"
                 else:
