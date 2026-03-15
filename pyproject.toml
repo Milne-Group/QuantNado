@@ -40,6 +40,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+lanceotron = [
+    "torch>=2.0",
+    "scipy>=1.10",
+]
 dev = [
     "mkdocs-material==9.7.4",
     "mkdocs>=1.6,<2.0",
@@ -67,6 +71,9 @@ local_scheme = "no-local-version"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools.package-data]
+"quantnado.peak_calling.static.lanceotron" = ["*.pt", "*.npy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -53,7 +53,7 @@ def _setup_cli_logging(log_file: Path, verbose: bool):
 @app.command()
 def call_peaks(
     zarr: Path = typer.Option(..., "--zarr", help="Path to a QuantNado zarr coverage store"),
-    method: str = typer.Option("quantile", "--method", help="Peak calling method: quantile or seacr"),
+    method: str = typer.Option("quantile", "--method", help="Peak calling method: quantile, seacr, or lanceotron"),
     output_dir: Path = typer.Option(..., "--output-dir", help="Directory to save output peak files (BED format)"),
     blacklist: Path | None = typer.Option(None, "--blacklist", help="Path to a BED file with regions to exclude"),
     # quantile options
@@ -66,6 +66,10 @@ def call_peaks(
     fdr_threshold: float = typer.Option(0.01, "--fdr", help="[seacr] Numeric FDR threshold (0–1) used when no control zarr is provided"),
     norm: str = typer.Option("non", "--norm", help='[seacr] "norm" to normalise control to experimental signal, "non" to skip'),
     stringency: str = typer.Option("stringent", "--stringency", help='[seacr] "stringent" (peak of AUC curve) or "relaxed" (knee of curve)'),
+    # lanceotron options
+    score_threshold: float = typer.Option(0.5, "--score-threshold", help="[lanceotron] Minimum overall_classification score (0–1)"),
+    smooth_window: int = typer.Option(400, "--smooth-window", help="[lanceotron] Rolling mean window for candidate detection (bp)"),
+    lanceotron_batch_size: int = typer.Option(512, "--batch-size", help="[lanceotron] Inference batch size"),
     # shared
     log_file: Path = typer.Option("quantnado_peaks.log", "--log-file", help="Path to the log file"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
@@ -73,8 +77,9 @@ def call_peaks(
     """
     Call peaks from a QuantNado zarr coverage store.
 
-    Use --method quantile (default) for quantile-threshold peak calling, or
-    --method seacr for SEACR-style AUC island calling (pure Python).
+    --method quantile   quantile-threshold peak calling (default)
+    --method seacr      SEACR-style AUC island calling (pure Python)
+    --method lanceotron LanceOtron ML classifier (requires: pip install quantnado[lanceotron])
     """
     _setup_cli_logging(log_file, verbose)
     try:
@@ -102,8 +107,19 @@ def call_peaks(
                 stringency=stringency,
                 blacklist_file=blacklist,
             )
+        elif method == "lanceotron":
+            from quantnado.peak_calling.call_lanceotron_peaks import call_lanceotron_peaks_from_zarr
+
+            call_lanceotron_peaks_from_zarr(
+                zarr_path=zarr,
+                output_dir=output_dir,
+                score_threshold=score_threshold,
+                blacklist_file=blacklist,
+                smooth_window=smooth_window,
+                batch_size=lanceotron_batch_size,
+            )
         else:
-            logger.error(f"Unknown method '{method}'. Choose 'quantile' or 'seacr'.")
+            logger.error(f"Unknown method '{method}'. Choose 'quantile', 'seacr', or 'lanceotron'.")
             raise typer.Exit(code=1)
 
         logger.success(f"Finished calling peaks: {output_dir}")
