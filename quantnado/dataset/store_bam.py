@@ -626,7 +626,7 @@ class BamStore(BaseStore):
         is_stranded: bool,
         use_fragment: bool = False,
         read_filter: bamnado.ReadFilter | None = None,
-    ) -> tuple[float, np.ndarray, np.ndarray | float, np.ndarray | None]:
+    ) -> tuple[float, np.ndarray, np.ndarray | float, np.ndarray, None]:
         """
         Extract signal for a single chromosome from the BAM file.
 
