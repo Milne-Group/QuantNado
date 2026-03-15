@@ -4,7 +4,7 @@ import pytest
 import bamnado
 
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
-from quantnado.dataset.store_bam import BamType, _copy_read_filter
+from quantnado.dataset.store_bam import CoverageType, _copy_read_filter
 
 
 class TestFeatureType:
@@ -67,26 +67,26 @@ class TestReductionMethod:
         }
 
 
-class TestBamType:
+class TestCoverageType:
     def test_values(self):
-        assert BamType.UNSTRANDED == "unstranded"
-        assert BamType.STRANDED == "stranded"
-        assert BamType.MICRO_CAPTURE_C == "mcc"
+        assert CoverageType.UNSTRANDED == "unstranded"
+        assert CoverageType.STRANDED == "stranded"
+        assert CoverageType.MICRO_CAPTURE_C == "mcc"
 
     def test_from_string(self):
-        assert BamType("unstranded") is BamType.UNSTRANDED
-        assert BamType("stranded") is BamType.STRANDED
-        assert BamType("mcc") is BamType.MICRO_CAPTURE_C
+        assert CoverageType("unstranded") is CoverageType.UNSTRANDED
+        assert CoverageType("stranded") is CoverageType.STRANDED
+        assert CoverageType("mcc") is CoverageType.MICRO_CAPTURE_C
 
     def test_is_str(self):
-        assert isinstance(BamType.STRANDED, str)
+        assert isinstance(CoverageType.STRANDED, str)
 
     def test_invalid_raises(self):
         with pytest.raises(ValueError):
-            BamType("paired")
+            CoverageType("paired")
 
     def test_all_members(self):
-        assert set(BamType) == {BamType.UNSTRANDED, BamType.STRANDED, BamType.MICRO_CAPTURE_C}
+        assert set(CoverageType) == {CoverageType.UNSTRANDED, CoverageType.STRANDED, CoverageType.MICRO_CAPTURE_C}
 
 
 class TestCopyReadFilter:

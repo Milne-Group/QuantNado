@@ -14,7 +14,7 @@ from loguru import logger
 import traceback
 from pathlib import Path
 
-from quantnado.dataset.store_bam import BamStore, BamType
+from quantnado.dataset.store_bam import BamStore, CoverageType
 from quantnado.utils import classify_methylation_files, setup_logging
 from quantnado._version import __version__
 
@@ -122,9 +122,9 @@ def create_dataset(
     vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
     # Coverage options
     filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
-    bam_type: str | None = typer.Option(
+    coverage_type: str | None = typer.Option(
         None,
-        "--bam-type",
+        "--coverage-type",
         help=(
             "BAM type for coverage processing. "
             "Single value: 'unstranded' (default), 'stranded', or 'mcc' (Micro-Capture C) — applies to all BAM files. "
@@ -140,7 +140,7 @@ def create_dataset(
     viewpoint_tag: str = typer.Option(
         "VP",
         "--viewpoint-tag",
-        help="SAM tag used to identify MCC viewpoints (default: VP). Only relevant when --bam-type includes 'mcc'.",
+        help="SAM tag used to identify MCC viewpoints (default: VP). Only relevant when --coverage-type includes 'mcc'.",
     ),
     # Process control
     overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite", help="Overwrite existing sub-stores."),
@@ -180,11 +180,26 @@ def create_dataset(
 
     At least one of --bam, --methylation, or --vcf must be provided.
     Multiple files can be passed as a comma-separated list, e.g. --bam a.bam,b.bam
+
+    Coverage type (--coverage-type) controls how BAM reads are counted:
+
+    \b
+      unstranded          combined-strand coverage (default)
+      stranded            separate forward and reverse arrays
+      mcc                 Micro-Capture C — one virtual sample per viewpoint tag
+
+    Pass a single value to apply to all BAM files, a comma-separated list
+    in the same order as --bam, or sample:type pairs for per-sample control:
+
+    \b
+      --coverage-type stranded
+      --coverage-type stranded,unstranded,mcc
+      --coverage-type rna-rep1:stranded,chip-rep1:unstranded,capture:mcc
     """
     _setup_cli_logging(log_file, verbose)
 
-    def _parse_bam_type(raw: str | None) -> BamType | list[BamType] | dict[str, BamType]:
-        """Convert the --bam-type CLI string into the form BamStore expects.
+    def _parse_coverage_type(raw: str | None) -> CoverageType | list[CoverageType] | dict[str, CoverageType]:
+        """Convert the --coverage-type CLI string into the form BamStore expects.
 
         Accepted formats:
             single:  "stranded"
@@ -192,46 +207,46 @@ def create_dataset(
             dict:    "sample1:stranded,sample2:mcc"
         """
         if raw is None:
-            return BamType.UNSTRANDED
+            return CoverageType.UNSTRANDED
         parts = [p.strip() for p in raw.split(",") if p.strip()]
         # Single bare value
         if len(parts) == 1 and ":" not in parts[0]:
             try:
-                return BamType(parts[0].lower())
+                return CoverageType(parts[0].lower())
             except ValueError:
                 logger.error(
-                    f"--bam-type '{parts[0]}' is not a valid BAM type. "
-                    f"Valid values: {[e.value for e in BamType]}"
+                    f"--coverage-type '{parts[0]}' is not a valid coverage type. "
+                    f"Valid values: {[e.value for e in CoverageType]}"
                 )
                 raise typer.Exit(code=1)
         # Detect dict form (any part contains ":")
         if any(":" in p for p in parts):
-            result: dict[str, BamType] = {}
+            result: dict[str, CoverageType] = {}
             for part in parts:
                 if ":" not in part:
                     logger.error(
-                        f"--bam-type: '{part}' is missing a sample name — "
+                        f"--coverage-type: '{part}' is missing a sample name — "
                         "use 'sample:type' pairs, e.g. 'sample1:stranded,sample2:mcc'"
                     )
                     raise typer.Exit(code=1)
                 sample, _, type_str = part.partition(":")
                 try:
-                    result[sample.strip()] = BamType(type_str.strip().lower())
+                    result[sample.strip()] = CoverageType(type_str.strip().lower())
                 except ValueError:
                     logger.error(
-                        f"--bam-type: '{type_str.strip()}' is not a valid BAM type. "
-                        f"Valid values: {[e.value for e in BamType]}"
+                        f"--coverage-type: '{type_str.strip()}' is not a valid coverage type. "
+                        f"Valid values: {[e.value for e in CoverageType]}"
                     )
                     raise typer.Exit(code=1)
             return result
         # List form
         try:
-            return [BamType(p.lower()) for p in parts]
+            return [CoverageType(p.lower()) for p in parts]
         except ValueError as exc:
-            logger.error(f"--bam-type list contains invalid value: {exc}")
+            logger.error(f"--coverage-type list contains invalid value: {exc}")
             raise typer.Exit(code=1)
 
-    bam_type_parsed = _parse_bam_type(bam_type)
+    coverage_type_parsed = _parse_coverage_type(coverage_type)
 
     def _split(s: str | None) -> list[str]:
         return [v.strip() for v in s.split(",") if v.strip()] if s else []
@@ -296,7 +311,7 @@ def create_dataset(
             resume=resume,
             max_workers=max_workers,
             test=test,
-            bam_type=bam_type_parsed,
+            coverage_type=coverage_type_parsed,
             count_fragments=count_fragments,
         )
         logger.success(f"Multiomics store created: {output}")

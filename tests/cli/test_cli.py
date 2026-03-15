@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from quantnado.cli import app, combine_metadata_main, make_zarr_main
-from quantnado.dataset.store_bam import BamStore, BamType
+from quantnado.dataset.store_bam import BamStore, CoverageType
 from quantnado.dataset.store_multiomics import MultiomicsStore
 
 
@@ -525,7 +525,7 @@ def test_combine_metadata_main_merges_csvs(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# --bam-type flag
+# --coverage-type flag
 # ---------------------------------------------------------------------------
 
 
@@ -535,8 +535,8 @@ def _fake_from_files_capture(calls, monkeypatch):
     monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake)
 
 
-def test_create_dataset_bam_type_default_is_unstranded(tmp_path, monkeypatch):
-    """Omitting --bam-type passes BamType.UNSTRANDED to from_files."""
+def test_create_dataset_coverage_type_default_is_unstranded(tmp_path, monkeypatch):
+    """Omitting --coverage-type passes CoverageType.UNSTRANDED to from_files."""
     calls = []
     _fake_from_files_capture(calls, monkeypatch)
     bam = tmp_path / "s.bam"
@@ -547,11 +547,11 @@ def test_create_dataset_bam_type_default_is_unstranded(tmp_path, monkeypatch):
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code == 0, result.output
-    assert calls[0]["bam_type"] == BamType.UNSTRANDED
+    assert calls[0]["coverage_type"] == CoverageType.UNSTRANDED
 
 
-def test_create_dataset_bam_type_bare_string(tmp_path, monkeypatch):
-    """--bam-type stranded passes BamType.STRANDED to from_files."""
+def test_create_dataset_coverage_type_bare_string(tmp_path, monkeypatch):
+    """--coverage-type stranded passes CoverageType.STRANDED to from_files."""
     calls = []
     _fake_from_files_capture(calls, monkeypatch)
     bam = tmp_path / "s.bam"
@@ -559,15 +559,15 @@ def test_create_dataset_bam_type_bare_string(tmp_path, monkeypatch):
     result = runner.invoke(app, [
         "create-dataset", "--bam", str(bam),
         "--output", str(tmp_path / "out"),
-        "--bam-type", "stranded",
+        "--coverage-type", "stranded",
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code == 0, result.output
-    assert calls[0]["bam_type"] == BamType.STRANDED
+    assert calls[0]["coverage_type"] == CoverageType.STRANDED
 
 
-def test_create_dataset_bam_type_mcc(tmp_path, monkeypatch):
-    """--bam-type mcc passes BamType.MICRO_CAPTURE_C to from_files."""
+def test_create_dataset_coverage_type_mcc(tmp_path, monkeypatch):
+    """--coverage-type mcc passes CoverageType.MICRO_CAPTURE_C to from_files."""
     calls = []
     _fake_from_files_capture(calls, monkeypatch)
     bam = tmp_path / "s.bam"
@@ -575,15 +575,15 @@ def test_create_dataset_bam_type_mcc(tmp_path, monkeypatch):
     result = runner.invoke(app, [
         "create-dataset", "--bam", str(bam),
         "--output", str(tmp_path / "out"),
-        "--bam-type", "mcc",
+        "--coverage-type", "mcc",
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code == 0, result.output
-    assert calls[0]["bam_type"] == BamType.MICRO_CAPTURE_C
+    assert calls[0]["coverage_type"] == CoverageType.MICRO_CAPTURE_C
 
 
-def test_create_dataset_bam_type_csv_list(tmp_path, monkeypatch):
-    """--bam-type comma-separated list is parsed into a list of BamType."""
+def test_create_dataset_coverage_type_csv_list(tmp_path, monkeypatch):
+    """--coverage-type comma-separated list is parsed into a list of CoverageType."""
     calls = []
     _fake_from_files_capture(calls, monkeypatch)
     b1, b2 = tmp_path / "a.bam", tmp_path / "b.bam"
@@ -593,15 +593,15 @@ def test_create_dataset_bam_type_csv_list(tmp_path, monkeypatch):
         "create-dataset",
         "--bam", f"{b1},{b2}",
         "--output", str(tmp_path / "out"),
-        "--bam-type", "stranded,unstranded",
+        "--coverage-type", "stranded,unstranded",
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code == 0, result.output
-    assert calls[0]["bam_type"] == [BamType.STRANDED, BamType.UNSTRANDED]
+    assert calls[0]["coverage_type"] == [CoverageType.STRANDED, CoverageType.UNSTRANDED]
 
 
-def test_create_dataset_bam_type_csv_dict(tmp_path, monkeypatch):
-    """--bam-type key:value pairs are parsed into a dict of BamType per sample."""
+def test_create_dataset_coverage_type_csv_dict(tmp_path, monkeypatch):
+    """--coverage-type key:value pairs are parsed into a dict of CoverageType per sample."""
     calls = []
     _fake_from_files_capture(calls, monkeypatch)
     bam = tmp_path / "s.bam"
@@ -609,14 +609,14 @@ def test_create_dataset_bam_type_csv_dict(tmp_path, monkeypatch):
     result = runner.invoke(app, [
         "create-dataset", "--bam", str(bam),
         "--output", str(tmp_path / "out"),
-        "--bam-type", "s:stranded",
+        "--coverage-type", "s:stranded",
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code == 0, result.output
-    assert calls[0]["bam_type"] == {"s": BamType.STRANDED}
+    assert calls[0]["coverage_type"] == {"s": CoverageType.STRANDED}
 
 
-def test_create_dataset_bam_type_csv_dict_multi(tmp_path, monkeypatch):
+def test_create_dataset_coverage_type_csv_dict_multi(tmp_path, monkeypatch):
     """Multiple key:value pairs are all parsed correctly."""
     calls = []
     _fake_from_files_capture(calls, monkeypatch)
@@ -626,14 +626,14 @@ def test_create_dataset_bam_type_csv_dict_multi(tmp_path, monkeypatch):
     result = runner.invoke(app, [
         "create-dataset", "--bam", f"{b1},{b2}",
         "--output", str(tmp_path / "out"),
-        "--bam-type", "rna:stranded,mcc:mcc",
+        "--coverage-type", "rna:stranded,mcc:mcc",
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code == 0, result.output
-    assert calls[0]["bam_type"] == {"rna": BamType.STRANDED, "mcc": BamType.MICRO_CAPTURE_C}
+    assert calls[0]["coverage_type"] == {"rna": CoverageType.STRANDED, "mcc": CoverageType.MICRO_CAPTURE_C}
 
 
-def test_create_dataset_bam_type_invalid_value_exits(tmp_path, monkeypatch):
+def test_create_dataset_coverage_type_invalid_value_exits(tmp_path, monkeypatch):
     """An unrecognised BAM type string should exit non-zero."""
     _fake_from_files_capture([], monkeypatch)
     bam = tmp_path / "s.bam"
@@ -641,13 +641,13 @@ def test_create_dataset_bam_type_invalid_value_exits(tmp_path, monkeypatch):
     result = runner.invoke(app, [
         "create-dataset", "--bam", str(bam),
         "--output", str(tmp_path / "out"),
-        "--bam-type", "paired_end",
+        "--coverage-type", "paired_end",
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code != 0
 
 
-def test_create_dataset_bam_type_invalid_dict_value_exits(tmp_path, monkeypatch):
+def test_create_dataset_coverage_type_invalid_dict_value_exits(tmp_path, monkeypatch):
     """An unrecognised type in a key:value pair should exit non-zero."""
     _fake_from_files_capture([], monkeypatch)
     bam = tmp_path / "s.bam"
@@ -655,7 +655,7 @@ def test_create_dataset_bam_type_invalid_dict_value_exits(tmp_path, monkeypatch)
     result = runner.invoke(app, [
         "create-dataset", "--bam", str(bam),
         "--output", str(tmp_path / "out"),
-        "--bam-type", "s:bad_type",
+        "--coverage-type", "s:bad_type",
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code != 0
@@ -695,10 +695,10 @@ def test_create_dataset_count_fragments_default_false(tmp_path, monkeypatch):
     assert calls[0]["count_fragments"] is False
 
 
-def test_create_dataset_help_shows_bam_type_and_count_fragments():
+def test_create_dataset_help_shows_coverage_type_and_count_fragments():
     result = runner.invoke(app, ["create-dataset", "--help"])
     out = _strip_ansi(result.output)
-    assert "bam-type" in out
+    assert "coverage-type" in out
     assert "count-frag" in out      # may be truncated to --count-fragme… in narrow terminals
     assert "viewpoint-tag" in out
     assert "--stranded" not in out  # old flag must be gone

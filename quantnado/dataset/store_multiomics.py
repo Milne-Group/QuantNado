@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from .store_bam import BamStore, BamType
+from .store_bam import BamStore, CoverageType
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
 from .constants import DEFAULT_CHUNK_LEN
@@ -98,7 +98,7 @@ class MultiomicsStore:
         log_file: "Path | None" = None,
         max_workers: int = 1,
         test: bool = False,
-        bam_type: BamType | list[BamType] | dict[str, BamType] = BamType.UNSTRANDED,
+        coverage_type: CoverageType | list[CoverageType] | dict[str, CoverageType] = CoverageType.UNSTRANDED,
         count_fragments: bool = False,
     ) -> "MultiomicsStore":
         """
@@ -154,14 +154,14 @@ class MultiomicsStore:
             Samples are processed sequentially to keep memory usage low.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
-        bam_type : BamType or list or dict, default BamType.UNSTRANDED
-            BAM type for coverage processing.  Pass a single :class:`BamType`
+        coverage_type : CoverageType or list or dict, default CoverageType.UNSTRANDED
+            BAM type for coverage processing.  Pass a single :class:`CoverageType`
             to apply to all samples, a list in the same order as *bam_files*,
-            or a dict mapping sample names to :class:`BamType` values.
+            or a dict mapping sample names to :class:`CoverageType` values.
 
-            - ``BamType.UNSTRANDED``: combined-strand coverage (default).
-            - ``BamType.STRANDED``: separate forward and reverse coverage arrays.
-            - ``BamType.MICRO_CAPTURE_C``: MCC mode — each BAM is expanded into
+            - ``CoverageType.UNSTRANDED``: combined-strand coverage (default).
+            - ``CoverageType.STRANDED``: separate forward and reverse coverage arrays.
+            - ``CoverageType.MICRO_CAPTURE_C``: MCC mode — each BAM is expanded into
               one virtual sample per viewpoint (VP tag).
         count_fragments : bool, default False
             Count fragments (insert-level) instead of individual reads.
@@ -199,7 +199,7 @@ class MultiomicsStore:
                 log_file=log_file,
                 max_workers=max_workers,
                 test=test,
-                bam_type=bam_type,
+                coverage_type=coverage_type,
                 count_fragments=count_fragments,
             )
 
@@ -395,7 +395,7 @@ class MultiomicsStore:
                 if (
                     modality == "coverage"
                     and self.coverage is not None
-                    and self.coverage.bam_type_map.get(sid) == BamType.STRANDED
+                    and self.coverage.coverage_type_map.get(sid) == CoverageType.STRANDED
                 ):
                     label = "stranded_coverage"
                 else:

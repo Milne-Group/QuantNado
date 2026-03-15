@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from quantnado.dataset.store_bam import BamStore, BamType
+from quantnado.dataset.store_bam import BamStore, CoverageType
 
 pytestmark = pytest.mark.integration
 
@@ -26,7 +26,7 @@ def mcc_store(mock_mcc_bam, tmp_path_factory):
     return BamStore.from_bam_files(
         bam_files=[str(mock_mcc_bam)],
         store_path=store_path,
-        bam_type=BamType.MICRO_CAPTURE_C,
+        coverage_type=CoverageType.MICRO_CAPTURE_C,
         test=True,
     )
 

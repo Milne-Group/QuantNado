@@ -7,7 +7,7 @@ import pytest
 
 import bamnado
 
-from quantnado.dataset.store_bam import BamStore, BamType
+from quantnado.dataset.store_bam import BamStore, CoverageType
 from quantnado.dataset.core import BaseStore as QuantNadoDataset
 from quantnado.utils import estimate_chunk_len
 
@@ -670,48 +670,48 @@ class TestBamStoreErrorPaths:
 
 
 # ---------------------------------------------------------------------------
-# bam_type_map property
+# coverage_type_map property
 # ---------------------------------------------------------------------------
 
 
-class TestBamTypeMap:
+class TestCoverageTypeMap:
     def test_single_value_applies_to_all_samples(self, tmp_path, chromsizes, sample_names):
-        store = BamStore(tmp_path / "ds", chromsizes, sample_names, bam_type=BamType.STRANDED)
-        assert store.bam_type_map == {"s1": BamType.STRANDED, "s2": BamType.STRANDED}
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names, coverage_type=CoverageType.STRANDED)
+        assert store.coverage_type_map == {"s1": CoverageType.STRANDED, "s2": CoverageType.STRANDED}
 
     def test_default_is_unstranded(self, tmp_path, chromsizes, sample_names):
         store = BamStore(tmp_path / "ds", chromsizes, sample_names)
-        assert store.bam_type_map == {"s1": BamType.UNSTRANDED, "s2": BamType.UNSTRANDED}
+        assert store.coverage_type_map == {"s1": CoverageType.UNSTRANDED, "s2": CoverageType.UNSTRANDED}
 
     def test_list_maps_in_order(self, tmp_path, chromsizes, sample_names):
         store = BamStore(
             tmp_path / "ds", chromsizes, sample_names,
-            bam_type=[BamType.STRANDED, BamType.UNSTRANDED],
+            coverage_type=[CoverageType.STRANDED, CoverageType.UNSTRANDED],
         )
-        assert store.bam_type_map == {"s1": BamType.STRANDED, "s2": BamType.UNSTRANDED}
+        assert store.coverage_type_map == {"s1": CoverageType.STRANDED, "s2": CoverageType.UNSTRANDED}
 
     def test_dict_partial_defaults_to_unstranded(self, tmp_path, chromsizes, sample_names):
         store = BamStore(
             tmp_path / "ds", chromsizes, sample_names,
-            bam_type={"s1": BamType.STRANDED},
+            coverage_type={"s1": CoverageType.STRANDED},
         )
-        assert store.bam_type_map["s1"] == BamType.STRANDED
-        assert store.bam_type_map["s2"] == BamType.UNSTRANDED
+        assert store.coverage_type_map["s1"] == CoverageType.STRANDED
+        assert store.coverage_type_map["s2"] == CoverageType.UNSTRANDED
 
     def test_dict_unknown_sample_raises(self, tmp_path, chromsizes, sample_names):
         with pytest.raises(ValueError, match="Unknown sample names"):
             BamStore(
                 tmp_path / "ds", chromsizes, sample_names,
-                bam_type={"s1": BamType.STRANDED, "bad_sample": BamType.UNSTRANDED},
+                coverage_type={"s1": CoverageType.STRANDED, "bad_sample": CoverageType.UNSTRANDED},
             )
 
     def test_list_wrong_length_raises(self, tmp_path, chromsizes, sample_names):
         with pytest.raises(ValueError, match="same length"):
             store = BamStore(
                 tmp_path / "ds", chromsizes, sample_names,
-                bam_type=[BamType.STRANDED],
+                coverage_type=[CoverageType.STRANDED],
             )
-            _ = store.bam_type_map
+            _ = store.coverage_type_map
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +755,7 @@ class TestBamFilterMap:
 
 
 # ---------------------------------------------------------------------------
-# BamType.STRANDED array creation and open() roundtrip
+# CoverageType.STRANDED array creation and open() roundtrip
 # ---------------------------------------------------------------------------
 
 
@@ -765,7 +765,7 @@ def test_stranded_store_creates_fwd_rev_arrays(tmp_path, chromsizes, sample_name
         lambda *a, **kw: (0.0, np.ones(a[3], dtype=np.uint32), np.full(a[3], 2, dtype=np.uint32))
         if a[4] else (0.0, np.zeros(a[3]), None),
     )
-    store = BamStore(tmp_path / "ds", chromsizes, sample_names, bam_type=BamType.STRANDED)
+    store = BamStore(tmp_path / "ds", chromsizes, sample_names, coverage_type=CoverageType.STRANDED)
     store.process_samples(["0", "0"])
 
     for chrom in chromsizes:
@@ -775,22 +775,22 @@ def test_stranded_store_creates_fwd_rev_arrays(tmp_path, chromsizes, sample_name
     assert np.all(store.root["chr1_rev"][0, :] == 2)
 
 
-def test_open_roundtrips_stranded_bam_type(tmp_path, chromsizes, sample_names, monkeypatch):
+def test_open_roundtrips_stranded_coverage_type(tmp_path, chromsizes, sample_names, monkeypatch):
     monkeypatch.setattr(
         BamStore, "_process_chromosome",
         lambda *a, **kw: (0.0, np.zeros(a[3]), np.zeros(a[3])) if a[4] else (0.0, np.zeros(a[3]), None),
     )
-    BamStore(tmp_path / "ds", chromsizes, sample_names, bam_type=BamType.STRANDED).process_samples(["0", "0"])
+    BamStore(tmp_path / "ds", chromsizes, sample_names, coverage_type=CoverageType.STRANDED).process_samples(["0", "0"])
 
     reopened = BamStore.open(tmp_path / "ds")
-    assert all(bt == BamType.STRANDED for bt in reopened.bam_type_map.values())
+    assert all(bt == CoverageType.STRANDED for bt in reopened.coverage_type_map.values())
 
 
-def test_open_roundtrips_unstranded_bam_type(tmp_path, chromsizes, sample_names):
+def test_open_roundtrips_unstranded_coverage_type(tmp_path, chromsizes, sample_names):
     BamStore(tmp_path / "ds", chromsizes, sample_names)
 
     reopened = BamStore.open(tmp_path / "ds")
-    assert all(bt == BamType.UNSTRANDED for bt in reopened.bam_type_map.values())
+    assert all(bt == CoverageType.UNSTRANDED for bt in reopened.coverage_type_map.values())
 
 
 # ---------------------------------------------------------------------------
@@ -822,7 +822,7 @@ class TestMCCUnit:
         store = BamStore.from_bam_files(
             bam_files=[str(bam)],
             store_path=tmp_path / "store",
-            bam_type=BamType.MICRO_CAPTURE_C,
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
         )
 
         assert store.sample_names == ["sample1_VP_A", "sample1_VP_B"]
@@ -835,7 +835,7 @@ class TestMCCUnit:
         store = BamStore.from_bam_files(
             bam_files=[str(bam)],
             store_path=tmp_path / "store",
-            bam_type=BamType.MICRO_CAPTURE_C,
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
         )
 
         assert store.viewpoint_map == {"sample1_VP_A": "VP_A", "sample1_VP_B": "VP_B"}
@@ -848,7 +848,7 @@ class TestMCCUnit:
         store = BamStore.from_bam_files(
             bam_files=[str(bam)],
             store_path=tmp_path / "store",
-            bam_type=BamType.MICRO_CAPTURE_C,
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
         )
 
         assert set(store.sample_bam_map.values()) == {str(bam)}
@@ -861,7 +861,7 @@ class TestMCCUnit:
         store = BamStore.from_bam_files(
             bam_files=[str(bam)],
             store_path=tmp_path / "store",
-            bam_type=BamType.MICRO_CAPTURE_C,
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
         )
 
         assert store.completed_mask.all()
@@ -883,7 +883,7 @@ class TestMCCUnit:
         store = BamStore.from_bam_files(
             bam_files=[str(bam_mcc), str(bam_reg)],
             store_path=tmp_path / "store",
-            bam_type=[BamType.MICRO_CAPTURE_C, BamType.UNSTRANDED],
+            coverage_type=[CoverageType.MICRO_CAPTURE_C, CoverageType.UNSTRANDED],
             chromsizes={"chr1": 10},
         )
 
@@ -906,7 +906,7 @@ class TestMCCUnit:
             tmp_path / "ds",
             {"chr1": 5},
             ["s_VP_A", "s_VP_B"],
-            bam_type=BamType.MICRO_CAPTURE_C,
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
             sample_bam_map={"s_VP_A": "source.bam", "s_VP_B": "source.bam"},
             viewpoint_map={"s_VP_A": "VP_A", "s_VP_B": "VP_B"},
         )
@@ -937,7 +937,7 @@ class TestVPTagFilterInjection:
             tmp_path / "ds",
             {"chr1": 5},
             ["s_GENE1", "s_GENE2"],
-            bam_type=BamType.MICRO_CAPTURE_C,
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
             sample_bam_map={"s_GENE1": "x.bam", "s_GENE2": "x.bam"},
             viewpoint_map={"s_GENE1": "GENE1", "s_GENE2": "GENE2"},
         )
@@ -977,7 +977,7 @@ class TestVPTagFilterInjection:
             tmp_path / "ds",
             {"chr1": 5},
             ["s_LOCUS1"],
-            bam_type=BamType.MICRO_CAPTURE_C,
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
             sample_bam_map={"s_LOCUS1": "x.bam"},
             viewpoint_map={"s_LOCUS1": "LOCUS1"},
             viewpoint_tag="VT",

@@ -10,7 +10,7 @@ import pytest
 
 import bamnado
 
-from quantnado.dataset.store_bam import BamStore, BamType
+from quantnado.dataset.store_bam import BamStore, CoverageType
 
 pytestmark = pytest.mark.integration
 
@@ -40,7 +40,7 @@ def mv411_stranded_store(mv411_bam, tmp_path_factory):
         bam_files=[str(mv411_bam)],
         store_path=tmp_path_factory.mktemp("mv411_stranded") / "stranded",
         chromsizes=_TEST_CHROMS,
-        bam_type=BamType.STRANDED,
+        coverage_type=CoverageType.STRANDED,
     )
 
 
@@ -147,9 +147,9 @@ def test_mv411_stranded_fwd_plus_rev_consistent_with_unstranded(
     )
 
 
-def test_mv411_stranded_bam_type_map(mv411_stranded_store, mv411_bam):
-    bt_map = mv411_stranded_store.bam_type_map
-    assert bt_map[mv411_bam.stem] == BamType.STRANDED
+def test_mv411_stranded_coverage_type_map(mv411_stranded_store, mv411_bam):
+    bt_map = mv411_stranded_store.coverage_type_map
+    assert bt_map[mv411_bam.stem] == CoverageType.STRANDED
 
 
 # ---------------------------------------------------------------------------

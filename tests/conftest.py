@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from loguru import logger
 
-from quantnado.dataset.store_bam import BamStore, BamType
+from quantnado.dataset.store_bam import BamStore, CoverageType
 
 # Ensure the project root is on sys.path so imports work when running locally.
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,7 +103,7 @@ def simple_store_extract_stranded(tmp_path, monkeypatch):
         tmp_path / "ds_extract_stranded",
         chromsizes,
         sample_names,
-        bam_type={"s1": BamType.STRANDED, "s2": BamType.STRANDED},
+        coverage_type={"s1": CoverageType.STRANDED, "s2": CoverageType.STRANDED},
     )
     store.process_samples(["1", "2"])
     return store

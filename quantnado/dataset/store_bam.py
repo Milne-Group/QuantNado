@@ -56,7 +56,8 @@ class Strandedness(StrEnum):
     REVERSE = "R"
     FORWARD = "F"
 
-class BamType(StrEnum):
+class CoverageType(StrEnum):
+    """Coverage type for BAM processing."""
     UNSTRANDED = "unstranded"
     STRANDED = "stranded"
     MICRO_CAPTURE_C = "mcc"
@@ -262,7 +263,7 @@ class BamStore(BaseStore):
         overwrite: bool = True,
         resume: bool = False,
         read_only: bool = False,
-        bam_type: BamType | list[BamType] | dict[str, BamType] = BamType.UNSTRANDED,
+        coverage_type: CoverageType | list[CoverageType] | dict[str, CoverageType] = CoverageType.UNSTRANDED,
         bam_filter: bamnado.ReadFilter | list[bamnado.ReadFilter] | dict[str, bamnado.ReadFilter] | None = None,
         count_fragments: bool = False,
         viewpoints: set[str] | None = None,
@@ -285,11 +286,11 @@ class BamStore(BaseStore):
             overwrite: Whether to overwrite an existing store.
             resume: Whether to resume from an existing store.
             read_only: Whether to open the store in read-only mode.
-            bam_type: BAM type information for each sample.
+            coverage_type: BAM type information for each sample.
                     - If None, only unstranded coverage is stored.
-                    - If BamType value, applies to all samples.
-                    - If list of BamType, defines bam_type for each sample.
-                    - If dict of sample name → BamType, applies specified type per sample. Defaults to unstranded if sample not listed.
+                    - If CoverageType value, applies to all samples.
+                    - If list of CoverageType, defines coverage_type for each sample.
+                    - If dict of sample name → CoverageType, applies specified type per sample. Defaults to unstranded if sample not listed.
             bam_filter: BAM read filter for processing reads.
             count_fragments: Whether to count fragments instead of reads.
             viewpoints: Set of viewpoint names.
@@ -319,7 +320,7 @@ class BamStore(BaseStore):
 
         self.n_samples = len(self.sample_names)
         self.sample_hash = _compute_sample_hash(self.sample_names)
-        self.bam_type = bam_type
+        self.coverage_type = coverage_type
         self.count_fragments = count_fragments
         self.viewpoints = viewpoints
         self.viewpoint_tag = viewpoint_tag
@@ -398,33 +399,33 @@ class BamStore(BaseStore):
                 return {s: bamnado.ReadFilter() for s in self.sample_names}
 
     @property
-    def bam_type_map(self) -> dict[str, BamType]:
+    def coverage_type_map(self) -> dict[str, CoverageType]:
         """
         Ensures that the BAM type information is available as a per-sample dict mapping sample name to BAM type.
         """
-        match self.bam_type:
-            case BamType():
-                return {s: self.bam_type for s in self.sample_names}
+        match self.coverage_type:
+            case CoverageType():
+                return {s: self.coverage_type for s in self.sample_names}
             
             case list():
-                if not all(isinstance(v, BamType) for v in self.bam_type):
-                    raise ValueError("If bam_type is a list, all values must be BamType enum members.")
-                if len(self.bam_type) != len(self.sample_names):
-                    raise ValueError("If bam_type is a list, it must have the same length as sample_names.")
-                return {s: lt for s, lt in zip(self.sample_names, self.bam_type)}
+                if not all(isinstance(v, CoverageType) for v in self.coverage_type):
+                    raise ValueError("If coverage_type is a list, all values must be CoverageType enum members.")
+                if len(self.coverage_type) != len(self.sample_names):
+                    raise ValueError("If coverage_type is a list, it must have the same length as sample_names.")
+                return {s: lt for s, lt in zip(self.sample_names, self.coverage_type)}
             
             case dict():
-                if not all(isinstance(v, BamType) for v in self.bam_type.values()):
-                    raise ValueError("If bam_type is a dict, all values must be BamType enum members.")
+                if not all(isinstance(v, CoverageType) for v in self.coverage_type.values()):
+                    raise ValueError("If coverage_type is a dict, all values must be CoverageType enum members.")
                 
-                unknown = set(self.bam_type) - set(self.sample_names)
+                unknown = set(self.coverage_type) - set(self.sample_names)
                 
                 if unknown:
-                    raise ValueError(f"Unknown sample names in bam_type dict: {sorted(unknown)}")
-                return {s: self.bam_type.get(s, BamType.UNSTRANDED) for s in self.sample_names}
+                    raise ValueError(f"Unknown sample names in coverage_type dict: {sorted(unknown)}")
+                return {s: self.coverage_type.get(s, CoverageType.UNSTRANDED) for s in self.sample_names}
             
             case None:
-                return {s: BamType.UNSTRANDED for s in self.sample_names}
+                return {s: CoverageType.UNSTRANDED for s in self.sample_names}
 
 
 
@@ -457,18 +458,18 @@ class BamStore(BaseStore):
             chunk_len = int(group.attrs["chunk_len"])
         except KeyError as e:
             raise ValueError(f"Missing required attribute in store: {e}")
-        # Reconstruct bam_type from the stored stranded attribute.
+        # Reconstruct coverage_type from the stored stranded attribute.
         # The value is a per-sample dict where "stranded" means STRANDED and "" means UNSTRANDED.
         raw_strand = group.attrs.get("stranded")
         if isinstance(raw_strand, dict):
-            bam_type: BamType | dict[str, BamType] = {
-                s: (BamType.STRANDED if v == BamType.STRANDED else BamType.UNSTRANDED)
+            coverage_type: CoverageType | dict[str, CoverageType] = {
+                s: (CoverageType.STRANDED if v == CoverageType.STRANDED else CoverageType.UNSTRANDED)
                 for s, v in raw_strand.items()
             }
-            if all(bt == BamType.UNSTRANDED for bt in bam_type.values()):
-                bam_type = BamType.UNSTRANDED
+            if all(bt == CoverageType.UNSTRANDED for bt in coverage_type.values()):
+                coverage_type = CoverageType.UNSTRANDED
         else:
-            bam_type = BamType.UNSTRANDED
+            coverage_type = CoverageType.UNSTRANDED
         # Return BamStore instance
         return cls(
             store_path=store_path,
@@ -478,7 +479,7 @@ class BamStore(BaseStore):
             overwrite=False,
             resume=True,
             read_only=read_only,
-            bam_type=bam_type,
+            coverage_type=coverage_type,
         )
     def _check_writable(self):
         if getattr(self, "read_only", False):
@@ -536,7 +537,7 @@ class BamStore(BaseStore):
             overwrite=True,
         )
 
-        has_stranded = any(bt == BamType.STRANDED for bt in self.bam_type_map.values())
+        has_stranded = any(bt == CoverageType.STRANDED for bt in self.coverage_type_map.values())
         if has_stranded:
             for chrom, size in self.chromsizes.items():
                 for suffix in ("_fwd", "_rev"):
@@ -552,7 +553,7 @@ class BamStore(BaseStore):
 
         # Persist stranded as a per-sample dict so it round-trips correctly
         strandedness_for_attrs = {
-            s: (bt.value if bt == BamType.STRANDED else "") for s, bt in self.bam_type_map.items()
+            s: (bt.value if bt == CoverageType.STRANDED else "") for s, bt in self.coverage_type_map.items()
         }
         self.root.attrs.update(
             {
@@ -751,13 +752,13 @@ class BamStore(BaseStore):
         )
 
         bam_hash = _compute_bam_hash(bam_file)
-        bam_type = self.bam_type_map.get(sample_name, BamType.UNSTRANDED)
-        is_stranded = bam_type == BamType.STRANDED
+        coverage_type = self.coverage_type_map.get(sample_name, CoverageType.UNSTRANDED)
+        is_stranded = coverage_type == CoverageType.STRANDED
         use_fragment = self.count_fragments
 
         # Build the per-sample read filter, then add VP tag filtering for MCC.
         read_filter = self.bam_filter_map[sample_name]
-        if bam_type == BamType.MICRO_CAPTURE_C and self.viewpoint_map:
+        if coverage_type == CoverageType.MICRO_CAPTURE_C and self.viewpoint_map:
             vp = self.viewpoint_map.get(sample_name)
             if vp:
                 read_filter = _copy_read_filter(read_filter)
@@ -889,7 +890,7 @@ class BamStore(BaseStore):
         metadata: pd.DataFrame | Path | str | list[Path | str] | None = None,
         bam_sample_names: list[str] | None = None,
         bam_filters: bamnado.ReadFilter | list[bamnado.ReadFilter] | None = None,
-        bam_type: BamType | list[BamType] | dict[str, BamType] = BamType.UNSTRANDED,
+        coverage_type: CoverageType | list[CoverageType] | dict[str, CoverageType] = CoverageType.UNSTRANDED,
         count_fragments: bool = False,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
@@ -950,15 +951,15 @@ class BamStore(BaseStore):
         else:
             sample_names = [Path(f).stem for f in bam_files]
 
-        # Normalise bam_type to a per-file list so we can iterate it alongside bam_files.
-        if isinstance(bam_type, BamType):
-            per_file_bam_types: list[BamType] = [bam_type] * len(bam_files)
-        elif isinstance(bam_type, list):
-            per_file_bam_types = bam_type
-        elif isinstance(bam_type, dict):
-            per_file_bam_types = [bam_type.get(s, BamType.UNSTRANDED) for s in sample_names]
+        # Normalise coverage_type to a per-file list so we can iterate it alongside bam_files.
+        if isinstance(coverage_type, CoverageType):
+            per_file_coverage_types: list[CoverageType] = [coverage_type] * len(bam_files)
+        elif isinstance(coverage_type, list):
+            per_file_coverage_types = coverage_type
+        elif isinstance(coverage_type, dict):
+            per_file_coverage_types = [coverage_type.get(s, CoverageType.UNSTRANDED) for s in sample_names]
         else:
-            per_file_bam_types = [BamType.UNSTRANDED] * len(bam_files)
+            per_file_coverage_types = [CoverageType.UNSTRANDED] * len(bam_files)
 
         # If we have MCC data we need to treat this in a different way.
         # Each BAM file contains reads for multiple viewpoints (VP tag), so we expand
@@ -966,27 +967,27 @@ class BamStore(BaseStore):
         sample_bam_map: dict[str, str] | None = None
         viewpoint_map: dict[str, str] | None = None
         viewpoints: set[str] | None = None
-        if any(bt == BamType.MICRO_CAPTURE_C for bt in per_file_bam_types):
+        if any(bt == CoverageType.MICRO_CAPTURE_C for bt in per_file_coverage_types):
             _sample_bam_map: dict[str, str] = {}
             _viewpoint_map: dict[str, str] = {}
             _viewpoints: set[str] = set()
             expanded_sample_names: list[str] = []
-            expanded_bam_type: dict[str, BamType] = {}
-            for bam_file, sample_name, bt in zip(bam_files, sample_names, per_file_bam_types):
-                if bt == BamType.MICRO_CAPTURE_C:
+            expanded_coverage_type: dict[str, CoverageType] = {}
+            for bam_file, sample_name, bt in zip(bam_files, sample_names, per_file_coverage_types):
+                if bt == CoverageType.MICRO_CAPTURE_C:
                     for vp in _get_viewpoints_from_mcc_bam(bam_file):
                         virtual = f"{sample_name}_{vp}"
                         expanded_sample_names.append(virtual)
                         _sample_bam_map[virtual] = str(bam_file)
                         _viewpoint_map[virtual] = vp
-                        expanded_bam_type[virtual] = BamType.MICRO_CAPTURE_C
+                        expanded_coverage_type[virtual] = CoverageType.MICRO_CAPTURE_C
                         _viewpoints.add(vp)
                 else:
                     expanded_sample_names.append(sample_name)
                     _sample_bam_map[sample_name] = str(bam_file)
-                    expanded_bam_type[sample_name] = bt
+                    expanded_coverage_type[sample_name] = bt
             sample_names = expanded_sample_names
-            bam_type = expanded_bam_type
+            coverage_type = expanded_coverage_type
             sample_bam_map = _sample_bam_map
             viewpoint_map = _viewpoint_map
             viewpoints = _viewpoints
@@ -1032,7 +1033,7 @@ class BamStore(BaseStore):
                 construction_compression=construction_compression,
                 overwrite=True if staging_enabled else overwrite,
                 resume=False if staging_enabled else resume,
-                bam_type=bam_type,
+                coverage_type=coverage_type,
                 bam_filter=bam_filters,
                 count_fragments=count_fragments,
                 viewpoints=viewpoints,
