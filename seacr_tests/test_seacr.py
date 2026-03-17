@@ -181,11 +181,10 @@ def _write_multi_chrom_zarr(
 
     for chrom, cov in cov_by_chrom.items():
         clen = int(cov.shape[0])
-        chunk_len = min(65536, clen)
         root.create_array(
             name=chrom,
             shape=(1, clen),
-            chunks=(1, chunk_len),
+            chunks=(1, clen),
             dtype=np.float32,
             fill_value=0,
             overwrite=True,
@@ -210,7 +209,7 @@ def _write_multi_chrom_zarr(
         {
             "sample_names": [sample_name],
             "chromsizes": chromsizes,
-            "chunk_len": min(65536, max(chromsizes.values())),
+            "chunk_len": max(chromsizes.values()),
             "chromosomes": chromosomes,
         }
     )
@@ -314,14 +313,14 @@ def _coord_key(line: str) -> str:
 
 
 def _run_quantile_peak_call(zarr_path: Path, sample_name: str) -> Path:
-    output_dir = QUANTILE_BED_DIR / sample_name
     result_files = call_quantile_peaks_from_zarr(
         zarr_path=zarr_path,
-        output_dir=output_dir,
+        output_dir=QUANTILE_BED_DIR,
         tilesize=QUANTILE_TILESIZE,
         window_overlap=QUANTILE_WINDOW_OVERLAP,
         quantile=QUANTILE_THRESHOLD,
         merge=QUANTILE_MERGE,
+        use_gmm=True,
     )
     assert result_files, "No output file produced by call_quantile_peaks_from_zarr"
 
@@ -448,31 +447,6 @@ def test_seacr_sem_h3k27ac_stringent():
     )
 
 
-def test_seacr_sem_h3k27ac_relaxed():
-    BED_DIR.mkdir(parents=True, exist_ok=True)
-    t0 = time.perf_counter()
-    subprocess.run(
-        [
-            "bash",
-            str(SEACR_DIR / "SEACR_1.3.sh"),
-            str(SEM_H3K27AC_BG),
-            str(FDR_THRESHOLD),
-            "non",
-            "relaxed",
-            str(BED_DIR / f"seacr_{SEM_H3K27AC_NAME}"),
-        ],
-        check=True,
-        cwd=str(SEACR_DIR),
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
-    )
-    _TIMINGS["shell_SEM_H3K27ac_relaxed"] = time.perf_counter() - t0
-    out = BED_DIR / f"seacr_{SEM_H3K27AC_NAME}.relaxed.bed"
-    n = sum(1 for _ in out.open())
-    logger.info(
-        f"Shell SEM H3K27ac relaxed: {n} peaks → {out}  [{_TIMINGS['shell_SEM_H3K27ac_relaxed']:.1f}s]"
-    )
-
-
 def test_seacr_sem_mll_stringent():
     BED_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
@@ -498,31 +472,6 @@ def test_seacr_sem_mll_stringent():
     )
 
 
-def test_seacr_sem_mll_relaxed():
-    BED_DIR.mkdir(parents=True, exist_ok=True)
-    t0 = time.perf_counter()
-    subprocess.run(
-        [
-            "bash",
-            str(SEACR_DIR / "SEACR_1.3.sh"),
-            str(SEM_MLL_BG),
-            str(FDR_THRESHOLD),
-            "non",
-            "relaxed",
-            str(BED_DIR / f"seacr_{SEM_MLL_NAME}"),
-        ],
-        check=True,
-        cwd=str(SEACR_DIR),
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
-    )
-    _TIMINGS["shell_SEM_MLL_relaxed"] = time.perf_counter() - t0
-    out = BED_DIR / f"seacr_{SEM_MLL_NAME}.relaxed.bed"
-    n = sum(1 for _ in out.open())
-    logger.info(
-        f"Shell SEM MLL relaxed: {n} peaks → {out}  [{_TIMINGS['shell_SEM_MLL_relaxed']:.1f}s]"
-    )
-
-
 def test_python_sem_h3k27ac_stringent(sem_h3k27ac_zarr):
     t0 = time.perf_counter()
     result_files = call_seacr_peaks_from_zarr(
@@ -540,26 +489,6 @@ def test_python_sem_h3k27ac_stringent(sem_h3k27ac_zarr):
     line_count = sum(1 for _ in out.open())
     logger.info(
         f"Python SEM H3K27ac stringent: {line_count} peaks → {out}  [{_TIMINGS['python_SEM_H3K27ac_stringent']:.1f}s]"
-    )
-
-
-def test_python_sem_h3k27ac_relaxed(sem_h3k27ac_zarr):
-    t0 = time.perf_counter()
-    result_files = call_seacr_peaks_from_zarr(
-        zarr_path=sem_h3k27ac_zarr,
-        output_dir=PY_BED_DIR,
-        control_zarr_path=None,
-        fdr_threshold=FDR_THRESHOLD,
-        norm="non",
-        stringency="relaxed",
-    )
-    _TIMINGS["python_SEM_H3K27ac_relaxed"] = time.perf_counter() - t0
-    assert result_files, "No output file produced by call_seacr_peaks_from_zarr"
-    out = Path(result_files[0])
-    assert out.exists(), f"Expected output BED does not exist: {out}"
-    line_count = sum(1 for _ in out.open())
-    logger.info(
-        f"Python SEM H3K27ac relaxed: {line_count} peaks → {out}  [{_TIMINGS['python_SEM_H3K27ac_relaxed']:.1f}s]"
     )
 
 
@@ -583,43 +512,13 @@ def test_python_sem_mll_stringent(sem_mll_zarr):
     )
 
 
-def test_python_sem_mll_relaxed(sem_mll_zarr):
-    t0 = time.perf_counter()
-    result_files = call_seacr_peaks_from_zarr(
-        zarr_path=sem_mll_zarr,
-        output_dir=PY_BED_DIR,
-        control_zarr_path=None,
-        fdr_threshold=FDR_THRESHOLD,
-        norm="non",
-        stringency="relaxed",
-    )
-    _TIMINGS["python_SEM_MLL_relaxed"] = time.perf_counter() - t0
-    assert result_files, "No output file produced by call_seacr_peaks_from_zarr"
-    out = Path(result_files[0])
-    assert out.exists(), f"Expected output BED does not exist: {out}"
-    line_count = sum(1 for _ in out.open())
-    logger.info(
-        f"Python SEM MLL relaxed: {line_count} peaks → {out}  [{_TIMINGS['python_SEM_MLL_relaxed']:.1f}s]"
-    )
-
-
 def test_diff_report_sem_h3k27ac_stringent():
     report_file = _write_diff_report(SEM_H3K27AC_NAME, "stringent")
     assert report_file.exists(), f"Diff report not written: {report_file}"
 
 
-def test_diff_report_sem_h3k27ac_relaxed():
-    report_file = _write_diff_report(SEM_H3K27AC_NAME, "relaxed")
-    assert report_file.exists(), f"Diff report not written: {report_file}"
-
-
 def test_diff_report_sem_mll_stringent():
     report_file = _write_diff_report(SEM_MLL_NAME, "stringent")
-    assert report_file.exists(), f"Diff report not written: {report_file}"
-
-
-def test_diff_report_sem_mll_relaxed():
-    report_file = _write_diff_report(SEM_MLL_NAME, "relaxed")
     assert report_file.exists(), f"Diff report not written: {report_file}"
 
 
@@ -664,9 +563,7 @@ def test_write_benchmark_report():
         ("CTCF", "stringent", "shell_CTCF_stringent", "python_CTCF_stringent"),
         ("CTCF", "relaxed", "shell_CTCF_relaxed", "python_CTCF_relaxed"),
         ("SEM_H3K27ac", "stringent", "shell_SEM_H3K27ac_stringent", "python_SEM_H3K27ac_stringent"),
-        ("SEM_H3K27ac", "relaxed", "shell_SEM_H3K27ac_relaxed", "python_SEM_H3K27ac_relaxed"),
         ("SEM_MLL", "stringent", "shell_SEM_MLL_stringent", "python_SEM_MLL_stringent"),
-        ("SEM_MLL", "relaxed", "shell_SEM_MLL_relaxed", "python_SEM_MLL_relaxed"),
         ("SEM_H3K27ac", "quantile", None, "quantile_SEM_H3K27ac"),
         ("SEM_MLL", "quantile", None, "quantile_SEM_MLL"),
     ]

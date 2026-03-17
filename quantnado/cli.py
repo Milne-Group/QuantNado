@@ -61,6 +61,7 @@ def call_peaks(
     window_overlap: int = typer.Option(8, "--window-overlap", help="[quantile] Overlap between adjacent windows in bp"),
     quantile: float = typer.Option(0.98, "--quantile", help="[quantile] Quantile threshold for peak calling"),
     merge: bool = typer.Option(True, "--merge/--no-merge", help="[quantile] Merge overlapping and adjacent peaks after calling"),
+    use_li: bool = typer.Option(False, "--use-li/--no-use-li", help="[quantile] Filter merged peaks by Li threshold on AUC score"),
     # seacr options
     control_zarr: Path | None = typer.Option(None, "--control-zarr", help="[seacr] Path to a control (IgG) QuantNado zarr store"),
     fdr_threshold: float = typer.Option(0.01, "--fdr", help="[seacr] Numeric FDR threshold (0–1) used when no control zarr is provided"),
@@ -89,6 +90,7 @@ def call_peaks(
                 window_overlap=window_overlap,
                 quantile=quantile,
                 merge=merge,
+                use_li=use_li,
             )
         elif method == "seacr":
             from quantnado.peak_calling.call_seacr_peaks import call_seacr_peaks_from_zarr

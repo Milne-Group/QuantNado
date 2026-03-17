@@ -21,6 +21,8 @@ dynamic = ["version"]
 dependencies = [
     "bamnado==0.4.4",
     "dask-ml>=2025,<2027",
+    "scikit-learn>=1.4",
+    "scikit-image>=0.26.0",
     "dask>=2026",
     "icechunk>=1.1",
     "loguru>=0.7",

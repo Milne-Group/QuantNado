@@ -5,43 +5,105 @@ import numpy as np
 import pandas as pd
 import pyranges1 as pr
 from loguru import logger
+from skimage.filters import threshold_li
 
 
-def _merge_adjacent_regions(peaks_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge overlapping or directly adjacent intervals within each chromosome."""
+def _fit_gmm_threshold(values: np.ndarray) -> float:
+    """Fit a 2-component Gaussian mixture model and return the decision boundary threshold.
+
+    The threshold is the value between the noise (lower-mean) and signal (higher-mean)
+    components where their posterior probabilities are equal, i.e. P(signal|x) = 0.5.
+
+    Parameters
+    ----------
+    values:
+        1-D array of signal values to fit (typically nonzero log-RPKM tiles).
+
+    Returns
+    -------
+    float
+        The threshold separating noise from signal.
+    """
+    from sklearn.mixture import GaussianMixture
+
+    gmm = GaussianMixture(n_components=2, covariance_type="full", random_state=0, max_iter=300)
+    gmm.fit(values.reshape(-1, 1))
+
+    means = gmm.means_.flatten()
+    noise_idx = int(np.argmin(means))
+    signal_idx = 1 - noise_idx
+    noise_mean, signal_mean = means[noise_idx], means[signal_idx]
+
+    # Scan for the decision boundary where the signal component's posterior first exceeds 0.5.
+    # Using 2000 points gives <0.1 % relative error for typical log-RPKM ranges.
+    xs = np.linspace(noise_mean, signal_mean, 2000).reshape(-1, 1)
+    signal_proba = gmm.predict_proba(xs)[:, signal_idx]
+
+    crossing = np.searchsorted(signal_proba, 0.5)
+    if crossing == 0:
+        threshold = float(noise_mean)
+    elif crossing >= len(xs):
+        threshold = float(signal_mean)
+    else:
+        # Linear interpolation for sub-grid precision
+        x0, x1 = float(xs[crossing - 1, 0]), float(xs[crossing, 0])
+        p0, p1 = float(signal_proba[crossing - 1]), float(signal_proba[crossing])
+        threshold = x0 + (0.5 - p0) * (x1 - x0) / (p1 - p0)
+
+    return threshold
+
+
+def _merge_adjacent_regions(
+    peaks_df: pd.DataFrame,
+    scores: Optional[np.ndarray] = None,
+) -> pd.DataFrame:
+    """Merge overlapping or directly adjacent intervals within each chromosome.
+
+    If *scores* is provided (one value per row of *peaks_df*, aligned after
+    sorting), each merged region receives the sum of its constituent tile
+    scores in a ``Score`` column.
+    """
     if peaks_df.empty:
         return peaks_df
 
     peaks_df = peaks_df.sort_values(["Chromosome", "Start", "End"]).reset_index(drop=True)
+    if scores is not None:
+        scores = np.asarray(scores, dtype=np.float64)[peaks_df.index]
     merged_parts: list[pd.DataFrame] = []
 
+    offset = 0
     for chrom, grp in peaks_df.groupby("Chromosome", sort=False):
         starts = grp["Start"].to_numpy(dtype=np.int64, copy=False)
         ends = grp["End"].to_numpy(dtype=np.int64, copy=False)
+        n = len(starts)
 
-        if len(starts) == 1:
-            merged_parts.append(pd.DataFrame({"Chromosome": [chrom], "Start": starts, "End": ends}))
+        if n == 1:
+            row: dict = {"Chromosome": [chrom], "Start": starts, "End": ends}
+            if scores is not None:
+                row["Score"] = [scores[offset]]
+            merged_parts.append(pd.DataFrame(row))
+            offset += n
             continue
 
         prev_max_end = np.maximum.accumulate(ends[:-1])
-        new_group = np.empty(len(starts), dtype=bool)
+        new_group = np.empty(n, dtype=bool)
         new_group[0] = True
-        # Start a new region only when there is a strict gap; adjacency is merged.
         new_group[1:] = starts[1:] > prev_max_end
 
         group_starts = np.flatnonzero(new_group)
         merged_starts = starts[group_starts]
         merged_ends = np.maximum.reduceat(ends, group_starts)
 
-        merged_parts.append(
-            pd.DataFrame(
-                {
-                    "Chromosome": np.repeat(chrom, len(merged_starts)),
-                    "Start": merged_starts,
-                    "End": merged_ends,
-                }
-            )
-        )
+        row = {
+            "Chromosome": np.repeat(chrom, len(merged_starts)),
+            "Start": merged_starts,
+            "End": merged_ends,
+        }
+        if scores is not None:
+            row["Score"] = np.add.reduceat(scores[offset : offset + n], group_starts)
+        offset += n
+
+        merged_parts.append(pd.DataFrame(row))
 
     return pd.concat(merged_parts, ignore_index=True)
 
@@ -55,8 +117,16 @@ def call_quantile_peaks(
     quantile: float = 0.98,
     blacklist_file: Optional[Path] = None,
     merge: bool = True,
+    use_gmm: bool = False,
+    use_li: bool = False,
 ) -> Optional[pr.PyRanges]:
-    """Call quantile-based peaks from a single sample's tile signal."""
+    """Call peaks from a single sample's tile signal.
+
+    By default uses a quantile threshold on all nonzero tiles. When *use_gmm*
+    is True, a 2-component GMM is first fitted on the nonzero log-RPKM values
+    to separate the noise component from the signal component; the quantile
+    threshold is then applied only to tiles that survive the GMM noise filter.
+    """
     logger.info(f"Calling peaks for sample: {signal.name}")
 
     nonzero = signal[signal > 0]
@@ -68,8 +138,21 @@ def call_quantile_peaks(
         logger.warning(f"[{signal.name}] quantile=1.0 means no tile can exceed the maximum; returning None.")
         return None
 
-    threshold = nonzero.quantile(quantile)
-    logger.debug(f"[{signal.name}] Quantile {quantile} threshold = {threshold:.4f}")
+    if use_gmm:
+        gmm_threshold = _fit_gmm_threshold(nonzero.to_numpy(dtype=np.float64))
+        logger.debug(f"[{signal.name}] GMM noise threshold = {gmm_threshold:.4f}")
+        signal_component = nonzero[nonzero > gmm_threshold]
+        if signal_component.empty:
+            logger.warning(f"[{signal.name}] No tiles above GMM noise threshold.")
+            return None
+        threshold = signal_component.quantile(quantile)
+        logger.debug(
+            f"[{signal.name}] GMM+quantile {quantile} threshold = {threshold:.4f}"
+            f" (signal tiles: {len(signal_component):,})"
+        )
+    else:
+        threshold = nonzero.quantile(quantile)
+        logger.debug(f"[{signal.name}] Quantile {quantile} threshold = {threshold:.4f}")
 
     peaks = signal >= threshold
 
@@ -91,9 +174,23 @@ def call_quantile_peaks(
     peaks_df = peaks_df.astype({"Start": int, "End": int, "Chromosome": str})
     peaks_df = peaks_df.sort_values(["Chromosome", "Start"]).reset_index(drop=True)
 
+    # AUC per tile = RPKM × tilesize (proportional to reads, library-size normalised).
+    # Summing these over a merged peak gives the area under the signal curve.
+    auc_tile = np.expm1(peaks_df["Score"].to_numpy(dtype=np.float64)) * tilesize
     if merge:
-        peaks_df = _merge_adjacent_regions(peaks_df[["Chromosome", "Start", "End"]])
+        peaks_df = _merge_adjacent_regions(peaks_df[["Chromosome", "Start", "End"]], scores=auc_tile)
+    else:
+        peaks_df = peaks_df[["Chromosome", "Start", "End"]].copy()
+        peaks_df["Score"] = auc_tile
 
+    # filter by li threshold on merged peaks if requested
+    if use_li:
+        li_threshold = threshold_li(peaks_df["Score"].to_numpy(dtype=np.float64))
+        logger.debug(f"[{signal.name}] Li threshold on merged peaks = {li_threshold:.4f}")
+        peaks_df = peaks_df[peaks_df["Score"] >= li_threshold]
+        if peaks_df.empty:
+            logger.warning(f"[{signal.name}] No merged peaks exceed Li threshold.")
+            return None
     pr_obj = pr.PyRanges(peaks_df)
 
     if blacklist_file and blacklist_file.exists():
@@ -113,6 +210,8 @@ def call_peaks_from_zarr(
     window_overlap: int = 8,
     quantile: float = 0.98,
     merge: bool = True,
+    use_gmm: bool = True,
+    use_li: bool = False,
 ) -> list[str]:
     """Call quantile-based peaks from a QuantNado zarr coverage store.
 
@@ -232,9 +331,6 @@ def call_peaks_from_zarr(
     signals_df = pd.DataFrame(signals_by_sample)
     rpkm_df = signals_df.multiply(1e9 / lib_sizes_arr, axis=1)
     log_rpkm_df = np.log1p(rpkm_df)
-    parquet_path = output_dir / f"log_rpkm_{tilesize}bp_{window_overlap}bp_overlap.parquet"
-    log_rpkm_df.to_parquet(parquet_path, index=False)
-    logger.info(f"Saved log-RPKM tile signal to {parquet_path}")
 
     results = []
     for sample_name in valid_samples:
@@ -249,6 +345,8 @@ def call_peaks_from_zarr(
             tilesize=tilesize,
             quantile=quantile,
             merge=merge,
+            use_gmm=use_gmm,
+            use_li=use_li,
         )
 
         if pr_obj is not None:
