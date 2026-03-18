@@ -389,8 +389,10 @@ def _normalise_xr_dataarray(
     if not np.issubdtype(arr.dtype, np.floating):
         arr = arr.astype(np.float32)
 
-    # signal dims: (interval, position/bin, sample) — scale over last axis
-    scale_vec = scale.reshape(1, 1, -1) if not _is_dask else da.from_array(scale, chunks=-1).reshape(1, 1, -1)
+    # Find which axis is the sample axis and reshape scale for broadcasting
+    sample_axis_idx = list(data.dims).index("sample")
+    reshape_shape = tuple(n_samples if i == sample_axis_idx else 1 for i in range(arr.ndim))
+    scale_vec = scale.reshape(reshape_shape) if not _is_dask else da.from_array(scale, chunks=-1).reshape(reshape_shape)
     normed_arr = arr / scale_vec
 
     if method == "rpkm":
@@ -421,11 +423,9 @@ def _normalise_xr_dataarray(
         else:
             effective_lengths_kb = np.full(len(sample_labels), bin_size_bp / 1000.0, dtype=np.float64)
 
-        rl_vec = effective_lengths_kb.reshape(1, 1, -1) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(1, 1, -1)
+        rl_vec = effective_lengths_kb.reshape(reshape_shape) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(reshape_shape)
         normed_arr = normed_arr / rl_vec
 
-        normed = normed / bin_size_kb
-
-    result = normed.assign_attrs({**data.attrs, "normalised": method})
+    result = data.copy(data=normed_arr).assign_attrs({**data.attrs, "normalised": method})
     logger.info(f"Normalised xr.DataArray to {method.upper()}.")
     return result

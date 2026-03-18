@@ -760,8 +760,8 @@ class BamStore(BaseStore):
         if total_reads is not None and "total_reads" in self.meta:
             self.meta["total_reads"][sample_idx] = total_reads
 
-        if results.get("mean_read_length") is not None and "mean_read_length" in self.meta:
-            self.meta["mean_read_length"][sample_idx] = results["mean_read_length"]
+        if mean_read_length is not None and "mean_read_length" in self.meta:
+            self.meta["mean_read_length"][sample_idx] = mean_read_length
 
         self.meta["completed"][sample_idx] = True
 
