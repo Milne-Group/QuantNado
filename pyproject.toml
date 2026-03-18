@@ -19,7 +19,7 @@ license = "GPL-3.0-only"
 dynamic = ["version"]
 
 dependencies = [
-    "bamnado==0.4.4",
+    "bamnado>=0.5.6",
     "crested==1.6.1",
     "dask-ml>=2025,<2027",
     "dask>=2026",

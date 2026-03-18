@@ -10,8 +10,11 @@
 */_version.py
 202*
 build/
-data/
+/data/
 epiquant/
+# Allow test data BAM files
+!tests/data/
+!tests/data/**
 example/multiomics_run/
 logs/
 modality
@@ -23,23 +26,4 @@ test_dataset.ipynb
 test_output/
 full_test
 todo.md
-test_run/CAT-patient-9422_MLLC.bam
-test_run/CAT-patient-9422_MLLC.bam.bai
-test_run/CAT-patient-9422-1_MLLN.bam
-test_run/CAT-patient-9422-1_MLLN.bam.bai
-test_run/CAT-patient-22620_H3K4me3.bam
-test_run/CAT-patient-22620_H3K4me3.bam.bai
-test_run/CAT-patient-22620_PolII.bam
-test_run/CAT-patient-22620_PolII.bam.bai
-test_run/CAT-patient-22620-1_MLLN.bam
-test_run/CAT-patient-22620-1_MLLN.bam.bai
-test_run/CAT-patient-23003-1_MLLN.bam
-test_run/CAT-patient-23003-1_MLLN.bam.bai
-test_run/CAT-patient-863388_ENL.bam
-test_run/CAT-patient-863388_ENL.bam.bai
-test_run/CAT-patient-863388_P300.bam
-test_run/CAT-patient-863388_P300.bam.bai
-test_run/CAT-RCHACV_BRD4.bam
-test_run/CAT-RCHACV_BRD4.bam.bai
-test_run/CAT-SEM-1_MLLN.bam
-test_run/CAT-SEM-1_MLLN.bam.bai
+local/

@@ -5,7 +5,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantnado.dataset.store_bam import BamStore
+import bamnado
+
+from quantnado.dataset.store_bam import BamStore, CoverageType
 from quantnado.dataset.core import BaseStore as QuantNadoDataset
 from quantnado.utils import estimate_chunk_len
 
@@ -16,8 +18,8 @@ from quantnado.utils import estimate_chunk_len
 
 
 def test_bamstore_write_and_metadata(tmp_path, chromsizes, sample_names, monkeypatch):
-    def fake_chrom(self, bam_file, contig, size, library_type=None):
-        return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0, None, None
+    def fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
+        return 0.0, np.full(contig_size, int(bam_file), dtype=np.uint16), None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
@@ -32,8 +34,8 @@ def test_bamstore_write_and_metadata(tmp_path, chromsizes, sample_names, monkeyp
 
 
 def test_bamstore_dataset_wrapper(tmp_path, chromsizes, sample_names, monkeypatch):
-    def fake_chrom(self, bam_file, contig, size, library_type=None):
-        return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0, None, None
+    def fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
+        return 0.0, np.full(contig_size, int(bam_file), dtype=np.uint16), None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
@@ -52,7 +54,7 @@ def test_bamstore_dataset_wrapper(tmp_path, chromsizes, sample_names, monkeypatc
 
 
 def test_resume_validates_sample_names(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
     BamStore(tmp_path / "ds", chromsizes, sample_names).process_samples(["0", "0"])
 
     BamStore(tmp_path / "ds", chromsizes, sample_names, resume=True, overwrite=False)
@@ -67,7 +69,7 @@ def test_resume_validates_sample_names(tmp_path, chromsizes, sample_names, monke
 
 
 def test_open_readonly_and_writable(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1])), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.full(a[3], int(a[1])), None))
     BamStore(tmp_path / "ds", chromsizes, sample_names).process_samples(["1", "2"])
 
     ro = BamStore.open(tmp_path / "ds")
@@ -137,7 +139,7 @@ def test_bamstore_sample_hash_alignment(tmp_path, monkeypatch):
     f2 = tmp_path / "2.bam"
     f2.write_bytes(b"content2" * 1000)
 
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
     store = BamStore(tmp_path / "ds", {"chr1": 10}, ["s1", "s2"])
     store.process_samples([str(f1), str(f2)])
 
@@ -158,7 +160,7 @@ def test_bamstore_sample_hash_alignment(tmp_path, monkeypatch):
 
 
 def test_bamstore_hash_validation_on_resume(tmp_path, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
     BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
     BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"], resume=True, overwrite=False)
 
@@ -176,7 +178,7 @@ def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
         "quantnado.dataset.store_bam._get_chromsizes_from_bam",
         lambda path: {"chr1": 100, "chr2": 200},
     )
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.zeros(a[3]), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
 
     bam_path = tmp_path / "test.bam"
     bam_path.write_text("dummy")
@@ -196,7 +198,7 @@ def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
 
 
 def test_to_xarray_requires_all_complete(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1])), 0.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.full(a[3], int(a[1])), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     store.meta["completed"][0] = False
@@ -206,7 +208,7 @@ def test_to_xarray_requires_all_complete(tmp_path, chromsizes, sample_names, mon
 
 
 def test_to_xarray_structure_and_metadata(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (10.0, np.full(a[3], int(a[1]), dtype=np.uint16), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     store.set_metadata(pd.DataFrame({
@@ -239,7 +241,7 @@ def test_to_xarray_structure_and_metadata(tmp_path, chromsizes, sample_names, mo
 
 
 def test_extract_region_string_format(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (10.0, np.full(a[3], int(a[1]), dtype=np.uint16), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     store.set_metadata(pd.DataFrame({"sample_id": sample_names, "cell_type": ["A549", "HeLa"]}))
@@ -256,7 +258,7 @@ def test_extract_region_string_format(tmp_path, chromsizes, sample_names, monkey
 
 
 def test_extract_region_separate_parameters(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (10.0, np.full(a[3], int(a[1]), dtype=np.uint16), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -268,7 +270,7 @@ def test_extract_region_separate_parameters(tmp_path, chromsizes, sample_names, 
 
 
 def test_extract_region_sample_subsetting(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (10.0, np.full(a[3], int(a[1]), dtype=np.uint16), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -282,7 +284,7 @@ def test_extract_region_sample_subsetting(tmp_path, chromsizes, sample_names, mo
 
 
 def test_extract_region_as_numpy(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (10.0, np.full(a[3], int(a[1]), dtype=np.uint16), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -293,7 +295,7 @@ def test_extract_region_as_numpy(tmp_path, chromsizes, sample_names, monkeypatch
 
 
 def test_extract_region_normalise_cpm(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (10.0, np.full(a[3], int(a[1]), dtype=np.uint16), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -307,7 +309,7 @@ def test_extract_region_normalise_cpm(tmp_path, chromsizes, sample_names, monkey
 
 
 def test_extract_region_metadata_coordinates(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (10.0, np.full(a[3], int(a[1]), dtype=np.uint16), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
     store.set_metadata(pd.DataFrame({
@@ -325,7 +327,7 @@ def test_extract_region_metadata_coordinates(tmp_path, chromsizes, sample_names,
 
 
 def test_extract_region_error_cases(tmp_path, chromsizes, sample_names, monkeypatch):
-    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (10.0, np.full(a[3], int(a[1]), dtype=np.uint16), None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
@@ -444,8 +446,8 @@ def test_process_samples_streaming_writes_correct_data(
     """Verify that process_samples with max_workers > 1 (combined into
     effective chr_workers) produces the same results as sequential processing."""
 
-    def fake_chrom(self, bam_file, contig, size, library_type=None):
-        return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0, None, None
+    def fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
+        return 0.0, np.full(contig_size, int(bam_file), dtype=np.uint16), None
 
     monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
 
@@ -471,7 +473,7 @@ def test_bamstore_from_bam_files_with_local_staging_publishes_to_final_path(tmp_
     monkeypatch.setattr(
         BamStore,
         "_process_chromosome",
-        lambda *args, **kwargs: (args[2], np.ones(args[3], dtype=np.uint16), 0.0, None, None),
+        lambda *args, **kwargs: (0.0, np.ones(args[3], dtype=np.uint16), None),
     )
 
     bam_path = tmp_path / "sample1.bam"
@@ -661,6 +663,325 @@ class TestBamStoreErrorPaths:
         with pytest.raises(ValueError, match="length must match"):
             store.process_samples(["only_one"])
 
-    def test_strandedness_invalid_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="stranded"):
-            BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"], stranded="invalid")
+    def test_process_samples_no_bam_files_raises(self, tmp_path):
+        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
+        with pytest.raises(ValueError, match="bam_files must be provided"):
+            store.process_samples()
+
+
+# ---------------------------------------------------------------------------
+# coverage_type_map property
+# ---------------------------------------------------------------------------
+
+
+class TestCoverageTypeMap:
+    def test_single_value_applies_to_all_samples(self, tmp_path, chromsizes, sample_names):
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names, coverage_type=CoverageType.STRANDED)
+        assert store.coverage_type_map == {"s1": CoverageType.STRANDED, "s2": CoverageType.STRANDED}
+
+    def test_default_is_unstranded(self, tmp_path, chromsizes, sample_names):
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names)
+        assert store.coverage_type_map == {"s1": CoverageType.UNSTRANDED, "s2": CoverageType.UNSTRANDED}
+
+    def test_list_maps_in_order(self, tmp_path, chromsizes, sample_names):
+        store = BamStore(
+            tmp_path / "ds", chromsizes, sample_names,
+            coverage_type=[CoverageType.STRANDED, CoverageType.UNSTRANDED],
+        )
+        assert store.coverage_type_map == {"s1": CoverageType.STRANDED, "s2": CoverageType.UNSTRANDED}
+
+    def test_dict_partial_defaults_to_unstranded(self, tmp_path, chromsizes, sample_names):
+        store = BamStore(
+            tmp_path / "ds", chromsizes, sample_names,
+            coverage_type={"s1": CoverageType.STRANDED},
+        )
+        assert store.coverage_type_map["s1"] == CoverageType.STRANDED
+        assert store.coverage_type_map["s2"] == CoverageType.UNSTRANDED
+
+    def test_dict_unknown_sample_raises(self, tmp_path, chromsizes, sample_names):
+        with pytest.raises(ValueError, match="Unknown sample names"):
+            BamStore(
+                tmp_path / "ds", chromsizes, sample_names,
+                coverage_type={"s1": CoverageType.STRANDED, "bad_sample": CoverageType.UNSTRANDED},
+            )
+
+    def test_list_wrong_length_raises(self, tmp_path, chromsizes, sample_names):
+        with pytest.raises(ValueError, match="same length"):
+            store = BamStore(
+                tmp_path / "ds", chromsizes, sample_names,
+                coverage_type=[CoverageType.STRANDED],
+            )
+            _ = store.coverage_type_map
+
+
+# ---------------------------------------------------------------------------
+# bam_filter_map property
+# ---------------------------------------------------------------------------
+
+
+class TestBamFilterMap:
+    def test_none_gives_default_filter_for_all(self, tmp_path, chromsizes, sample_names):
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names, bam_filter=None)
+        fmap = store.bam_filter_map
+        assert set(fmap.keys()) == set(sample_names)
+        assert all(isinstance(f, bamnado.ReadFilter) for f in fmap.values())
+
+    def test_single_filter_applies_to_all(self, tmp_path, chromsizes, sample_names):
+        rf = bamnado.ReadFilter(min_mapq=20)
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names, bam_filter=rf)
+        fmap = store.bam_filter_map
+        assert all(f.min_mapq == 20 for f in fmap.values())
+
+    def test_list_maps_in_order(self, tmp_path, chromsizes, sample_names):
+        rf1 = bamnado.ReadFilter(min_mapq=10)
+        rf2 = bamnado.ReadFilter(min_mapq=30)
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names, bam_filter=[rf1, rf2])
+        fmap = store.bam_filter_map
+        assert fmap["s1"].min_mapq == 10
+        assert fmap["s2"].min_mapq == 30
+
+    def test_dict_partial_defaults_to_empty_filter(self, tmp_path, chromsizes, sample_names):
+        rf = bamnado.ReadFilter(min_mapq=25)
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names, bam_filter={"s1": rf})
+        fmap = store.bam_filter_map
+        assert fmap["s1"].min_mapq == 25
+        assert fmap["s2"].min_mapq == 0
+
+    def test_dict_unknown_sample_raises(self, tmp_path, chromsizes, sample_names):
+        rf = bamnado.ReadFilter()
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names, bam_filter={"s_unknown": rf})
+        with pytest.raises(ValueError, match="Unknown sample names"):
+            _ = store.bam_filter_map
+
+
+# ---------------------------------------------------------------------------
+# CoverageType.STRANDED array creation and open() roundtrip
+# ---------------------------------------------------------------------------
+
+
+def test_stranded_store_creates_fwd_rev_arrays(tmp_path, chromsizes, sample_names, monkeypatch):
+    monkeypatch.setattr(
+        BamStore, "_process_chromosome",
+        lambda *a, **kw: (0.0, np.ones(a[3], dtype=np.uint32), np.full(a[3], 2, dtype=np.uint32))
+        if a[4] else (0.0, np.zeros(a[3]), None),
+    )
+    store = BamStore(tmp_path / "ds", chromsizes, sample_names, coverage_type=CoverageType.STRANDED)
+    store.process_samples(["0", "0"])
+
+    for chrom in chromsizes:
+        assert f"{chrom}_fwd" in store.root, f"{chrom}_fwd not found"
+        assert f"{chrom}_rev" in store.root, f"{chrom}_rev not found"
+    assert np.all(store.root["chr1_fwd"][0, :] == 1)
+    assert np.all(store.root["chr1_rev"][0, :] == 2)
+
+
+def test_open_roundtrips_stranded_coverage_type(tmp_path, chromsizes, sample_names, monkeypatch):
+    monkeypatch.setattr(
+        BamStore, "_process_chromosome",
+        lambda *a, **kw: (0.0, np.zeros(a[3]), np.zeros(a[3])) if a[4] else (0.0, np.zeros(a[3]), None),
+    )
+    BamStore(tmp_path / "ds", chromsizes, sample_names, coverage_type=CoverageType.STRANDED).process_samples(["0", "0"])
+
+    reopened = BamStore.open(tmp_path / "ds")
+    assert all(bt == CoverageType.STRANDED for bt in reopened.coverage_type_map.values())
+
+
+def test_open_roundtrips_unstranded_coverage_type(tmp_path, chromsizes, sample_names):
+    BamStore(tmp_path / "ds", chromsizes, sample_names)
+
+    reopened = BamStore.open(tmp_path / "ds")
+    assert all(bt == CoverageType.UNSTRANDED for bt in reopened.coverage_type_map.values())
+
+
+# ---------------------------------------------------------------------------
+# MCC: from_bam_files expansion and sample_bam_map / viewpoint_map
+# ---------------------------------------------------------------------------
+
+
+class TestMCCUnit:
+    def _mock_env(self, monkeypatch, viewpoints, chromsizes=None):
+        """Apply the three monkeypatches needed for a unit-level MCC test."""
+        monkeypatch.setattr(
+            "quantnado.dataset.store_bam._get_viewpoints_from_mcc_bam",
+            lambda path: viewpoints,
+        )
+        monkeypatch.setattr(
+            "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+            lambda path: chromsizes or {"chr1": 10},
+        )
+        monkeypatch.setattr(
+            BamStore, "_process_chromosome",
+            lambda *a, **kw: (0.0, np.zeros(a[3]), None),
+        )
+
+    def test_sample_names_expanded_per_viewpoint(self, tmp_path, monkeypatch):
+        self._mock_env(monkeypatch, ["VP_A", "VP_B"])
+        bam = tmp_path / "sample1.bam"
+        bam.write_text("dummy")
+
+        store = BamStore.from_bam_files(
+            bam_files=[str(bam)],
+            store_path=tmp_path / "store",
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
+        )
+
+        assert store.sample_names == ["sample1_VP_A", "sample1_VP_B"]
+
+    def test_viewpoint_map_populated(self, tmp_path, monkeypatch):
+        self._mock_env(monkeypatch, ["VP_A", "VP_B"])
+        bam = tmp_path / "sample1.bam"
+        bam.write_text("dummy")
+
+        store = BamStore.from_bam_files(
+            bam_files=[str(bam)],
+            store_path=tmp_path / "store",
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
+        )
+
+        assert store.viewpoint_map == {"sample1_VP_A": "VP_A", "sample1_VP_B": "VP_B"}
+
+    def test_sample_bam_map_all_point_to_source(self, tmp_path, monkeypatch):
+        self._mock_env(monkeypatch, ["VP_A", "VP_B"])
+        bam = tmp_path / "sample1.bam"
+        bam.write_text("dummy")
+
+        store = BamStore.from_bam_files(
+            bam_files=[str(bam)],
+            store_path=tmp_path / "store",
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
+        )
+
+        assert set(store.sample_bam_map.values()) == {str(bam)}
+
+    def test_all_virtual_samples_completed(self, tmp_path, monkeypatch):
+        self._mock_env(monkeypatch, ["VP_A", "VP_B", "VP_C"])
+        bam = tmp_path / "s.bam"
+        bam.write_text("dummy")
+
+        store = BamStore.from_bam_files(
+            bam_files=[str(bam)],
+            store_path=tmp_path / "store",
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
+        )
+
+        assert store.completed_mask.all()
+        assert store.n_samples == 3
+
+    def test_mixed_mcc_and_regular_bam(self, tmp_path, monkeypatch):
+        """Non-MCC BAM files are not expanded; only MCC ones get viewpoint suffixes."""
+        monkeypatch.setattr(
+            "quantnado.dataset.store_bam._get_viewpoints_from_mcc_bam",
+            lambda path: ["VP_A", "VP_B"],
+        )
+        monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
+
+        bam_mcc = tmp_path / "mcc.bam"
+        bam_reg = tmp_path / "reg.bam"
+        bam_mcc.write_text("dummy")
+        bam_reg.write_text("dummy")
+
+        store = BamStore.from_bam_files(
+            bam_files=[str(bam_mcc), str(bam_reg)],
+            store_path=tmp_path / "store",
+            coverage_type=[CoverageType.MICRO_CAPTURE_C, CoverageType.UNSTRANDED],
+            chromsizes={"chr1": 10},
+        )
+
+        assert "mcc_VP_A" in store.sample_names
+        assert "mcc_VP_B" in store.sample_names
+        assert "reg" in store.sample_names
+        assert store.n_samples == 3
+
+    def test_process_samples_uses_sample_bam_map(self, tmp_path, monkeypatch):
+        """process_samples() with no bam_files arg routes via sample_bam_map."""
+        routed_bam_files = []
+
+        def fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
+            routed_bam_files.append(bam_file)
+            return 0.0, np.zeros(contig_size), None
+
+        monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
+
+        store = BamStore(
+            tmp_path / "ds",
+            {"chr1": 5},
+            ["s_VP_A", "s_VP_B"],
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
+            sample_bam_map={"s_VP_A": "source.bam", "s_VP_B": "source.bam"},
+            viewpoint_map={"s_VP_A": "VP_A", "s_VP_B": "VP_B"},
+        )
+        store.process_samples()
+
+        assert store.completed_mask.all()
+        assert routed_bam_files == ["source.bam", "source.bam"]
+
+
+# ---------------------------------------------------------------------------
+# VP tag filter injection for MCC samples
+# ---------------------------------------------------------------------------
+
+
+class TestVPTagFilterInjection:
+    def test_vp_filter_set_on_mcc_sample(self, tmp_path, monkeypatch):
+        """_process_chromosome receives filter_tag/filter_tag_value for MCC samples."""
+        captured: dict[str, bamnado.ReadFilter] = {}
+
+        def fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
+            if read_filter and read_filter.filter_tag_value:
+                captured[read_filter.filter_tag_value] = read_filter
+            return 0.0, np.zeros(contig_size), None
+
+        monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
+
+        store = BamStore(
+            tmp_path / "ds",
+            {"chr1": 5},
+            ["s_GENE1", "s_GENE2"],
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
+            sample_bam_map={"s_GENE1": "x.bam", "s_GENE2": "x.bam"},
+            viewpoint_map={"s_GENE1": "GENE1", "s_GENE2": "GENE2"},
+        )
+        store.process_samples()
+
+        assert "GENE1" in captured, "filter_tag_value=GENE1 not set on read filter"
+        assert "GENE2" in captured, "filter_tag_value=GENE2 not set on read filter"
+        assert captured["GENE1"].filter_tag == "VP"
+        assert captured["GENE2"].filter_tag == "VP"
+
+    def test_non_mcc_sample_has_no_vp_filter(self, tmp_path, chromsizes, sample_names, monkeypatch):
+        """Unstranded samples must not have filter_tag set."""
+        captured_tags = []
+
+        def fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
+            captured_tags.append(getattr(read_filter, "filter_tag", None))
+            return 0.0, np.zeros(contig_size), None
+
+        monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
+        store = BamStore(tmp_path / "ds", chromsizes, sample_names)
+        store.process_samples(["0", "0"])
+
+        assert all(t is None for t in captured_tags), f"Unexpected VP filter on unstranded sample: {captured_tags}"
+
+    def test_custom_viewpoint_tag_respected(self, tmp_path, monkeypatch):
+        """viewpoint_tag parameter controls which SAM tag is used for filtering."""
+        captured: dict[str, bamnado.ReadFilter] = {}
+
+        def fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
+            if read_filter and read_filter.filter_tag_value:
+                captured[read_filter.filter_tag_value] = read_filter
+            return 0.0, np.zeros(contig_size), None
+
+        monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
+
+        store = BamStore(
+            tmp_path / "ds",
+            {"chr1": 5},
+            ["s_LOCUS1"],
+            coverage_type=CoverageType.MICRO_CAPTURE_C,
+            sample_bam_map={"s_LOCUS1": "x.bam"},
+            viewpoint_map={"s_LOCUS1": "LOCUS1"},
+            viewpoint_tag="VT",
+        )
+        store.process_samples()
+
+        assert captured["LOCUS1"].filter_tag == "VT"

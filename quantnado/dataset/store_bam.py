@@ -8,8 +8,9 @@ import hashlib
 import json
 import tempfile
 import uuid
-import pysam
+from enum import Enum, StrEnum
 
+import pysam
 import bamnado
 import numpy as np
 import pandas as pd
@@ -19,149 +20,67 @@ from zarr.codecs import BloscCodec
 from loguru import logger
 from .core import BaseStore
 from quantnado.utils import estimate_chunk_len, is_network_fs
+
+
+def _copy_read_filter(rf: "bamnado.ReadFilter") -> "bamnado.ReadFilter":
+    """Return a new ReadFilter with the same settings as *rf*.
+
+    Delegates to ``ReadFilter.copy()`` (bamnado >=0.5.6).  Falls back to
+    manual attribute copying for older versions that lack the method.
+    """
+    if hasattr(rf, "copy"):
+        return rf.copy()
+    new_rf = bamnado.ReadFilter()
+    for attr in (
+        "min_mapq", "proper_pair", "min_length", "max_length", "strand",
+        "min_fragment_length", "max_fragment_length", "blacklist_bed",
+        "whitelisted_barcodes", "read_group", "filter_tag", "filter_tag_value",
+    ):
+        setattr(new_rf, attr, getattr(rf, attr))
+    return new_rf
+
+
+def _to_str_list(items: Iterable[Any]) -> list[str]:
+    """Convert a sequence of items to strings for Zarr attributes."""
+    import pandas as pd
+    return [str(i) if not pd.isna(i) else "" for i in items]
+
+
 BIN_SIZE = 1
 CONSTRUCTION_ARRAY_DTYPE = np.uint32
 DEFAULT_CONSTRUCTION_COMPRESSION = "default"
 
-STRANDED_LIBRARY_TYPES = {"R", "F", "U"}
 
+class Strandedness(StrEnum):
+    UNSTRANDED = "U"
+    REVERSE = "R"
+    FORWARD = "F"
 
-def _normalize_strandedness(
-    stranded: "str | list[str] | dict[str, str] | None",
-    sample_names: list[str],
-) -> dict[str, str | None]:
-    """Normalize stranded input to a per-sample dict.
+class CoverageType(StrEnum):
+    """Coverage type for BAM processing."""
+    UNSTRANDED = "unstranded"
+    STRANDED = "stranded"
+    MICRO_CAPTURE_C = "mcc"
 
-    Parameters
-    ----------
-    stranded : str | list[str] | dict[str, str] | None
-        - ``None`` — no stranded coverage for any sample.
-        - ``str`` — apply this library type to all samples.
-        - ``list[str]`` — sample names to process with ``"U"``.
-        - ``dict[str, str]`` — mapping of sample name → library type.
-    sample_names : list[str]
-        All sample names in the store.
-
-    Returns
-    -------
-    dict mapping each sample name to its library type (or None).
+def _get_viewpoints_from_mcc_bam(bam_path: Path | str, viewpoint_tag: str = "VP") -> list[str]:
     """
-    if stranded is None:
-        return {s: None for s in sample_names}
+    Extract sample names from BAM file header for micro-capture C-style BAMs.
 
-    if isinstance(stranded, str):
-        if stranded not in STRANDED_LIBRARY_TYPES:
-            raise ValueError(
-                f"stranded must be one of {STRANDED_LIBRARY_TYPES} or None, got {stranded!r}"
-            )
-        return {s: stranded for s in sample_names}
+    I'd prefer not to read the entire BAM to get sample names, but unfortunately there isn't a standard way to encode them in the header.
 
-    if isinstance(stranded, list):
-        unknown = set(stranded) - set(sample_names)
-        if unknown:
-            raise ValueError(
-                f"Unknown sample names in stranded list: {sorted(unknown)}"
-            )
-        sample_set = set(stranded)
-        return {s: ("U" if s in sample_set else None) for s in sample_names}
-
-    if isinstance(stranded, dict):
-        unknown = set(stranded) - set(sample_names)
-        if unknown:
-            raise ValueError(
-                f"Unknown sample names in stranded dict: {sorted(unknown)}"
-            )
-        for sname, lt in stranded.items():
-            if lt is not None and lt not in STRANDED_LIBRARY_TYPES:
-                raise ValueError(
-                    f"stranded[{sname!r}] must be one of {STRANDED_LIBRARY_TYPES}, got {lt!r}"
-                )
-        return {s: stranded.get(s) for s in sample_names}
-
-    raise TypeError(
-        f"stranded must be str, list, dict, or None, got {type(stranded).__name__}"
-    )
-
-
-def _get_stranded_signal(
-    bam_path: str | Path,
-    chrom: str,
-    chrom_size: int,
-    library_type: str,
-) -> tuple[np.ndarray, np.ndarray]:
     """
-    Extract per-base coverage split by strand using pysam.
-
-    Parameters
-    ----------
-    library_type : str
-        ``"U"`` — split reads by raw alignment strand (``+`` → fwd, ``-`` → rev).
-        ``"R"`` — ISR / dUTP / TruSeq Stranded (read1 from reverse strand).
-        ``"F"`` — ISF / ligation / Directional (read1 from forward strand).
-
-    Returns
-    -------
-    (fwd, rev) : tuple of np.ndarray uint32
-        Per-base coverage for the forward (+) and reverse (−) strands,
-        each of length *chrom_size*.
-    """
-    if library_type not in STRANDED_LIBRARY_TYPES:
-        raise ValueError(
-            f"library_type must be one of {STRANDED_LIBRARY_TYPES}, got {library_type!r}"
-        )
-
-    def _valid(read) -> bool:
-        return not read.is_unmapped and not read.is_secondary and not read.is_supplementary
-
-    if library_type == "U":
-        def _fwd_cb(read):
-            return _valid(read) and not read.is_reverse
-
-        def _rev_cb(read):
-            return _valid(read) and read.is_reverse
-    else:
-        def _is_sense(read) -> bool:
-            """True if this read represents the + (sense) strand of the transcript."""
-            if read.is_paired:
-                if library_type == "R":
-                    return (read.is_read1 and read.is_reverse) or (
-                        read.is_read2 and not read.is_reverse
-                    )
-                else:  # F
-                    return (read.is_read1 and not read.is_reverse) or (
-                        read.is_read2 and read.is_reverse
-                    )
-            else:  # single-end
-                return read.is_reverse if library_type == "R" else not read.is_reverse
-
-        def _fwd_cb(read):
-            return _valid(read) and _is_sense(read)
-
-        def _rev_cb(read):
-            return _valid(read) and not _is_sense(read)
-
-    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-        fwd_raw = bam.count_coverage(chrom, 0, chrom_size, quality_threshold=0, read_callback=_fwd_cb)
-        rev_raw = bam.count_coverage(chrom, 0, chrom_size, quality_threshold=0, read_callback=_rev_cb)
-
-    fwd = sum(np.asarray(a, dtype=np.uint32) for a in fwd_raw)
-    rev = sum(np.asarray(a, dtype=np.uint32) for a in rev_raw)
-
-    # align to expected length (mirrors bamnado length correction)
-    def _align(arr: np.ndarray, size: int) -> np.ndarray:
-        if arr.shape[0] > size:
-            return arr[:size]
-        if arr.shape[0] < size:
-            return np.pad(arr, (0, size - arr.shape[0]))
-        return arr
-
-    return _align(fwd, chrom_size), _align(rev, chrom_size)
-
-
-def _to_str_list(values: Iterable[Any]) -> list[str]:
-    arr_obj = np.asarray(list(values), dtype=object)
-    return ["" if (pd.isna(v) or v is None) else str(v) for v in arr_obj]
-
+    viewpoints = set()
+    try:
+        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+            for read in bam.fetch(until_eof=True):
+                if read.has_tag(viewpoint_tag):
+                    vp = read.get_tag(viewpoint_tag)
+                    viewpoints.add(vp)
+    except Exception as e:
+        logger.warning(f"Could not extract sample names from BAM header for {bam_path}: {e}")
+    if not viewpoints:
+        raise ValueError(f"No sample names found in BAM header using tag '{viewpoint_tag}' for {bam_path}")
+    return sorted(viewpoints)
 
 def _compute_sample_hash(sample_names: list[str]) -> str:
     """Compute a deterministic hash of the sample names to ensure alignment."""
@@ -344,11 +263,47 @@ class BamStore(BaseStore):
         overwrite: bool = True,
         resume: bool = False,
         read_only: bool = False,
-        stranded: "str | list[str] | dict[str, str] | None" = None,
+        coverage_type: CoverageType | list[CoverageType] | dict[str, CoverageType] = CoverageType.UNSTRANDED,
+        bam_filter: bamnado.ReadFilter | list[bamnado.ReadFilter] | dict[str, bamnado.ReadFilter] | None = None,
+        count_fragments: bool = False,
+        viewpoints: set[str] | None = None,
+        viewpoint_tag: str = "VP",
+        sample_bam_map: dict[str, str] | None = None,
+        viewpoint_map: dict[str, str] | None = None,
     ) -> None:
+        """
+        Initialize BamStore by creating a new Zarr store or loading an existing one.
+        If the store already exists at the given path:
+        - If overwrite=True, it will be deleted and recreated (if not read-only).
+        - If resume=True, it will be loaded and validated against the provided sample_names.
+
+        Parameters:
+            store_path: Path to the Zarr store.
+            chromsizes: Chromosome sizes.
+            sample_names: List of sample names.
+            chunk_len: Length of chunks for Zarr arrays.
+            construction_compression: Compression method for constructing the store.
+            overwrite: Whether to overwrite an existing store.
+            resume: Whether to resume from an existing store.
+            read_only: Whether to open the store in read-only mode.
+            coverage_type: BAM type information for each sample.
+                    - If None, only unstranded coverage is stored.
+                    - If CoverageType value, applies to all samples.
+                    - If list of CoverageType, defines coverage_type for each sample.
+                    - If dict of sample name → CoverageType, applies specified type per sample. Defaults to unstranded if sample not listed.
+            bam_filter: BAM read filter for processing reads.
+            count_fragments: Whether to count fragments instead of reads.
+            viewpoints: Set of viewpoint names.
+            viewpoint_tag: Tag used to identify viewpoint reads.
+        """
+
         self.path = Path(store_path)
         self.store_path = self._normalize_path(self.path)
-        
+        self.read_only = read_only
+        self.construction_compression, self.compressors = _resolve_construction_compressors(
+            construction_compression
+        )
+
         # Initialize BaseStore attributes
         if self.store_path.exists() and not overwrite:
             self.root = zarr.open_group(str(self.store_path), mode="r" if read_only else "r+")
@@ -365,15 +320,18 @@ class BamStore(BaseStore):
 
         self.n_samples = len(self.sample_names)
         self.sample_hash = _compute_sample_hash(self.sample_names)
-        self.construction_compression, self.compressors = _resolve_construction_compressors(
-            construction_compression
-        )
-        self.read_only = read_only
-        self._strandedness_map: dict[str, str | None] = _normalize_strandedness(
-            stranded, self.sample_names
-        )
-        # Expose a summary attribute: the original value (for attrs storage / repr)
-        self.stranded = stranded
+        self.coverage_type = coverage_type
+        self.count_fragments = count_fragments
+        self.viewpoints = viewpoints
+        self.viewpoint_tag = viewpoint_tag
+        self.sample_bam_map = sample_bam_map
+        self.viewpoint_map = viewpoint_map
+
+        # Set up BAM read filter (same for all samples; can be customized if needed)
+        if not bam_filter:
+            self.bam_filter = bamnado.ReadFilter()
+        else:
+            self.bam_filter = bam_filter
 
         if self.n_samples == 0:
             raise ValueError("sample_names must not be empty")
@@ -415,6 +373,62 @@ class BamStore(BaseStore):
                 chunk_len,
             )
             self._init_store()
+
+    @property
+    def bam_filter_map(self) -> dict[str, bamnado.ReadFilter]:
+        """
+        Ensures that the BAM filter information is available as a per-sample dict mapping sample name to BAM filter.
+        """
+        match self.bam_filter:
+            case bamnado.ReadFilter():
+                return {s: self.bam_filter for s in self.sample_names}
+            case list():
+                if not all(isinstance(v, bamnado.ReadFilter) for v in self.bam_filter):
+                    raise ValueError("If bam_filter is a list, all values must be bamnado.ReadFilter instances.")
+                if len(self.bam_filter) != len(self.sample_names):
+                    raise ValueError("If bam_filter is a list, it must have the same length as sample_names.")
+                return {s: bf for s, bf in zip(self.sample_names, self.bam_filter)}
+            case dict():
+                if not all(isinstance(v, bamnado.ReadFilter) for v in self.bam_filter.values()):
+                    raise ValueError("If bam_filter is a dict, all values must be bamnado.ReadFilter instances.")
+                unknown = set(self.bam_filter) - set(self.sample_names)
+                if unknown:
+                    raise ValueError(f"Unknown sample names in bam_filter dict: {sorted(unknown)}")
+                return {s: self.bam_filter.get(s) if self.bam_filter.get(s) else bamnado.ReadFilter() for s in self.sample_names}
+            case None:
+                return {s: bamnado.ReadFilter() for s in self.sample_names}
+
+    @property
+    def coverage_type_map(self) -> dict[str, CoverageType]:
+        """
+        Ensures that the BAM type information is available as a per-sample dict mapping sample name to BAM type.
+        """
+        match self.coverage_type:
+            case CoverageType():
+                return {s: self.coverage_type for s in self.sample_names}
+            
+            case list():
+                if not all(isinstance(v, CoverageType) for v in self.coverage_type):
+                    raise ValueError("If coverage_type is a list, all values must be CoverageType enum members.")
+                if len(self.coverage_type) != len(self.sample_names):
+                    raise ValueError("If coverage_type is a list, it must have the same length as sample_names.")
+                return {s: lt for s, lt in zip(self.sample_names, self.coverage_type)}
+            
+            case dict():
+                if not all(isinstance(v, CoverageType) for v in self.coverage_type.values()):
+                    raise ValueError("If coverage_type is a dict, all values must be CoverageType enum members.")
+                
+                unknown = set(self.coverage_type) - set(self.sample_names)
+                
+                if unknown:
+                    raise ValueError(f"Unknown sample names in coverage_type dict: {sorted(unknown)}")
+                return {s: self.coverage_type.get(s, CoverageType.UNSTRANDED) for s in self.sample_names}
+            
+            case None:
+                return {s: CoverageType.UNSTRANDED for s in self.sample_names}
+
+
+
     @classmethod
     def open(cls, store_path: str | Path, read_only: bool = True) -> "BamStore":
         """
@@ -440,22 +454,22 @@ class BamStore(BaseStore):
         # Read required root attributes
         try:
             sample_names = list(group.attrs["sample_names"])
-            chromsizes = dict(group.attrs["chromsizes"])
+            chromsizes = {str(k): int(v) for k, v in group.attrs["chromsizes"].items()}
             chunk_len = int(group.attrs["chunk_len"])
         except KeyError as e:
             raise ValueError(f"Missing required attribute in store: {e}")
-        # stranded may be stored as a dict (new format) or string (old format)
+        # Reconstruct coverage_type from the stored stranded attribute.
+        # The value is a per-sample dict where "stranded" means STRANDED and "" means UNSTRANDED.
         raw_strand = group.attrs.get("stranded")
         if isinstance(raw_strand, dict):
-            # Convert back to a per-sample dict, dropping empty strings → None
-            stranded: "str | dict[str, str] | None" = {
-                s: (lt if lt else None) for s, lt in raw_strand.items()
+            coverage_type: CoverageType | dict[str, CoverageType] = {
+                s: (CoverageType.STRANDED if v == CoverageType.STRANDED else CoverageType.UNSTRANDED)
+                for s, v in raw_strand.items()
             }
-            # If all values are None, simplify to None
-            if not any(stranded.values()):
-                stranded = None
+            if all(bt == CoverageType.UNSTRANDED for bt in coverage_type.values()):
+                coverage_type = CoverageType.UNSTRANDED
         else:
-            stranded = raw_strand or None
+            coverage_type = CoverageType.UNSTRANDED
         # Return BamStore instance
         return cls(
             store_path=store_path,
@@ -465,7 +479,7 @@ class BamStore(BaseStore):
             overwrite=False,
             resume=True,
             read_only=read_only,
-            stranded=stranded,
+            coverage_type=coverage_type,
         )
     def _check_writable(self):
         if getattr(self, "read_only", False):
@@ -523,7 +537,8 @@ class BamStore(BaseStore):
             overwrite=True,
         )
 
-        if any(v for v in self._strandedness_map.values() if v):
+        has_stranded = any(bt == CoverageType.STRANDED for bt in self.coverage_type_map.values())
+        if has_stranded:
             for chrom, size in self.chromsizes.items():
                 for suffix in ("_fwd", "_rev"):
                     self.root.create_array(
@@ -538,7 +553,7 @@ class BamStore(BaseStore):
 
         # Persist stranded as a per-sample dict so it round-trips correctly
         strandedness_for_attrs = {
-            s: (lt or "") for s, lt in self._strandedness_map.items()
+            s: (bt.value if bt == CoverageType.STRANDED else "") for s, bt in self.coverage_type_map.items()
         }
         self.root.attrs.update(
             {
@@ -611,41 +626,115 @@ class BamStore(BaseStore):
         return pd.Series(reads, index=self.sample_names, name="library_size")
 
     def _process_chromosome(
-        self, bam_file: str, contig: str, contig_size: int, library_type: str | None = None
-    ) -> tuple[str, np.ndarray, float, np.ndarray | None, np.ndarray | None]:
-        signal = bamnado.get_signal_for_chromosome(
-            bam_path=bam_file,
-            chromosome_name=contig,
-            bin_size=BIN_SIZE,
-            scale_factor=1.0,
-            use_fragment=False,
-            ignore_scaffold_chromosomes=False,
-        )
+        self, 
+        bam_file: str, 
+        contig: str, 
+        contig_size: int,
+        is_stranded: bool,
+        use_fragment: bool = False,
+        read_filter: bamnado.ReadFilter | None = None,
+    ) -> tuple[float, np.ndarray, np.ndarray | float, np.ndarray, None]:
+        """
+        Extract signal for a single chromosome from the BAM file.
 
-        actual_len = signal.shape[0]
-        if actual_len != contig_size:
-            logger.warning(
-                f"Signal length for {contig} differs from chromsizes ({actual_len} vs {contig_size}); aligning"
-            )
-            if actual_len > contig_size:
-                signal = signal[:contig_size]
-            else:
-                signal = np.pad(signal, (0, contig_size - actual_len), mode="constant")
+        Parameters:
+            bam_file (str): Path to the BAM file.
+            contig (str): Chromosome name to extract.
+            contig_size (int): Expected size of the chromosome (for alignment).
+            is_stranded (bool): Whether to process stranded data.
+            use_fragment (bool): Whether to use fragment-level coverage.
+            read_filter (bamnado.ReadFilter | None): Filter for selecting reads; if None, a default filter is used.
 
-        max_val = signal.max()
-        dtype = np.uint16 if max_val <= np.iinfo(np.uint16).max else np.uint32
-        data = signal.astype(dtype, copy=False)
-        sparsity = float((np.sum(data == 0) / data.size) * 100)
+        Returns:
+            sparsity (float): Percentage of zero-coverage positions.
+            signal (np.ndarray): Per-base coverage signal (unstranded or forward strand).
+            rev_signal (np.ndarray | None): Per-base coverage for reverse strand, or None if not applicable.
+        """
+        
+        # Create appropriate read filter based on strandedness
+        if not read_filter:
+            read_filter = bamnado.ReadFilter()
+        
+        if is_stranded:
+            read_filter_fwd = _copy_read_filter(read_filter)
+            read_filter_fwd.strand = Strandedness.FORWARD.value
+            read_filter_rev = _copy_read_filter(read_filter)
+            read_filter_rev.strand = Strandedness.REVERSE.value
+            filters = [read_filter_fwd, read_filter_rev]
+        else:
+            filters = [read_filter]
 
-        fwd_data = rev_data = None
-        if library_type:
-            fwd_raw, rev_raw = _get_stranded_signal(
-                bam_file, contig, contig_size, library_type
-            )
-            fwd_data = fwd_raw.astype(np.uint32)
-            rev_data = rev_raw.astype(np.uint32)
+        signal_arrays = []
+        for f in filters:
+            signal_arrays.append(bamnado.get_signal_for_chromosome(
+                bam_path=bam_file,
+                chromosome_name=contig,
+                bin_size=BIN_SIZE,
+                scale_factor=1.0,
+                use_fragment=use_fragment,
+                ignore_scaffold_chromosomes=False,
+                read_filter=f,
+            ))
+        
+        # Correct for contig size discrepancies
+        signal_arrays_aligned = []
+        for signal in signal_arrays:
+            len_signal = signal.shape[0]
+            if len_signal != contig_size:
+                logger.warning(
+                    f"Signal length for {contig} differs from chromsizes ({len_signal} vs {contig_size}); aligning"
+                )
+                if len_signal > contig_size:
+                    signal = signal[:contig_size]
+                else:
+                    signal = np.pad(signal, (0, contig_size - len_signal), mode="constant")
+            signal_arrays_aligned.append(signal)
 
-        return contig, data, sparsity, fwd_data, rev_data
+        del signal_arrays
+
+        # Calculate appropriate data types
+        if is_stranded:
+            max_val = signal_arrays_aligned[0].max()
+            min_val = signal_arrays_aligned[0].min()
+            dtype_fwd = np.uint16 if max_val <= np.iinfo(np.uint16).max else np.uint32
+            if min_val < 0:
+                dtype_fwd = np.int16 if np.iinfo(np.int16).min <= min_val and max_val <= np.iinfo(np.int16).max else np.int32
+            fwd_data = signal_arrays_aligned[0].astype(dtype_fwd, copy=False)
+            sparsity_fwd = float((np.sum(fwd_data == 0) / fwd_data.size) * 100)
+            del signal_arrays_aligned[0]
+            rev_data = signal_arrays_aligned[0].astype(dtype_fwd, copy=False)
+            sparsity_rev = float((np.sum(rev_data == 0) / rev_data.size) * 100)
+            sparsity = (sparsity_fwd + sparsity_rev) / 2
+            del signal_arrays_aligned[0]
+            return sparsity, fwd_data, rev_data
+        else:
+            max_val = signal_arrays_aligned[0].max()
+            dtype = np.uint16 if max_val <= np.iinfo(np.uint16).max else np.uint32
+            data = signal_arrays_aligned[0].astype(dtype, copy=False)
+            sparsity = float((np.sum(data == 0) / data.size) * 100)
+            del signal_arrays_aligned[0]
+            return sparsity, data, None
+
+
+    def _store_chromosome_data(
+        self,
+        sample_idx: int,
+        contig: str,
+        fwd: np.ndarray,
+        rev: np.ndarray | None = None,
+    ) -> None:
+        """
+        Store processed chromosome data into the Zarr arrays for the given sample index.
+        """
+
+        # If we have stranded data rev will be non-None;
+        if rev is not None:
+            self.root[f"{contig}_fwd"][sample_idx, : fwd.shape[0]] = fwd
+            self.root[f"{contig}_rev"][sample_idx, : rev.shape[0]] = rev
+            del fwd, rev
+        else:
+            self.root[contig][sample_idx, : fwd.shape[0]] = fwd
+            del fwd        
 
     def _process_and_write_single_sample(
         self,
@@ -655,34 +744,42 @@ class BamStore(BaseStore):
         chromsizes_dict: dict[str, int],
         max_workers: int = 1,
     ) -> None:
-        """Process a single sample by streaming chromosomes directly to disk.
-
-        Unlike the legacy ``_process_single_sample`` this method writes each
-        chromosome to the zarr store immediately after extraction, so only one
-        chromosome's worth of data is ever held in memory at a time.  This
-        reduces peak memory from O(genome_size) to O(max_chromosome_size).
+        """
+        Process a single sample by streaming chromosomes directly to disk.
         """
         logger.info(
             f"Processing sample {sample_idx + 1}/{self.n_samples}: {sample_name}"
         )
 
         bam_hash = _compute_bam_hash(bam_file)
-        library_type = self._strandedness_map.get(sample_name)
+        coverage_type = self.coverage_type_map.get(sample_name, CoverageType.UNSTRANDED)
+        is_stranded = coverage_type == CoverageType.STRANDED
+        use_fragment = self.count_fragments
+
+        # Build the per-sample read filter, then add VP tag filtering for MCC.
+        read_filter = self.bam_filter_map[sample_name]
+        if coverage_type == CoverageType.MICRO_CAPTURE_C and self.viewpoint_map:
+            vp = self.viewpoint_map.get(sample_name)
+            if vp:
+                read_filter = _copy_read_filter(read_filter)
+                read_filter.filter_tag = self.viewpoint_tag
+                read_filter.filter_tag_value = vp
+
         sparsity_values: list[float] = []
         contigs = list(chromsizes_dict.keys())
 
         if max_workers <= 1 or len(contigs) <= 1:
             # Sequential: process + write one chromosome at a time
             for contig, size in chromsizes_dict.items():
-                _, data, sparsity, fwd, rev = self._process_chromosome(
-                    bam_file, contig, size, library_type
+                sparsity, fwd, rev = self._process_chromosome(
+                    bam_file,
+                    contig,
+                    size,
+                    is_stranded,
+                    use_fragment=use_fragment,
+                    read_filter=read_filter,
                 )
-                self.root[contig][sample_idx, : data.shape[0]] = data
-                del data
-                if fwd is not None:
-                    self.root[f"{contig}_fwd"][sample_idx, : fwd.shape[0]] = fwd
-                    self.root[f"{contig}_rev"][sample_idx, : rev.shape[0]] = rev
-                    del fwd, rev
+                self._store_chromosome_data(sample_idx, contig, fwd, rev)
                 sparsity_values.append(sparsity)
         else:
             # Parallel chromosome processing with streaming writes.
@@ -697,18 +794,16 @@ class BamStore(BaseStore):
                         bam_file,
                         contig,
                         chromsizes_dict[contig],
-                        library_type,
+                        is_stranded,
+                        use_fragment=use_fragment,
+                        read_filter=read_filter,
                     ): contig
                     for contig in contigs
                 }
                 for future in as_completed(futures):
-                    contig, data, sparsity, fwd, rev = future.result()
-                    self.root[contig][sample_idx, : data.shape[0]] = data
-                    del data
-                    if fwd is not None:
-                        self.root[f"{contig}_fwd"][sample_idx, : fwd.shape[0]] = fwd
-                        self.root[f"{contig}_rev"][sample_idx, : rev.shape[0]] = rev
-                        del fwd, rev
+                    contig = futures[future]
+                    sparsity, fwd, rev = future.result()
+                    self._store_chromosome_data(sample_idx, contig, fwd, rev)
                     sparsity_values.append(sparsity)
 
         # Write sample-level metadata
@@ -736,7 +831,7 @@ class BamStore(BaseStore):
 
     def process_samples(
         self,
-        bam_files: list[str],
+        bam_files: list[str] | None = None,
         max_workers: int = 1,
     ) -> None:
         """Process BAM files and write signal data to the zarr store.
@@ -747,15 +842,25 @@ class BamStore(BaseStore):
 
         Within each sample, chromosome processing is parallelised using
         ``max_workers`` threads (bamnado releases the GIL).
+
+        When the store was built from MCC data via ``from_bam_files``, the
+        BAM-file-to-sample routing is stored in ``self.sample_bam_map`` and
+        ``bam_files`` may be omitted.
         """
-        if len(bam_files) != self.n_samples:
-            raise ValueError("bam_files length must match number of sample_names")
+        if self.sample_bam_map is not None:
+            resolved_bam_files = [self.sample_bam_map[s] for s in self.sample_names]
+        elif bam_files is not None:
+            if len(bam_files) != self.n_samples:
+                raise ValueError("bam_files length must match number of sample_names")
+            resolved_bam_files = bam_files
+        else:
+            raise ValueError("bam_files must be provided when sample_bam_map is not set")
 
         chromsizes_dict = self.chromsizes
         completed = self.completed_mask
 
         for sample_idx, (bam_file, sample_name) in enumerate(
-            zip(bam_files, self.sample_names)
+            zip(resolved_bam_files, self.sample_names)
         ):
             if completed[sample_idx]:
                 logger.info(
@@ -779,11 +884,14 @@ class BamStore(BaseStore):
     def from_bam_files(
         cls,
         bam_files: list[str],
-        chromsizes: str | Path | dict[str, int] | None = None,
         store_path: Path | str | None = None,
+        *,
+        chromsizes: str | Path | dict[str, int] | None = None,
         metadata: pd.DataFrame | Path | str | list[Path | str] | None = None,
         bam_sample_names: list[str] | None = None,
-        *,
+        bam_filters: bamnado.ReadFilter | list[bamnado.ReadFilter] | None = None,
+        coverage_type: CoverageType | list[CoverageType] | dict[str, CoverageType] = CoverageType.UNSTRANDED,
+        count_fragments: bool = False,
         filter_chromosomes: bool = True,
         overwrite: bool = True,
         resume: bool = False,
@@ -795,7 +903,6 @@ class BamStore(BaseStore):
         max_workers: int = 1,
         log_file: Path | None = None,
         test: bool = False,
-        stranded: "str | list[str] | dict[str, str] | None" = None,
     ) -> "BamStore":
         """
         Create BamStore from list of BAM files and optionally attach metadata.
@@ -813,11 +920,13 @@ class BamStore(BaseStore):
         Samples are processed sequentially to keep memory usage low.
         """
 
+        # Set up logging early so we capture all messages, including from chromsizes parsing
         if log_file is not None:
             from quantnado.utils import setup_logging
 
             setup_logging(Path(log_file), verbose=False)
 
+        # Determine chromsizes dict, either from provided input or by extracting from the first BAM file
         if chromsizes is None:
             if not bam_files:
                 raise ValueError(
@@ -832,6 +941,7 @@ class BamStore(BaseStore):
             chromsizes_raw, filter_chromosomes=filter_chromosomes, test=test
         )
 
+        # Deal with sample names: use provided bam_sample_names if given, otherwise derive from BAM file names
         if bam_sample_names is not None:
             if len(bam_sample_names) != len(bam_files):
                 raise ValueError(
@@ -840,6 +950,47 @@ class BamStore(BaseStore):
             sample_names = bam_sample_names
         else:
             sample_names = [Path(f).stem for f in bam_files]
+
+        # Normalise coverage_type to a per-file list so we can iterate it alongside bam_files.
+        if isinstance(coverage_type, CoverageType):
+            per_file_coverage_types: list[CoverageType] = [coverage_type] * len(bam_files)
+        elif isinstance(coverage_type, list):
+            per_file_coverage_types = coverage_type
+        elif isinstance(coverage_type, dict):
+            per_file_coverage_types = [coverage_type.get(s, CoverageType.UNSTRANDED) for s in sample_names]
+        else:
+            per_file_coverage_types = [CoverageType.UNSTRANDED] * len(bam_files)
+
+        # If we have MCC data we need to treat this in a different way.
+        # Each BAM file contains reads for multiple viewpoints (VP tag), so we expand
+        # each MCC file into one virtual sample per viewpoint.
+        sample_bam_map: dict[str, str] | None = None
+        viewpoint_map: dict[str, str] | None = None
+        viewpoints: set[str] | None = None
+        if any(bt == CoverageType.MICRO_CAPTURE_C for bt in per_file_coverage_types):
+            _sample_bam_map: dict[str, str] = {}
+            _viewpoint_map: dict[str, str] = {}
+            _viewpoints: set[str] = set()
+            expanded_sample_names: list[str] = []
+            expanded_coverage_type: dict[str, CoverageType] = {}
+            for bam_file, sample_name, bt in zip(bam_files, sample_names, per_file_coverage_types):
+                if bt == CoverageType.MICRO_CAPTURE_C:
+                    for vp in _get_viewpoints_from_mcc_bam(bam_file):
+                        virtual = f"{sample_name}_{vp}"
+                        expanded_sample_names.append(virtual)
+                        _sample_bam_map[virtual] = str(bam_file)
+                        _viewpoint_map[virtual] = vp
+                        expanded_coverage_type[virtual] = CoverageType.MICRO_CAPTURE_C
+                        _viewpoints.add(vp)
+                else:
+                    expanded_sample_names.append(sample_name)
+                    _sample_bam_map[sample_name] = str(bam_file)
+                    expanded_coverage_type[sample_name] = bt
+            sample_names = expanded_sample_names
+            coverage_type = expanded_coverage_type
+            sample_bam_map = _sample_bam_map
+            viewpoint_map = _viewpoint_map
+            viewpoints = _viewpoints
 
         if store_path is None:
             raise ValueError("store_path must be provided.")
@@ -882,9 +1033,17 @@ class BamStore(BaseStore):
                 construction_compression=construction_compression,
                 overwrite=True if staging_enabled else overwrite,
                 resume=False if staging_enabled else resume,
-                stranded=stranded,
+                coverage_type=coverage_type,
+                bam_filter=bam_filters,
+                count_fragments=count_fragments,
+                viewpoints=viewpoints,
+                sample_bam_map=sample_bam_map,
+                viewpoint_map=viewpoint_map,
             )
-            store.process_samples(bam_files, max_workers=max_workers)
+            if sample_bam_map is not None:
+                store.process_samples(max_workers=max_workers)
+            else:
+                store.process_samples(bam_files, max_workers=max_workers)
 
             if metadata is not None:
                 if isinstance(metadata, list):
