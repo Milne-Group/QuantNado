@@ -32,7 +32,7 @@ from quantnado.peak_calling.call_quantile_peaks import call_peaks_from_zarr as c
 logger.remove()
 logger.add(lambda msg: print(msg, flush=True), level="INFO")
 
-SEACR_DIR = Path(__file__).parent
+SEACR_DIR = Path(__file__).parent / "seacr_data"
 TESTFILES = SEACR_DIR / "Testfiles"
 EXP_BG = TESTFILES / "CTCF_DE_chr1_100Mb.bedgraph.txt"
 CTRL_BG = TESTFILES / "IgG_DE_chr1_100Mb.bedgraph.txt"
