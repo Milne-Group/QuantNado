@@ -2447,7 +2447,7 @@ wheels = [
 
 [[package]]
 name = "quantnado"
-version = "0.4.4.dev23"
+version = "0.4.4.dev46"
 source = { editable = "." }
 dependencies = [
     { name = "bamnado" },
@@ -2489,6 +2489,9 @@ lanceotron = [
     { name = "scipy" },
     { name = "torch" },
 ]
+numba = [
+    { name = "numba" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2504,6 +2507,7 @@ requires-dist = [
     { name = "mkdocs-material", marker = "extra == 'dev'", specifier = "==9.7.4" },
     { name = "mkdocstrings", marker = "extra == 'dev'", specifier = "==1.0.3" },
     { name = "mkdocstrings-python", marker = "extra == 'dev'", specifier = "==2.0.3" },
+    { name = "numba", marker = "extra == 'numba'", specifier = ">=0.59" },
     { name = "numpy", specifier = ">=2.0,<3.0" },
     { name = "pandas", specifier = ">=3.0,<4.0" },
     { name = "plotnado", specifier = ">=0.3" },

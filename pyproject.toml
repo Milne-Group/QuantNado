@@ -39,6 +39,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+numba = [
+    "numba>=0.59",
+]
 lanceotron = [
     "torch>=2.0",
     "scipy>=1.10",

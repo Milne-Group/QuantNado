@@ -27,13 +27,102 @@ import pyranges1 as pr
 from loguru import logger
 from scipy import ndimage
 
+# ── Numba JIT compilation ────────────────────────────────────────────────
+try:
+    import numba
+    _NUMBA_AVAILABLE = True
+except ImportError:
+    _NUMBA_AVAILABLE = False
+
+# ── ECDF numba kernel ────────────────────────────────────────────────────
+if _NUMBA_AVAILABLE:
+    @numba.njit(cache=True)
+    def _ecdf_nb(sorted_arr: np.ndarray, x: np.ndarray) -> np.ndarray:
+        """Numba-compiled ECDF: fraction of sorted_arr values ≤ x."""
+        n = len(sorted_arr)
+        out = np.empty(len(x), dtype=np.float64)
+        for i in range(len(x)):
+            out[i] = np.searchsorted(sorted_arr, x[i], side='right') / n
+        return out
+else:
+    def _ecdf_nb(sorted_arr: np.ndarray, x: np.ndarray) -> np.ndarray:
+        """Fallback pure-numpy ECDF."""
+        return np.searchsorted(sorted_arr, x, side="right") / len(sorted_arr)
+
+# ── Island stats numba kernel ───────────────────────────────────────────
+if _NUMBA_AVAILABLE:
+    @numba.njit(cache=True)
+    def _island_stats_kernel(
+        cov: np.ndarray,
+        starts: np.ndarray,
+        stops: np.ndarray,
+        maxes: np.ndarray,
+        out_mr_start: np.ndarray,
+        out_mr_end: np.ndarray,
+        out_num: np.ndarray,
+    ) -> None:
+        """Compute MaxRegion and Num (RLE run count) for all islands in one JIT pass.
+
+        Parameters
+        ----------
+        cov : coverage array
+        starts, stops : island boundaries (from ndimage.find_objects)
+        maxes : max signal per island
+        out_mr_start, out_mr_end, out_num : output arrays to fill (in-place)
+        """
+        for idx in range(len(starts)):
+            istart = starts[idx]
+            iend = stops[idx]
+            max_val = maxes[idx]
+
+            # Find first and last position with max signal
+            first_max = iend
+            last_max = istart
+            for pos in range(istart, iend):
+                if cov[pos] == max_val:
+                    if first_max == iend:
+                        first_max = pos
+                    last_max = pos
+
+            out_mr_start[idx] = first_max
+            out_mr_end[idx] = last_max + 1
+
+            # Count RLE runs (number of constant-value regions)
+            num = 1
+            for pos in range(istart + 1, iend):
+                if cov[pos] != cov[pos - 1]:
+                    num += 1
+            out_num[idx] = num
+else:
+    def _island_stats_kernel(
+        cov: np.ndarray,
+        starts: np.ndarray,
+        stops: np.ndarray,
+        maxes: np.ndarray,
+        out_mr_start: np.ndarray,
+        out_mr_end: np.ndarray,
+        out_num: np.ndarray,
+    ) -> None:
+        """Pure-numpy fallback for island stats computation."""
+        for idx in range(len(starts)):
+            istart = starts[idx]
+            iend = stops[idx]
+            max_val = maxes[idx]
+
+            # Find first and last position with max signal
+            max_pos = np.where(cov[istart:iend] == max_val)[0]
+            out_mr_start[idx] = istart + int(max_pos[0])
+            out_mr_end[idx] = istart + int(max_pos[-1]) + 1
+
+            # Count RLE runs
+            out_num[idx] = int(np.sum(np.diff(cov[istart:iend]) != 0)) + 1
 
 # ---------------------------------------------------------------------------
 # Island computation  (equivalent to the awk in SEACR_1.3.sh)
 # ---------------------------------------------------------------------------
 
 
-def _compute_islands(cov: np.ndarray, chrom: str) -> list[dict]:
+def _compute_islands(cov: np.ndarray, chrom: str) -> pd.DataFrame | None:
     """Compute SEACR-style signal islands from a per-base coverage array.
 
     Each island is a maximal contiguous stretch of non-zero coverage.
@@ -44,43 +133,42 @@ def _compute_islands(cov: np.ndarray, chrom: str) -> list[dict]:
     """
     labeled, n_islands = ndimage.label(cov > 0)
     if n_islands == 0:
-        return []
+        return None
 
     labels = np.arange(1, n_islands + 1)
     aucs = ndimage.sum(cov, labeled, labels)
     maxes = ndimage.maximum(cov, labeled, labels)
     slices = ndimage.find_objects(labeled)
 
-    islands = []
-    for idx, sl in enumerate(slices):
-        istart = sl[0].start
-        iend = sl[0].stop
-        island_cov = cov[istart:iend]
-        max_val = float(maxes[idx])
+    # Extract island boundaries from slices
+    starts_arr = np.array([sl[0].start for sl in slices], dtype=np.int64)
+    stops_arr = np.array([sl[0].stop for sl in slices], dtype=np.int64)
 
-        # MaxRegion: span from first to last base with max signal (matching shell awk:
-        # when equal-max positions exist, coord extends to cover all of them)
-        max_pos = np.where(island_cov == max_val)[0]
-        mr_start = istart + int(max_pos[0])
-        mr_end = istart + int(max_pos[-1]) + 1
-        coord = f"{chrom}:{mr_start}-{mr_end}"
+    # Allocate output arrays for the kernel
+    out_mr_start = np.empty(n_islands, dtype=np.int64)
+    out_mr_end = np.empty(n_islands, dtype=np.int64)
+    out_num = np.empty(n_islands, dtype=np.int64)
 
-        # Num = number of constant-value runs (RLE length)
-        num = int(np.sum(np.diff(island_cov) != 0)) + 1
+    # Call numba kernel to fill MaxRegion and Num in one JIT pass
+    _island_stats_kernel(cov, starts_arr, stops_arr, maxes.astype(np.float64), out_mr_start, out_mr_end, out_num)
 
-        islands.append(
-            {
-                "Chromosome": chrom,
-                "Start": istart,
-                "End": iend,
-                "AUC": float(aucs[idx]),
-                "MaxSignal": max_val,
-                "MaxRegion": coord,
-                "Num": num,
-            }
-        )
+    # Build MaxRegion coordinate strings via vectorized numpy operations
+    n = n_islands
+    coords = np.char.add(
+        np.char.add(np.full(n, chrom + ":", dtype=object), out_mr_start.astype(str)),
+        np.char.add(np.full(n, "-", dtype=object), out_mr_end.astype(str)),
+    )
 
-    return islands
+    # Construct DataFrame from arrays (single allocation, no per-island dict append)
+    return pd.DataFrame({
+        "Chromosome": np.full(n, chrom, dtype=object),
+        "Start": starts_arr.astype(np.int64),
+        "End": stops_arr.astype(np.int64),
+        "AUC": aucs,
+        "MaxSignal": maxes,
+        "MaxRegion": coords,
+        "Num": out_num.astype(np.int64),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +190,8 @@ def _pctremain(x: np.ndarray, exp_sorted: np.ndarray, both_sorted: np.ndarray) -
     """
     n_exp = len(exp_sorted)
     n_both = len(both_sorted)
-    num = n_exp * (1.0 - _ecdf(exp_sorted, x))
-    denom = n_both * (1.0 - _ecdf(both_sorted, x))
+    num = n_exp * (1.0 - _ecdf_nb(exp_sorted, x))
+    denom = n_both * (1.0 - _ecdf_nb(both_sorted, x))
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(denom > 0, num / denom, np.nan)
 
@@ -556,6 +644,37 @@ def _merge_nearby_islands(df: pd.DataFrame, gap: float) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Picklable function for parallel processing
+# ---------------------------------------------------------------------------
+
+
+def _compute_islands_for_chrom(
+    cov_chrom: np.ndarray,
+    valid_samples: list[str],
+    chrom: str,
+) -> dict[str, pd.DataFrame]:
+    """Compute islands for one chromosome across all samples.
+
+    This is a top-level picklable function for ProcessPoolExecutor.
+
+    Parameters
+    ----------
+    cov_chrom : (n_samples, chrom_len) numpy array, pre-read from zarr
+    valid_samples : list of sample names
+    chrom : chromosome name
+
+    Returns
+    -------
+    dict[str, DataFrame] : sample -> islands DataFrame
+    """
+    result = {}
+    for i, sample in enumerate(valid_samples):
+        islands_df = _compute_islands(cov_chrom[i], chrom)
+        if islands_df is not None:
+            result[sample] = islands_df
+    return result
+
+# ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
 
@@ -568,6 +687,7 @@ def call_seacr_peaks_from_zarr(
     norm: str = "non",
     stringency: str = "stringent",
     blacklist_file: Optional[Path] = None,
+    n_workers: int = 1,
 ) -> list[str]:
     """Call SEACR peaks from a QuantNado zarr coverage store (pure Python).
 
@@ -595,6 +715,8 @@ def call_seacr_peaks_from_zarr(
     blacklist_file:
         Optional BED file; peaks overlapping blacklisted regions are removed
         from the final output.
+    n_workers:
+        Number of parallel processes for chromosome-level island computation (default: 1).
     """
     from ..dataset.store_bam import BamStore
 
@@ -627,19 +749,47 @@ def call_seacr_peaks_from_zarr(
         logger.info(f"Loading blacklist: {blacklist_file}")
         blacklist_pr = pr.read_bed(str(blacklist_file))
 
-    # -------------- load experimental islands --------------
-    # islands_by_sample[sample] = list of island dicts
-    islands_by_sample: dict[str, list[dict]] = {s: [] for s in valid_samples}
+    # -------------- load experimental islands ──────────────────────────────
+    islands_by_sample: dict[str, list[pd.DataFrame]] = {s: [] for s in valid_samples}
 
-    for chrom, chrom_len in chromsizes.items():
-        if chrom not in store.chromosomes:
-            continue
-        logger.debug(f"Computing islands for {chrom} ({chrom_len:,} bp)")
-        chrom_arr = store.root[chrom]
-        cov = chrom_arr[valid_indices, :chrom_len].astype(np.float32)
+    if n_workers == 1:
+        # Sequential chromosome processing
+        for chrom, chrom_len in chromsizes.items():
+            if chrom not in store.chromosomes:
+                continue
+            logger.debug(f"Computing islands for {chrom} ({chrom_len:,} bp)")
+            chrom_arr = store.root[chrom]
+            cov = chrom_arr[valid_indices, :chrom_len].astype(np.float32)
 
-        for i, sample in enumerate(valid_samples):
-            islands_by_sample[sample].extend(_compute_islands(cov[i], chrom))
+            for i, sample in enumerate(valid_samples):
+                islands_df = _compute_islands(cov[i], chrom)
+                if islands_df is not None:
+                    islands_by_sample[sample].append(islands_df)
+    else:
+        # Parallel chromosome processing via ProcessPoolExecutor
+        from concurrent.futures import ProcessPoolExecutor
+
+        # Pre-read all chromosome data
+        chrom_data_list = []
+        chroms_to_process = []
+        for chrom, chrom_len in chromsizes.items():
+            if chrom not in store.chromosomes:
+                continue
+            chrom_arr = store.root[chrom]
+            cov = chrom_arr[valid_indices, :chrom_len].astype(np.float32)
+            chrom_data_list.append((cov, chrom))
+            chroms_to_process.append(chrom)
+
+        # Submit futures
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = [
+                executor.submit(_compute_islands_for_chrom, cov, valid_samples, chrom)
+                for cov, chrom in chrom_data_list
+            ]
+            for future in futures:
+                chrom_islands_dict = future.result()
+                for sample, islands_df in chrom_islands_dict.items():
+                    islands_by_sample[sample].append(islands_df)
 
     # -------------- load control islands --------------
     ctrl_auc_arr: np.ndarray | None = None
@@ -654,17 +804,19 @@ def call_seacr_peaks_from_zarr(
         if not ctrl_samples:
             logger.warning("No completed samples in control zarr; falling back to FDR threshold.")
         else:
-            ctrl_islands_all: list[dict] = []
+            ctrl_islands_parts: list[pd.DataFrame] = []
             for chrom, chrom_len in chromsizes.items():
                 if chrom not in ctrl_store.chromosomes:
                     continue
                 ctrl_arr = ctrl_store.root[chrom]
                 ctrl_cov = ctrl_arr[ctrl_indices, :chrom_len].astype(np.float32)
                 # Average across control samples before island-calling
-                ctrl_islands_all.extend(_compute_islands(ctrl_cov.mean(axis=0), chrom))
+                islands_df = _compute_islands(ctrl_cov.mean(axis=0), chrom)
+                if islands_df is not None:
+                    ctrl_islands_parts.append(islands_df)
 
-            if ctrl_islands_all:
-                ctrl_islands_df = pd.DataFrame(ctrl_islands_all)
+            if ctrl_islands_parts:
+                ctrl_islands_df = pd.concat(ctrl_islands_parts, ignore_index=True)
                 ctrl_auc_arr = ctrl_islands_df["AUC"].to_numpy()
                 ctrl_num_arr = ctrl_islands_df["Num"].to_numpy()
                 logger.info(f"Control: {len(ctrl_islands_df):,} islands")
@@ -673,12 +825,12 @@ def call_seacr_peaks_from_zarr(
     results: list[str] = []
 
     for sample in valid_samples:
-        islands = islands_by_sample[sample]
-        if not islands:
+        islands_dfs = islands_by_sample[sample]
+        if not islands_dfs:
             logger.warning(f"[{sample}] No islands found.")
             continue
 
-        islands_df = pd.DataFrame(islands)
+        islands_df = pd.concat(islands_dfs, ignore_index=True)
         exp_auc = islands_df["AUC"].to_numpy()
         exp_num = islands_df["Num"].to_numpy()
 

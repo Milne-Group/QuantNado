@@ -38,6 +38,13 @@ from loguru import logger
 from scipy import ndimage
 from scipy.stats import poisson
 
+# ── Numba JIT compilation ────────────────────────────────────────────────
+try:
+    import numba
+    _NUMBA_AVAILABLE = True
+except ImportError:
+    _NUMBA_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Constants matching original LanceOtron hyper-parameters
 # ---------------------------------------------------------------------------
@@ -292,12 +299,126 @@ def _find_candidate_peaks(
 # ---------------------------------------------------------------------------
 
 
+# ── Numba kernels for feature extraction ─────────────────────────────────
+if _NUMBA_AVAILABLE:
+    @numba.njit(cache=True)
+    def _compute_lambda_means_nb(
+        norm_cov: np.ndarray,
+        w_starts_mat: np.ndarray,
+        w_ends_mat: np.ndarray,
+        out_lams: np.ndarray,
+    ) -> None:
+        """Compute lambda (mean coverage) for variable-length windows (n, 10).
+
+        Parameters
+        ----------
+        norm_cov : normalized coverage array
+        w_starts_mat, w_ends_mat : (n, 10) window boundaries
+        out_lams : output (n, 10) array to fill (in-place)
+        """
+        n, k = w_starts_mat.shape
+        for i in range(n):
+            for j in range(k):
+                ws, we = w_starts_mat[i, j], w_ends_mat[i, j]
+                if we > ws:
+                    total = 0.0
+                    for p in range(ws, we):
+                        total += norm_cov[p]
+                    out_lams[i, j] = total / (we - ws)
+                else:
+                    out_lams[i, j] = 1e-9
+
+    @numba.njit(cache=True)
+    def _fill_deep_and_maxheights_nb(
+        norm_cov: np.ndarray,
+        summits: np.ndarray,
+        starts_arr: np.ndarray,
+        ends_arr: np.ndarray,
+        chrom_len: int,
+        half_deep: int,
+        deep_window: int,
+        X_deep: np.ndarray,
+        max_heights: np.ndarray,
+    ) -> None:
+        """Fused kernel: extract deep windows and compute max_heights.
+
+        Parameters
+        ----------
+        norm_cov : normalized coverage array
+        summits : peak summit positions
+        starts_arr, ends_arr : peak boundaries
+        chrom_len : chromosome length
+        half_deep, deep_window : window parameters
+        X_deep : output (n_peaks, 2000) array to fill
+        max_heights : output (n_peaks,) array to fill
+        """
+        for i in range(len(summits)):
+            s, e = starts_arr[i], ends_arr[i]
+            # Compute max_height in peak region
+            best = 0.0
+            for p in range(s, e):
+                if norm_cov[p] > best:
+                    best = norm_cov[p]
+            max_heights[i] = best
+
+            # Extract deep window centered on summit
+            d_start = max(0, summits[i] - half_deep)
+            d_end = d_start + deep_window
+            if d_end > chrom_len:
+                d_end = chrom_len
+                d_start = max(0, d_end - deep_window)
+            actual = d_end - d_start
+            for p in range(actual):
+                X_deep[i, p] = norm_cov[d_start + p]
+else:
+    def _compute_lambda_means_nb(
+        norm_cov: np.ndarray,
+        w_starts_mat: np.ndarray,
+        w_ends_mat: np.ndarray,
+        out_lams: np.ndarray,
+    ) -> None:
+        """Pure-numpy fallback for lambda mean computation."""
+        n, k = w_starts_mat.shape
+        for i in range(n):
+            for j in range(k):
+                ws, we = int(w_starts_mat[i, j]), int(w_ends_mat[i, j])
+                if we > ws:
+                    out_lams[i, j] = norm_cov[ws:we].mean()
+                else:
+                    out_lams[i, j] = 1e-9
+
+    def _fill_deep_and_maxheights_nb(
+        norm_cov: np.ndarray,
+        summits: np.ndarray,
+        starts_arr: np.ndarray,
+        ends_arr: np.ndarray,
+        chrom_len: int,
+        half_deep: int,
+        deep_window: int,
+        X_deep: np.ndarray,
+        max_heights: np.ndarray,
+    ) -> None:
+        """Pure-numpy fallback for deep window and max_heights computation."""
+        for i in range(len(summits)):
+            s, e = int(starts_arr[i]), int(ends_arr[i])
+            max_heights[i] = norm_cov[s:e].max() if e > s else 0.0
+
+            d_start = max(0, int(summits[i]) - half_deep)
+            d_end = d_start + deep_window
+            if d_end > chrom_len:
+                d_end = chrom_len
+                d_start = max(0, d_end - deep_window)
+            actual = d_end - d_start
+            X_deep[i, :actual] = norm_cov[d_start:d_end]
+
 def _extract_features(
     norm_cov: np.ndarray,
     candidates: list[tuple[int, int]],
     seq_depth: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Extract deep (2000 bp) and wide (12) features for candidate peaks.
+
+    Vectorized implementation with numba kernels for high performance.
 
     Parameters
     ----------
@@ -322,37 +443,45 @@ def _extract_features(
     X_wide = np.zeros((n, N_LAMBDA_STEPS + 2), dtype=np.float32)  # +2: max_h + seq_depth
 
     lambda_step = LAMBDA_COV // N_LAMBDA_STEPS  # 10_000
-    lambda_lengths = [lambda_step * (k + 1) for k in range(N_LAMBDA_STEPS)]
+    lambda_lengths = np.array([lambda_step * (k + 1) for k in range(N_LAMBDA_STEPS)], dtype=np.int64)
 
-    for i, (start, end) in enumerate(candidates):
-        summit = (start + end) // 2
-        max_height = float(norm_cov[start:end].max()) if end > start else 0.0
+    # ─────── Step A: Vectorize window boundaries (pure numpy) ───────────
+    starts_arr = np.array([c[0] for c in candidates], dtype=np.int64)
+    ends_arr = np.array([c[1] for c in candidates], dtype=np.int64)
+    summits = (starts_arr + ends_arr) // 2  # (n,)
 
-        # ── Deep window ──────────────────────────────────────────────────
-        d_start = max(0, summit - half_deep)
-        d_end = d_start + DEEP_WINDOW
-        if d_end > chrom_len:
-            d_end = chrom_len
-            d_start = max(0, d_end - DEEP_WINDOW)
-        actual = d_end - d_start
-        X_deep[i, :actual] = norm_cov[d_start:d_end]
+    # Lambda window boundaries for all peaks × all lambda steps
+    pads = (LAMBDA_COV - lambda_lengths) // 2  # (10,)
+    w_starts = np.maximum(0, summits[:, None] - LAMBDA_COV // 2 + pads[None, :])  # (n, 10)
+    w_ends = np.minimum(chrom_len, summits[:, None] + LAMBDA_COV // 2 - pads[None, :])  # (n, 10)
 
-        # ── Wide features ─────────────────────────────────────────────────
-        X_wide[i, 0] = max_height
+    # ─────── Step B: Call numba kernel for lambda means ──────────────────
+    lams_mat = np.zeros((n, N_LAMBDA_STEPS), dtype=np.float64)
+    _compute_lambda_means_nb(norm_cov, w_starts.astype(np.int64), w_ends.astype(np.int64), lams_mat)
 
-        for j, length in enumerate(lambda_lengths):
-            pad = (LAMBDA_COV - length) // 2
-            w_start = max(0, summit - LAMBDA_COV // 2 + pad)
-            w_end = min(chrom_len, summit + LAMBDA_COV // 2 - pad)
-            region = norm_cov[w_start:w_end]
-            lam = float(region.mean()) if len(region) > 0 else 1e-9
-            if lam <= 0:
-                lam = 1e-9
-            # -log10(1 - CDF(max_height; lambda)) = Poisson enrichment
-            p_val = -np.log10(max(1.0 - poisson.cdf(max_height, lam), 1e-300))
-            X_wide[i, j + 1] = float(p_val)
+    # ─────── Step C: Vectorized Poisson CDF across (n, 10) matrix ────────
+    # Call _fill_deep_and_maxheights_nb to get max_heights
+    max_heights = np.zeros(n, dtype=np.float32)
+    _fill_deep_and_maxheights_nb(
+        norm_cov.astype(np.float64),
+        summits.astype(np.int64),
+        starts_arr,
+        ends_arr,
+        chrom_len,
+        half_deep,
+        DEEP_WINDOW,
+        X_deep,
+        max_heights,
+    )
 
-        X_wide[i, -1] = seq_depth
+    # Vectorized Poisson CDF: single C-level call for all (n, 10) pairs
+    lams_mat = np.maximum(lams_mat, 1e-9)
+    p_vals = -np.log10(np.maximum(1.0 - poisson.cdf(max_heights[:, None], lams_mat), 1e-300))  # (n, 10)
+    X_wide[:, 1:N_LAMBDA_STEPS + 1] = p_vals.astype(np.float32)
+
+    # Fill max_height and seq_depth
+    X_wide[:, 0] = max_heights
+    X_wide[:, -1] = seq_depth
 
     return X_deep, X_wide
 
@@ -381,11 +510,11 @@ def _normalise_features(
         (X_wide - wide_mean) / wide_scale
     """
     # ── Deep step 1: per-sample z-score ──────────────────────────────────
-    T = X_deep.T.astype(np.float64)           # (2000, n_peaks)
-    col_mean = T.mean(axis=0)                  # (n_peaks,)
-    col_std = T.std(axis=0) + 1e-8
-    T_norm = (T - col_mean) / col_std
-    X_deep_norm = T_norm.T.astype(np.float32)  # (n_peaks, 2000)
+    # Per-peak z-score: (n_peaks, 2000) → mean/std over axis=1 → (n_peaks, 1)
+    # Avoids double transpose — same semantics, no copy
+    peak_mean = X_deep.mean(axis=1, keepdims=True).astype(np.float64)  # (n_peaks, 1)
+    peak_std = X_deep.std(axis=1, keepdims=True).astype(np.float64) + 1e-8
+    X_deep_norm = ((X_deep.astype(np.float64) - peak_mean) / peak_std).astype(np.float32)
 
     # ── Deep step 2: pre-trained scaler ──────────────────────────────────
     X_deep_norm = ((X_deep_norm - deep_mean) / (deep_scale + 1e-8)).astype(np.float32)
@@ -484,6 +613,59 @@ def _process_chromosome(
 
 
 # ---------------------------------------------------------------------------
+# Picklable function for parallel processing
+# ---------------------------------------------------------------------------
+
+
+def _process_one_sample(
+    sample: str,
+    ds: "QuantNadoDataset",  # type: ignore
+    library_sizes: "pd.Series",  # type: ignore
+    chromosomes: list[str],
+    model: "LanceOtronModel",  # type: ignore
+    wide_scaler: tuple[np.ndarray, np.ndarray],
+    deep_scaler: tuple[np.ndarray, np.ndarray],
+    score_threshold: float,
+    smooth_window: int,
+    initial_threshold_factor: float,
+    batch_size: int,
+) -> list[dict]:
+    """Process one sample across all chromosomes.
+
+    Returns a list of peak dicts for this sample.
+    """
+    total_reads = int(library_sizes[sample])
+    seq_depth = total_reads / 1e9
+    all_peaks: list[dict] = []
+
+    for chrom in chromosomes:
+        chrom_len = ds.chromsizes.get(chrom, 0)
+        if chrom_len == 0:
+            continue
+
+        # Raw coverage: uint32 array shape (1, chrom_len) → squeeze
+        raw = ds.extract_region(chrom=chrom, samples=[sample], as_xarray=False)
+        cov = raw[0]  # (chrom_len,)
+
+        norm_cov = _rpkm_normalise(cov, total_reads)
+
+        peaks = _process_chromosome(
+            norm_cov=norm_cov,
+            chrom=chrom,
+            seq_depth=seq_depth,
+            model=model,
+            wide_scaler=wide_scaler,
+            deep_scaler=deep_scaler,
+            score_threshold=score_threshold,
+            smooth_window=smooth_window,
+            initial_threshold_factor=initial_threshold_factor,
+            batch_size=batch_size,
+        )
+        all_peaks.extend(peaks)
+
+    return all_peaks
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -496,6 +678,7 @@ def call_lanceotron_peaks_from_zarr(
     smooth_window: int = SMOOTH_WINDOW,
     initial_threshold_factor: float = INITIAL_THRESHOLD_FACTOR,
     batch_size: int = 512,
+    n_workers: int = 1,
 ) -> list[str]:
     """Call LanceOtron peaks from a QuantNado zarr coverage store.
 
@@ -515,6 +698,9 @@ def call_lanceotron_peaks_from_zarr(
         Candidate regions must exceed chrom_mean * this (default 4).
     batch_size:
         Inference batch size (default 512).
+    n_workers:
+        Number of parallel threads for sample-level processing (default: 1).
+        Forced to 1 if GPU is available.
 
     Returns
     -------
@@ -533,6 +719,15 @@ def call_lanceotron_peaks_from_zarr(
     model = _load_model()
     wide_scaler, deep_scaler = _load_scalers()
 
+    # ── Check for GPU and force n_workers=1 if available ──────────────────
+    try:
+        import torch
+        if torch.cuda.is_available():
+            logger.info("GPU detected; forcing n_workers=1 for thread safety")
+            n_workers = 1
+    except (ImportError, AttributeError):
+        pass
+
     # ── open dataset ─────────────────────────────────────────────────────
     ds = QuantNadoDataset(zarr_path)
     library_sizes = get_library_sizes(ds)
@@ -541,7 +736,7 @@ def call_lanceotron_peaks_from_zarr(
     if not valid_samples:
         logger.error("No completed samples in store.")
         return []
-    logger.info(f"Processing {len(valid_samples)} sample(s)")
+    logger.info(f"Processing {len(valid_samples)} sample(s) with {n_workers} worker(s)")
 
     # ── optional blacklist ────────────────────────────────────────────────
     blacklist_pr = None
@@ -554,41 +749,16 @@ def call_lanceotron_peaks_from_zarr(
 
     output_paths: list[str] = []
 
-    for sample in valid_samples:
-        logger.info(f"Sample: {sample}")
-        total_reads = int(library_sizes[sample])
-        seq_depth = total_reads / 1e9
-
-        all_peaks: list[dict] = []
-
-        for chrom in chromosomes:
-            chrom_len = ds.chromsizes.get(chrom, 0)
-            if chrom_len == 0:
-                continue
-
-            # Raw coverage: uint32 array shape (1, chrom_len) → squeeze
-            raw = ds.extract_region(chrom=chrom, samples=[sample], as_xarray=False)
-            cov = raw[0]  # (chrom_len,)
-
-            norm_cov = _rpkm_normalise(cov, total_reads)
-
-            peaks = _process_chromosome(
-                norm_cov=norm_cov,
-                chrom=chrom,
-                seq_depth=seq_depth,
-                model=model,
-                wide_scaler=wide_scaler,
-                deep_scaler=deep_scaler,
-                score_threshold=score_threshold,
-                smooth_window=smooth_window,
-                initial_threshold_factor=initial_threshold_factor,
-                batch_size=batch_size,
-            )
-            all_peaks.extend(peaks)
-
+    # ── Process samples sequentially or in parallel ────────────────────────
+    def _write_sample_peaks(
+        sample: str,
+        all_peaks: list[dict],
+        blacklist_pr: Optional[pr.PyRanges],
+    ) -> Optional[str]:
+        """Helper to write peaks for one sample and return output path."""
         if not all_peaks:
             logger.warning(f"[{sample}] No peaks called.")
-            continue
+            return None
 
         peaks_df = pd.DataFrame(all_peaks).sort_values(["Chromosome", "Start"]).reset_index(drop=True)
 
@@ -607,6 +777,57 @@ def call_lanceotron_peaks_from_zarr(
         out_path = output_dir / f"{sample}_lanceotron_peaks.bed"
         peaks_df.to_csv(out_path, sep="\t", index=False, header=False)
         logger.success(f"[{sample}] {len(peaks_df)} peaks → {out_path}")
-        output_paths.append(str(out_path))
+        return str(out_path)
+
+    if n_workers == 1:
+        # Sequential processing
+        for sample in valid_samples:
+            logger.info(f"Sample: {sample}")
+            all_peaks = _process_one_sample(
+                sample=sample,
+                ds=ds,
+                library_sizes=library_sizes,
+                chromosomes=chromosomes,
+                model=model,
+                wide_scaler=wide_scaler,
+                deep_scaler=deep_scaler,
+                score_threshold=score_threshold,
+                smooth_window=smooth_window,
+                initial_threshold_factor=initial_threshold_factor,
+                batch_size=batch_size,
+            )
+            out_path = _write_sample_peaks(sample, all_peaks, blacklist_pr)
+            if out_path:
+                output_paths.append(out_path)
+    else:
+        # Parallel processing via ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            # Submit all samples
+            futures = {
+                executor.submit(
+                    _process_one_sample,
+                    sample=sample,
+                    ds=ds,
+                    library_sizes=library_sizes,
+                    chromosomes=chromosomes,
+                    model=model,
+                    wide_scaler=wide_scaler,
+                    deep_scaler=deep_scaler,
+                    score_threshold=score_threshold,
+                    smooth_window=smooth_window,
+                    initial_threshold_factor=initial_threshold_factor,
+                    batch_size=batch_size,
+                ): sample for sample in valid_samples
+            }
+            # Collect results as they complete
+            for future in as_completed(futures):
+                sample = futures[future]
+                logger.info(f"Sample: {sample}")
+                all_peaks = future.result()
+                out_path = _write_sample_peaks(sample, all_peaks, blacklist_pr)
+                if out_path:
+                    output_paths.append(out_path)
 
     return output_paths

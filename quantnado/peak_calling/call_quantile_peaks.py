@@ -151,17 +151,6 @@ def call_peaks_from_zarr(
     if not valid_samples:
         logger.error("No completed samples found in store.")
         return []
-    logger.info(f"Found {len(bigwig_paths)} bigWig file(s)")
-    logger.info("Importing all bigWig signals...")
-
-    
-    from crested import import_bigwigs
-    adata = import_bigwigs(
-        regions_file=str(tmp_regions_bed),
-        bigwigs_folder=str(bigwig_dir),
-        chromsizes_file=str(chromsizes_file),
-        target="mean",
-    )
 
     lib_sizes_arr = np.array([library_sizes[s] for s in valid_samples], dtype=np.float64)
     logger.info(f"Found {len(valid_samples)} completed sample(s) in {zarr_path}")
@@ -171,10 +160,8 @@ def call_peaks_from_zarr(
         logger.info(f"Loading blacklist: {blacklist_file}")
         blacklist_pr = pr.read_bed(str(blacklist_file))
 
-    signals_by_sample: dict[str, list[float]] = {s: [] for s in valid_samples}
-    all_chroms: list[str] = []
-    all_starts: list[int] = []
-    all_ends: list[int] = []
+    chrom_cov_parts: list[np.ndarray] = []
+    tile_coord_parts: list[tuple[str, np.ndarray, np.ndarray]] = []
 
     for chrom, chrom_len in chromsizes.items():
         if chrom not in store.chromosomes:
@@ -211,36 +198,32 @@ def call_peaks_from_zarr(
             keep_df = pd.DataFrame(keep_pr)
             if keep_df.empty:
                 continue
-            keep_pairs = set(
-                zip(
-                    keep_df["Start"].to_numpy(dtype=np.int64),
-                    keep_df["End"].to_numpy(dtype=np.int64),
-                    strict=False,
-                )
-            )
-            keep_mask = np.fromiter(
-                (((int(s), int(e)) in keep_pairs) for s, e in zip(tile_starts, tile_ends, strict=False)),
-                dtype=bool,
-                count=len(tile_starts),
-            )
+            # Vectorized: use np.isin to find which tile_starts appear in keep_df
+            keep_mask = np.isin(tile_starts, keep_df["Start"].to_numpy(dtype=np.int64))
             tile_means = tile_means[:, keep_mask]
             tile_starts = tile_starts[keep_mask]
             tile_ends = tile_ends[keep_mask]
 
-        n_tiles = tile_means.shape[1]
-        all_chroms.extend([chrom] * n_tiles)
-        all_starts.extend(tile_starts.tolist())
-        all_ends.extend(tile_ends.tolist())
+        # Accumulate as numpy arrays, not lists
+        chrom_cov_parts.append(tile_means)
+        tile_coord_parts.append((chrom, tile_starts, tile_ends))
 
-        for i, s in enumerate(valid_samples):
-            signals_by_sample[s].extend(tile_means[i].tolist())
+    # Post-loop: build coordinate arrays via concatenation
+    all_chroms_arr = np.repeat(
+        [c for c, _, _ in tile_coord_parts],
+        [len(ts) for _, ts, _ in tile_coord_parts]
+    )
+    all_starts_arr = np.concatenate([ts for _, ts, _ in tile_coord_parts])
+    all_ends_arr = np.concatenate([te for _, _, te in tile_coord_parts])
 
-    chroms_series = pd.Series(all_chroms, name="Chromosome")
-    starts_series = pd.Series(all_starts, name="Start")
-    ends_series = pd.Series(all_ends, name="End")
+    chroms_series = pd.Series(all_chroms_arr, name="Chromosome")
+    starts_series = pd.Series(all_starts_arr, name="Start")
+    ends_series = pd.Series(all_ends_arr, name="End")
 
     # RPKM: mean_depth × 1e9 / library_size (tile-length-independent)
-    signals_df = pd.DataFrame(signals_by_sample)
+    # Concatenate all tile_means across chromosomes: (n_samples, total_tiles)
+    signals_matrix = np.concatenate(chrom_cov_parts, axis=1)
+    signals_df = pd.DataFrame(signals_matrix.T, columns=valid_samples)
     rpkm_df = signals_df.multiply(1e9 / lib_sizes_arr, axis=1)
     log_rpkm_df = np.log1p(rpkm_df)
     parquet_path = output_dir / f"log_rpkm_{tilesize}bp_{window_overlap}bp_overlap.parquet"
