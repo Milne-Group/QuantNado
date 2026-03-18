@@ -151,6 +151,17 @@ def call_peaks_from_zarr(
     if not valid_samples:
         logger.error("No completed samples found in store.")
         return []
+    logger.info(f"Found {len(bigwig_paths)} bigWig file(s)")
+    logger.info("Importing all bigWig signals...")
+
+    
+    from crested import import_bigwigs
+    adata = import_bigwigs(
+        regions_file=str(tmp_regions_bed),
+        bigwigs_folder=str(bigwig_dir),
+        chromsizes_file=str(chromsizes_file),
+        target="mean",
+    )
 
     lib_sizes_arr = np.array([library_sizes[s] for s in valid_samples], dtype=np.float64)
     logger.info(f"Found {len(valid_samples)} completed sample(s) in {zarr_path}")

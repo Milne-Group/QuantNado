@@ -24,6 +24,7 @@ Examples
 """
 
 from __future__ import annotations
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -353,15 +354,36 @@ def _normalise_xr_dataarray(
     lib_sizes: pd.Series,
     mean_read_lengths: pd.Series | None = None,
 ) -> xr.DataArray:
+    """
+    Normalise a per-position / binned xr.DataArray across the sample axis.
+
+    Assumes the last axis of `data` is the sample axis (signal layout:
+    (interval, position/bin, sample)). `method` is one of {'cpm','rpkm'}.
+    `lib_sizes` is a pd.Series indexed by sample label (or compatible with
+    _scale_per_sample implementation).
+
+    Returns a DataArray with the same dims/coords but normalized values and
+    `attrs["normalised"] = method`.
+    """
+
     if method == "tpm":
         raise ValueError(
             "TPM is not defined for per-position signal (extract() output). "
             "Use 'cpm' or 'rpkm' for signal tracks, or normalise a count matrix instead."
         )
 
+    # sample labels and per-sample scale (function expected to return 1D array-like)
     sample_labels = list(data["sample"].values)
-    scale = _scale_per_sample(lib_sizes, sample_labels)  # (n_samples,)
+    scale = _scale_per_sample(lib_sizes, sample_labels)  # expected shape: (n_samples,)
 
+    if "sample" not in data.dims:
+        raise ValueError("Input DataArray must have a 'sample' dimension.")
+    n_samples = int(data.sizes["sample"])
+    scale = np.asarray(scale)
+    if scale.ndim != 1:
+        raise ValueError(f"Scale must be 1D, got shape {scale.shape}.")
+    if scale.shape[0] != n_samples:
+        raise ValueError(f"Scale length ({scale.shape[0]}) does not match number of samples ({n_samples}).")
     arr = data.data
     _is_dask = isinstance(arr, da.Array)
     if not np.issubdtype(arr.dtype, np.floating):
@@ -402,11 +424,8 @@ def _normalise_xr_dataarray(
         rl_vec = effective_lengths_kb.reshape(1, 1, -1) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(1, 1, -1)
         normed_arr = normed_arr / rl_vec
 
-    result = xr.DataArray(
-        normed_arr,
-        dims=data.dims,
-        coords=data.coords,
-        attrs={**data.attrs, "normalised": method},
-    )
+        normed = normed / bin_size_kb
+
+    result = normed.assign_attrs({**data.attrs, "normalised": method})
     logger.info(f"Normalised xr.DataArray to {method.upper()}.")
     return result

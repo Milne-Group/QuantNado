@@ -140,6 +140,26 @@ def test_extract_region_sample_filter(qn):
     assert list(result.coords["sample"].values) == ["s1"]
 
 
+def test_extract_region_normalise_cpm(qn):
+    result = qn.extract_region(
+        "chr1:0-2",
+        normalise="cpm",
+        library_sizes={"s1": 1_000_000, "s2": 2_000_000},
+    )
+    np.testing.assert_allclose(result.values, np.array([[1.0, 1.0], [1.0, 1.0]]))
+    assert result.attrs["normalised"] == "cpm"
+
+
+def test_extract_region_normalize_alias(qn):
+    result = qn.extract_region(
+        "chr1:0-2",
+        normalize="cpm",
+        library_sizes={"s1": 1_000_000, "s2": 2_000_000},
+    )
+    np.testing.assert_allclose(result.values, np.array([[1.0, 1.0], [1.0, 1.0]]))
+    assert result.attrs["normalised"] == "cpm"
+
+
 # ---------------------------------------------------------------------------
 # reduce
 # ---------------------------------------------------------------------------
@@ -184,6 +204,12 @@ def test_extract_fixed_width(qn):
     ranges = pd.DataFrame({"contig": ["chr1"], "start": [0], "end": [4]})
     result = qn.extract(ranges_df=ranges, fixed_width=4)
     assert result.shape[1] == 4
+
+
+def test_extract_with_max_workers(qn):
+    ranges = pd.DataFrame({"contig": ["chr1", "chr2"], "start": [0, 0], "end": [4, 3]})
+    result = qn.extract(ranges_df=ranges, max_workers=2)
+    assert result.shape == (2, 4, 2)
 
 
 # ---------------------------------------------------------------------------

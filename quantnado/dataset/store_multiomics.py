@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 from loguru import logger
 
-from .store_bam import BamStore, DEFAULT_CHUNK_LEN
+from .store_bam import BamStore
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
+from .constants import DEFAULT_CHUNK_LEN
 
 
 class MultiomicsStore:
@@ -81,7 +80,7 @@ class MultiomicsStore:
         hmc_files: list[str | Path] | None = None,
         vcf_files: list[str | Path] | None = None,
         chromsizes: str | Path | dict[str, int] | None = None,
-        metadata: pd.DataFrame | Path | str | None = None,
+        metadata: pd.DataFrame | Path | str | list[Path | str] | None = None,
         *,
         bam_sample_names: list[str] | None = None,
         methyldackel_sample_names: list[str] | None = None,
@@ -98,7 +97,6 @@ class MultiomicsStore:
         staging_dir: "Path | str | None" = None,
         log_file: "Path | None" = None,
         max_workers: int = 1,
-        chr_workers: int = 1,
         test: bool = False,
         stranded: list[str] | dict[str, str] | None = None,
     ) -> "MultiomicsStore":
@@ -151,10 +149,8 @@ class MultiomicsStore:
         log_file : Path, optional
             Path to write BAM processing logs.
         max_workers : int, default 1
-            Sample-level parallel workers for BAM processing.
-        chr_workers : int, default 1
-            Chromosome-level parallel workers within each sample thread.
-            Total concurrent BAM reads = max_workers * chr_workers.
+            The number of threads used to process chromosomes in parallel.
+            Samples are processed sequentially to keep memory usage low.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
         stranded : list of str or dict, optional
@@ -171,8 +167,6 @@ class MultiomicsStore:
 
                 stranded={"rna-rep1": "R", "rna-rep2": "R"}
         """
-        has_cx_files = bool(mc_files or hmc_files)
-        meth_inputs = [methyldackel_files, cxreport_files, has_cx_files]
         if not any([bam_files, vcf_files, methyldackel_files, cxreport_files, mc_files, hmc_files]):
             raise ValueError(
                 "Provide at least one of bam_files, methyldackel_files, cxreport_files, "
@@ -192,6 +186,7 @@ class MultiomicsStore:
             BamStore.from_bam_files(
                 bam_files=[str(f) for f in bam_files],
                 store_path=store_dir / "coverage.zarr",
+                bam_sample_names=bam_sample_names,
                 chromsizes=chromsizes,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
@@ -204,7 +199,6 @@ class MultiomicsStore:
                 staging_dir=staging_dir,
                 log_file=log_file,
                 max_workers=max_workers,
-                chr_workers=chr_workers,
                 test=test,
                 stranded=stranded,
             )

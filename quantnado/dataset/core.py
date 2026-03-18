@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
@@ -7,12 +7,13 @@ import zarr
 import xarray as xr
 import dask.array as da
 
-from .store_bam import DEFAULT_CHUNK_LEN
+from .constants import DEFAULT_CHUNK_LEN
 from .metadata import extract_metadata
 
 
-class QuantNadoDataset:
-    """Lightweight wrapper for the per-chromosome Zarr layout."""
+
+class BaseStore:
+    """Base class for all QuantNado data stores, providing shared read functionality."""
 
     def __init__(self, path: Path | str, **_: Any) -> None:
         self.path = Path(path)
@@ -20,33 +21,218 @@ class QuantNadoDataset:
             raise FileNotFoundError(f"The specified path does not exist: {self.path}")
 
         self.root = zarr.open_group(str(self.path), mode="r")
-        self.meta = self.root.get("metadata")
-        if self.meta is None:
-            raise ValueError("Zarr store missing required 'metadata' group")
+        self._init_common_attributes()
 
+    def _init_common_attributes(self, sample_names: list[str] | None = None) -> None:
+        """Initialize attributes from existing store or provided sample names."""
+        self.meta = self.root.get("metadata")
+        
         stored_names = None
-        if self.meta is not None and "sample_names" in self.meta:
-            stored_names = self.meta["sample_names"][:]
+        if self.meta is not None:
+            if "sample_names" in self.meta:
+                stored_names = self.meta["sample_names"][:]
         if stored_names is None:
             stored_names = self.root.attrs.get("sample_names")
+        
         if stored_names is None:
-            raise ValueError("Sample names not found in metadata or attributes")
+             raise ValueError("missing sample_names in metadata or attributes")
+        
         self.sample_names = [s.decode() if isinstance(s, (bytes, bytearray)) else str(s) for s in stored_names]
-        self.completed_mask = self.meta["completed"][:].astype(bool)
-        self.chromosomes = [k for k in self.root.keys() if k != "metadata"]
-        self.chromsizes = self.root.attrs.get(
-            "chromsizes", {c: self.root[c].shape[1] for c in self.chromosomes}
-        )
+
+        # Validation on resume/existing store
+        if sample_names is not None:
+            provided = [str(s) for s in sample_names]
+            if provided != self.sample_names:
+                 raise ValueError(
+                    f"Sample names mismatch. These names do not match the existing store. "
+                    f"Store has {self.sample_names}, but {provided} was provided."
+                )
+        
+        self._setup_sample_lookup()
+        
+        if self.meta is not None and "completed" in self.meta:
+            self.completed_mask_raw = self.meta["completed"][:].astype(bool)
+        else:
+            self.completed_mask_raw = np.ones(len(self.sample_names), dtype=bool)
+
+        self._chromosomes = None
+        self._chromsizes = None
+        self._metadata_cache = None
+
+    @property
+    def chromosomes(self) -> list[str]:
+        """List of chromosome names in the store."""
+        if self._chromosomes is None:
+            self._chromosomes = sorted([k for k in self.root.keys() if k != "metadata"])
+        return self._chromosomes
+
+    @property
+    def chromsizes(self) -> dict[str, int]:
+        """Dictionary mapping chromosome name to size."""
+        if self._chromsizes is None:
+            self._chromsizes = self.root.attrs.get(
+                "chromsizes", {c: self.root[c].shape[1] for c in self.chromosomes}
+            )
+        return self._chromsizes
+
+    def _setup_sample_lookup(self) -> None:
+        """Initialize O(1) sample index lookup."""
+        self._sample_name_to_idx = {name: idx for idx, name in enumerate(self.sample_names)}
+
+    @property
+    def metadata(self) -> pd.DataFrame:
+        """Retrieve all metadata columns as a DataFrame (cached)."""
+        if self._metadata_cache is None:
+            self._metadata_cache = extract_metadata(self.root)
+        return self._metadata_cache
+
+    def clear_metadata_cache(self) -> None:
+        """Invalidate the internal metadata cache."""
+        self._metadata_cache = None
+
+    def get_metadata(self) -> pd.DataFrame:
+        """Retrieve all metadata columns as a DataFrame."""
+        return self.metadata
+
+    def list_metadata_columns(self) -> list[str]:
+        """List current metadata column names."""
+        return [
+            k.replace("metadata_", "")
+            for k in self.root.attrs.keys()
+            if k.startswith("metadata_")
+        ]
+
+    def _check_writable(self):
+        """Check if the store is opened in a writable mode."""
+        if self.root.mode == "r":
+            raise RuntimeError(
+                "Store is in read-only mode. Reopen with read_only=False to allow modifications."
+            )
+
+    def remove_metadata_columns(self, columns: list[str]) -> None:
+        """Remove specified metadata columns from the store."""
+        self._check_writable()
+        for col in columns:
+            key = f"metadata_{col}"
+            if key in self.root.attrs:
+                del self.root.attrs[key]
+        self.clear_metadata_cache()
+
+    def set_metadata(
+        self,
+        metadata: pd.DataFrame,
+        sample_column: str = "sample_id",
+        merge: bool = True,
+    ) -> None:
+        """
+        Store metadata columns from a DataFrame. Subsets of samples are allowed;
+        missing samples will have empty strings for the metadata.
+        """
+        self._check_writable()
+        if sample_column not in metadata.columns:
+            raise ValueError(
+                f"Sample column '{sample_column}' not found in metadata DataFrame"
+            )
+
+        meta_subset = metadata.copy()
+        meta_subset[sample_column] = meta_subset[sample_column].astype(str)
+
+        if not merge:
+            for col in self.list_metadata_columns():
+                del self.root.attrs[f"metadata_{col}"]
+
+        # Reindex to match store order, filling gaps with empty strings or existing values
+        meta_subset = meta_subset.set_index(sample_column)
+
+        # Optional: Validate hashes if provided in metadata and available in store
+        if "sample_hash" in meta_subset.columns and hasattr(self, "sample_hashes"):
+            incoming_hashes = meta_subset["sample_hash"].reindex(
+                self.sample_names, fill_value=""
+            )
+            stored_hashes = self.sample_hashes
+            mismatches = []
+            for i, (inc, sto) in enumerate(zip(incoming_hashes, stored_hashes)):
+                if inc and sto and inc != sto:
+                    mismatches.append(
+                        f"{self.sample_names[i]}: meta={inc}, store={sto}"
+                    )
+            if mismatches:
+                raise ValueError(
+                    f"Sample hash mismatch for: {', '.join(mismatches)}. "
+                    "The metadata provided does not seem to match the samples in this dataset."
+                )
+
+        for col in meta_subset.columns:
+            target_col = str(col)
+            key = f"metadata_{target_col}"
+
+            # If merging and column exists, start with existing values
+            if merge and key in self.root.attrs:
+                current_values = list(self.root.attrs[key])
+                # Update only provided samples
+                for i, sample in enumerate(self.sample_names):
+                    if sample in meta_subset.index:
+                        current_values[i] = str(meta_subset.loc[sample, col])
+                values = self._to_str_list(current_values)
+            else:
+                # Full overwrite or new column: reindex filling with ""
+                values = self._to_str_list(
+                    meta_subset[col].reindex(self.sample_names, fill_value="").tolist()
+                )
+
+            self.root.attrs[key] = values
+        
+        self.clear_metadata_cache()
+
+    def update_metadata(self, updates: dict[str, list[Any] | dict[str, Any]]) -> None:
+        """Update metadata columns using a dictionary."""
+        self._check_writable()
+        for col, values in updates.items():
+            key = f"metadata_{col}"
+
+            if isinstance(values, dict):
+                # Start with existing values if available
+                if key in self.root.attrs:
+                    final_values = list(self.root.attrs[key])
+                    for i, sample in enumerate(self.sample_names):
+                        if sample in values:
+                            final_values[i] = str(values[sample])
+                else:
+                    final_values = [str(values.get(s, "")) for s in self.sample_names]
+            elif isinstance(values, (list, np.ndarray)):
+                if len(values) != len(self.sample_names):
+                    raise ValueError(
+                        f"Update for {col} has {len(values)} items but store has {len(self.sample_names)}"
+                    )
+                final_values = [str(v) for v in values]
+            else:
+                raise TypeError(f"Values for {col} must be list or dict")
+
+            self.root.attrs[key] = self._to_str_list(final_values)
+        
+        self.clear_metadata_cache()
+
+    def _to_str_list(self, items: Iterable[Any]) -> list[str]:
+        """Convert a list of items to a list of strings for Zarr attributes."""
+        return [str(i) if not pd.isna(i) else "" for i in items]
+
+    def metadata_to_csv(self, path: Path | str) -> None:
+        """Export current metadata to CSV."""
+        self.get_metadata().to_csv(path)
+
+    def metadata_to_json(self, path: Path | str) -> None:
+        """Export current metadata to JSON."""
+        self.get_metadata().reset_index().to_json(path, orient="records", indent=2)
+
+    @property
+    def completed_mask(self) -> np.ndarray:
+        return self.completed_mask_raw
 
     def get_chrom(self, chrom: str):
         return self.root[chrom]
 
     def valid_sample_indices(self) -> np.ndarray:
         return np.nonzero(self.completed_mask)[0]
-
-    @property
-    def metadata(self) -> pd.DataFrame:
-        return extract_metadata(self.root)
 
     def to_xarray(
         self,
@@ -109,7 +295,7 @@ class QuantNadoDataset:
             chrom_size = self.chromsizes[chrom]
             # Load zarr array as dask array with lazy evaluation
             zarr_array = self.root[chrom]
-            dask_arr = da.from_array(zarr_array, chunks=chunks)
+            dask_arr = da.from_zarr(zarr_array, chunks=chunks)
             # Re-chunk with auto strategy if requested
             if chunks == "auto":
                 dask_arr = dask_arr.rechunk("auto")
@@ -154,6 +340,10 @@ class QuantNadoDataset:
         end: int | None = None,
         samples: list[str] | list[int] | None = None,
         as_xarray: bool = True,
+        strand: str | None = None,
+        normalise: str | None = None,
+        normalize: str | None = None,
+        library_sizes: pd.Series | dict | None = None,
     ) -> xr.DataArray | np.ndarray:
         """
         Extract signal data for a specific genomic region.
@@ -175,6 +365,19 @@ class QuantNadoDataset:
         as_xarray : bool, default True
             If True, return xr.DataArray with coordinates (lazy dask array).
             If False, return computed np.ndarray.
+        strand : {"+" or "-"}, optional
+            Return strand-specific coverage. Requires the store to have been built
+            with ``stranded`` set. ``"+"`` returns sense-strand coverage from
+            the ``{chrom}_fwd`` array; ``"-"`` returns antisense coverage from
+            ``{chrom}_rev``. If None (default), returns total coverage.
+        normalise : {"cpm", "rpkm"}, optional
+            Normalise the extracted signal before returning it. If omitted,
+            raw coverage is returned.
+        normalize : {"cpm", "rpkm"}, optional
+            American-English alias for ``normalise``.
+        library_sizes : pd.Series or dict, optional
+            Total mapped reads per sample, indexed by sample name. Overrides
+            automatic lookup from the store when ``normalise`` is used.
         
         Returns
         -------
@@ -187,25 +390,12 @@ class QuantNadoDataset:
             If region format is invalid, chromosome not found, or both region and chrom specified.
         RuntimeError
             If any requested sample is incomplete.
-            
-        Examples
-        --------
-        >>> # String format
-        >>> data = ds.extract_region("chr9:77,418,764-78,339,335")
-        >>> 
-        >>> # Separate parameters
-        >>> data = ds.extract_region(chrom="chr9", start=77418764, end=78339335)
-        >>> 
-        >>> # Whole chromosome
-        >>> data = ds.extract_region(chrom="chr1")
-        >>> 
-        >>> # Subset samples
-        >>> data = ds.extract_region("chr1:1000-2000", samples=["s1", "s2"])
-        >>> 
-        >>> # Get numpy array instead of xarray
-        >>> arr = ds.extract_region("chr1:1000-2000", as_xarray=False)
         """
         from ..utils import parse_genomic_region
+
+        if normalise is not None and normalize is not None and normalise != normalize:
+            raise ValueError("Specify only one normalisation method: 'normalise' or 'normalize'")
+        normalise = normalise if normalise is not None else normalize
         
         # Parse region or use separate parameters
         if region is not None and chrom is not None:
@@ -224,12 +414,23 @@ class QuantNadoDataset:
         
         # Validate chromosome exists
         if chrom not in self.chromosomes:
-            raise ValueError(
-                f"Chromosome '{chrom}' not in store. Available: {self.chromosomes}"
-            )
+             # Check if it exists as a stranded array
+             if not (f"{chrom}_fwd" in self.root or f"{chrom}_rev" in self.root):
+                raise ValueError(
+                    f"Chromosome '{chrom}' not in store. Available: {self.chromosomes}"
+                )
         
         # Default start/end to whole chromosome
-        chrom_size = self.chromsizes[chrom]
+        # For stranded arrays, we need the size from the total array or one of the strands
+        if chrom in self.chromsizes:
+            chrom_size = self.chromsizes[chrom]
+        elif f"{chrom}_fwd" in self.root:
+            chrom_size = self.root[f"{chrom}_fwd"].shape[1]
+        elif f"{chrom}_rev" in self.root:
+            chrom_size = self.root[f"{chrom}_rev"].shape[1]
+        else:
+            raise ValueError(f"Chromosome '{chrom}' size not found")
+
         if start is None:
             start = 0
         if end is None:
@@ -256,9 +457,9 @@ class QuantNadoDataset:
             sample_names = []
             for s in samples:
                 if isinstance(s, str):
-                    if s not in self.sample_names:
+                    if s not in self._sample_name_to_idx:
                         raise ValueError(f"Sample '{s}' not found in store")
-                    idx = self.sample_names.index(s)
+                    idx = self._sample_name_to_idx[s]
                     sample_indices.append(idx)
                     sample_names.append(s)
                 elif isinstance(s, int):
@@ -278,16 +479,47 @@ class QuantNadoDataset:
             )
         
         # Extract data from zarr store
-        zarr_array = self.root[chrom]
-        # Slice: [sample_indices, start:end]
-        data_slice = zarr_array[sample_indices.tolist(), start:end]
-        
+        if strand is not None:
+            if strand not in ("+", "-"):
+                raise ValueError(f"strand must be '+', '-', or None, got {strand!r}")
+            array_key = f"{chrom}_fwd" if strand == "+" else f"{chrom}_rev"
+            if array_key not in self.root:
+                raise RuntimeError(
+                    f"Strand-specific array '{array_key}' not found in store."
+                )
+            zarr_array = self.root[array_key]
+        else:
+            zarr_array = self.root[chrom]
+            
         if not as_xarray:
-            # Return computed numpy array
-            return np.array(data_slice)
+            # Return computed numpy array (eagerly slice zarr)
+            result_np = zarr_array[sample_indices.tolist(), start:end]
+            if normalise is None:
+                return result_np
+
+            from ..analysis.normalise import normalise as _normalise
+
+            result_xr = xr.DataArray(
+                result_np,
+                dims=("sample", "position"),
+                coords={
+                    "sample": sample_names,
+                    "position": np.arange(start, end),
+                },
+            )
+            return _normalise(
+                result_xr,
+                self,
+                method=normalise,
+                library_sizes=library_sizes,
+            ).values
         
-        # Wrap in xarray DataArray with lazy dask array
-        dask_arr = da.from_array(data_slice, chunks=(1, -1))  # chunk by sample
+        # Wrap in xarray DataArray with lazy dask array (lazy slice)
+        # Default chunking: get from root attrs or use DEFAULT_CHUNK_LEN
+        chunk_len = self.root.attrs.get("chunk_len", DEFAULT_CHUNK_LEN)
+        dask_arr = da.from_zarr(zarr_array, chunks={0: 1, 1: chunk_len})
+        dask_arr = dask_arr[sample_indices.tolist(), start:end]
+
         
         # Build coordinates with metadata
         metadata_df = self.metadata
@@ -316,7 +548,18 @@ class QuantNadoDataset:
             },
         )
         
-        return da_xr
+        if normalise is None:
+            return da_xr
+
+        from ..analysis.normalise import normalise as _normalise
+
+        return _normalise(
+            da_xr,
+            self,
+            method=normalise,
+            library_sizes=library_sizes,
+        )
+
 
 
 
@@ -335,11 +578,4 @@ class QuantNadoDataset:
 # print("RNA samples in promoter_rna_ds:", promoter_rna_ds.coords[sample_dim].values)
     
 
-
-
-
-
-        
-    
-
-   
+QuantNadoDataset = BaseStore

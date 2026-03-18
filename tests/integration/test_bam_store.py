@@ -1,14 +1,12 @@
 """Integration tests for BamStore: create, open, process, metadata, resume."""
 from __future__ import annotations
 
-import time
-
 import numpy as np
 import pandas as pd
 import pytest
 
 from quantnado.dataset.store_bam import BamStore
-from quantnado.analysis.core import QuantNadoDataset
+from quantnado.dataset.core import BaseStore as QuantNadoDataset
 from quantnado.utils import estimate_chunk_len
 
 
@@ -294,6 +292,20 @@ def test_extract_region_as_numpy(tmp_path, chromsizes, sample_names, monkeypatch
     np.testing.assert_array_equal(np_result, xr_result.values)
 
 
+def test_extract_region_normalise_cpm(tmp_path, chromsizes, sample_names, monkeypatch):
+    monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
+    store = BamStore(tmp_path / "ds", chromsizes, sample_names)
+    store.process_samples(["1", "2"])
+
+    region = store.extract_region(
+        "chr1:0-2",
+        normalise="cpm",
+        library_sizes={"s1": 1_000_000, "s2": 2_000_000},
+    )
+    np.testing.assert_allclose(region.values, np.array([[1.0, 1.0], [1.0, 1.0]]))
+    assert region.attrs["normalised"] == "cpm"
+
+
 def test_extract_region_metadata_coordinates(tmp_path, chromsizes, sample_names, monkeypatch):
     monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (a[2], np.full(a[3], int(a[1]), dtype=np.uint16), 10.0, None, None))
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
@@ -422,51 +434,28 @@ def test_bamstore_invalid_construction_compression_raises(tmp_path, chromsizes, 
 
 
 # ---------------------------------------------------------------------------
-# Parallel writer preserves sample order
+# Streaming write with combined workers
 # ---------------------------------------------------------------------------
 
 
-def test_process_samples_parallel_writer_preserves_sample_order(
+def test_process_samples_streaming_writes_correct_data(
     tmp_path, chromsizes, sample_names, monkeypatch
 ):
-    write_order = []
+    """Verify that process_samples with max_workers > 1 (combined into
+    effective chr_workers) produces the same results as sequential processing."""
 
-    def fake_process_single_sample(
-        self,
-        sample_idx,
-        bam_file,
-        sample_name,
-        chromsizes_dict,
-        chr_workers=1,
-    ):
-        if sample_idx == 0:
-            time.sleep(0.05)
+    def fake_chrom(self, bam_file, contig, size, library_type=None):
+        return contig, np.full(size, int(bam_file), dtype=np.uint16), 0.0, None, None
 
-        return sample_idx, {
-            "sparsity": 0.0,
-            "hash": "",
-            "chr_data": {
-                contig: np.full(size, sample_idx + 1, dtype=np.uint16)
-                for contig, size in chromsizes_dict.items()
-            },
-        }
+    monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
 
-    original_write_sample_result = BamStore._write_sample_result
-
-    def recording_write_sample_result(self, sample_idx, results):
-        write_order.append(sample_idx)
-        original_write_sample_result(self, sample_idx, results)
-
-    monkeypatch.setattr(BamStore, "_process_single_sample", fake_process_single_sample)
-    monkeypatch.setattr(BamStore, "_write_sample_result", recording_write_sample_result)
-
-    store = BamStore(tmp_path / "parallel_ds", chromsizes, sample_names)
+    store = BamStore(tmp_path / "streaming_ds", chromsizes, sample_names)
     store.process_samples(["1", "2"], max_workers=2)
 
-    assert write_order == [0, 1]
     assert np.all(store.root["chr1"][0, :] == 1)
     assert np.all(store.root["chr2"][1, :] == 2)
     assert store.completed_mask.tolist() == [True, True]
+    assert np.isfinite(store.meta["sparsity"][:]).all()
 
 
 # ---------------------------------------------------------------------------
@@ -592,9 +581,8 @@ class TestSetMetadataMergeFalse:
         assert "group" not in md.columns
 
     def test_sample_column_not_found_raises(self, tmp_path):
-        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"])
         with pytest.raises(ValueError, match="Sample column"):
-            store.set_metadata(pd.DataFrame({"wrong_col": ["s1"]}), sample_column="sample_id")
+            BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"]).set_metadata(pd.DataFrame({"wrong_col": ["s1"]}), sample_column="sample_id")
 
 
 # ---------------------------------------------------------------------------
@@ -645,7 +633,7 @@ class TestUpdateMetadata:
 
 class TestBamStoreErrorPaths:
     def test_overwrite_in_read_only_mode_raises(self, tmp_path):
-        store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"])
+        BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"])
         with pytest.raises(ValueError, match="read-only"):
             BamStore(
                 tmp_path / "ds",

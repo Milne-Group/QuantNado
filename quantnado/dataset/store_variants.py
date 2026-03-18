@@ -12,10 +12,9 @@ from loguru import logger
 import xarray as xr
 import dask.array as da
 
-from .metadata import extract_metadata
+from .core import BaseStore
+from .constants import DEFAULT_CHUNK_LEN
 from .store_bam import _compute_sample_hash, _to_str_list
-
-DEFAULT_CHUNK_LEN = 65536
 
 # Genotype encoding
 GT_MISSING: np.int8 = np.int8(-1)
@@ -95,7 +94,7 @@ def _read_vcf(
     return {chrom: grp.reset_index(drop=True) for chrom, grp in df.groupby("chrom")}
 
 
-class VariantStore:
+class VariantStore(BaseStore):
     """
     Zarr-backed SNP/variant store from per-sample VCF.gz files.
 
@@ -134,8 +133,19 @@ class VariantStore:
         resume: bool = False,
         read_only: bool = False,
     ) -> None:
-        self.store_path = self._normalize_path(store_path)
-        self.sample_names = [str(s) for s in sample_names]
+        self.path = Path(store_path)
+        self.store_path = self._normalize_path(self.path)
+
+        # Initialize BaseStore attributes
+        if self.store_path.exists() and not overwrite:
+            self.root = zarr.open_group(str(self.store_path), mode="r" if read_only else "r+")
+            self._init_common_attributes(sample_names)
+        else:
+            self.sample_names = [str(s) for s in sample_names]
+            self._setup_sample_lookup()
+            self.completed_mask_raw = np.zeros(len(self.sample_names), dtype=bool)
+            self._metadata_cache = None
+
         self.n_samples = len(self.sample_names)
         self.sample_hash = _compute_sample_hash(self.sample_names)
         self.compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
@@ -176,12 +186,13 @@ class VariantStore:
             raise FileNotFoundError(f"Store does not exist at {store_path}")
         group = zarr.open_group(str(store_path), mode="r" if read_only else "r+")
         try:
-            sample_names = list(group.attrs["sample_names"])
+            stored_names = list(group.attrs["sample_names"])
         except KeyError as e:
             raise ValueError(f"Missing required attribute in store: {e}")
+        
         return cls(
             store_path=store_path,
-            sample_names=sample_names,
+            sample_names=stored_names,
             overwrite=False,
             resume=True,
             read_only=read_only,
@@ -417,11 +428,6 @@ class VariantStore:
             )
             self.root.attrs[f"metadata_{col}"] = values
             logger.info(f"Updated metadata column: {col}")
-
-    def get_metadata(self) -> pd.DataFrame:
-        """Retrieve all metadata columns as a DataFrame."""
-        return extract_metadata(self.root)
-
     # ---- Data access ----
 
     def get_positions(self, chrom: str) -> np.ndarray:
