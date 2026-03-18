@@ -306,6 +306,16 @@ def metaplot(
             label=reference_label,
         )
 
+    # Set xlim so the full window is shown, including the right edge of the last bin.
+    # Bin coords are left-edges, so the true range extends one bin-step beyond x[-1].
+    _upstream = data.attrs.get("upstream")
+    _downstream = data.attrs.get("downstream")
+    if _upstream is not None and _downstream is not None:
+        ax.set_xlim(-_upstream, _downstream)
+    elif len(x) > 1:
+        step = abs(float(x[1] - x[0]))
+        ax.set_xlim(x[0], x[-1] + step)
+
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -1080,12 +1090,27 @@ def correlate(
     if log_transform:
         mat = np.log1p(mat)
 
-    # Drop zero-variance columns before correlating
-    col_var = mat.var(axis=0)
+    # Drop rows (features/ranges) that are NaN in any sample — NaN means arise from
+    # sparse regions where count < min_count (by design in reduce()).  Keeping NaN rows
+    # causes mat.var(axis=0) to return NaN for every sample, which would filter ALL
+    # samples via the zero-variance check below.
+    nan_rows = np.any(~np.isfinite(mat), axis=1)
+    if nan_rows.any():
+        mat = mat[~nan_rows]
+
+    # Drop zero-variance columns (samples with constant signal after NaN removal).
+    col_var = np.nanvar(mat, axis=0)
     keep = col_var > 0
     if not keep.all():
         sample_labels = [s for s, k in zip(sample_labels, keep) if k]
         mat = mat[:, keep]
+
+    if len(sample_labels) < 2:
+        raise ValueError(
+            f"Too few samples with variable signal to compute a correlation matrix "
+            f"(got {len(sample_labels)} after filtering constant/empty columns). "
+            "Check that your data has coverage across the requested regions."
+        )
 
     if method == "pearson":
         corr = np.corrcoef(mat.T)
@@ -1096,6 +1121,8 @@ def correlate(
 
     corr_df = pd.DataFrame(corr, index=sample_labels, columns=sample_labels)
 
+    n_samples = len(sample_labels)
+    cluster = n_samples > 1
     g = sns.clustermap(
         corr_df,
         xticklabels=sample_labels,
@@ -1110,6 +1137,8 @@ def correlate(
         dendrogram_ratio=0.1,
         annot=annotate,
         fmt=".2f" if annotate else "",
+        row_cluster=cluster,
+        col_cluster=cluster,
     )
     g.figure.suptitle(title, y=1.02)
 

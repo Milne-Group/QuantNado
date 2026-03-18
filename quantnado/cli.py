@@ -52,36 +52,79 @@ def _setup_cli_logging(log_file: Path, verbose: bool):
 
 @app.command()
 def call_peaks(
-    bigwig_dir: Path = typer.Option(..., "--bigwig-dir", help="Directory containing bigWig files"),
+    zarr: Path = typer.Option(..., "--zarr", help="Path to a QuantNado zarr coverage store"),
+    method: str = typer.Option("quantile", "--method", help="Peak calling method: quantile, seacr, or lanceotron"),
     output_dir: Path = typer.Option(..., "--output-dir", help="Directory to save output peak files (BED format)"),
-    chromsizes: str = typer.Option(..., "--chromsizes", help="Path to a two-column chromsizes file"),
     blacklist: Path | None = typer.Option(None, "--blacklist", help="Path to a BED file with regions to exclude"),
-    tilesize: int = typer.Option(128, "--tilesize", help="Size of genomic tiles to create (default: 128 bp)"),
-    quantile: float = typer.Option(0.98, "--quantile", help="Quantile threshold for peak calling"),
-    merge: bool = typer.Option(False, "--merge/--no-merge", help="Merge overlapping peaks after quantile calling"),
-    tmp_dir: Path = typer.Option("tmp", "--tmp-dir", help="Temporary directory for intermediate files"),
+    # quantile options
+    tilesize: int = typer.Option(128, "--tilesize", help="[quantile] Size of genomic tiles in bp"),
+    window_overlap: int = typer.Option(8, "--window-overlap", help="[quantile] Overlap between adjacent windows in bp"),
+    quantile: float = typer.Option(0.98, "--quantile", help="[quantile] Quantile threshold for peak calling"),
+    merge: bool = typer.Option(True, "--merge/--no-merge", help="[quantile] Merge overlapping and adjacent peaks after calling"),
+    # seacr options
+    control_zarr: Path | None = typer.Option(None, "--control-zarr", help="[seacr] Path to a control (IgG) QuantNado zarr store"),
+    fdr_threshold: float = typer.Option(0.01, "--fdr", help="[seacr] Numeric FDR threshold (0–1) used when no control zarr is provided"),
+    norm: str = typer.Option("non", "--norm", help='[seacr] "norm" to normalise control to experimental signal, "non" to skip'),
+    stringency: str = typer.Option("stringent", "--stringency", help='[seacr] "stringent" (peak of AUC curve) or "relaxed" (knee of curve)'),
+    # lanceotron options
+    score_threshold: float = typer.Option(0.5, "--score-threshold", help="[lanceotron] Minimum overall_classification score (0–1)"),
+    smooth_window: int = typer.Option(400, "--smooth-window", help="[lanceotron] Rolling mean window for candidate detection (bp)"),
+    lanceotron_batch_size: int = typer.Option(512, "--batch-size", help="[lanceotron] Inference batch size"),
+    # shared
     log_file: Path = typer.Option("quantnado_peaks.log", "--log-file", help="Path to the log file"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
 ):
     """
-    Call quantile-based peaks from bigWig files.
+    Call peaks from a QuantNado zarr coverage store.
+
+    --method quantile   quantile-threshold peak calling (default)
+    --method seacr      SEACR-style AUC island calling (pure Python)
+    --method lanceotron LanceOtron ML classifier (requires: pip install quantnado[lanceotron])
     """
     _setup_cli_logging(log_file, verbose)
     try:
-        # Lazy import to avoid zarr/anndata compatibility issues
-        from quantnado.peak_calling.call_quantile_peaks import call_peaks_from_bigwig_dir
+        if method == "quantile":
+            from quantnado.peak_calling.call_quantile_peaks import call_peaks_from_zarr
 
-        call_peaks_from_bigwig_dir(
-            bigwig_dir=bigwig_dir,
-            output_dir=output_dir,
-            chromsizes_file=chromsizes,
-            blacklist_file=str(blacklist) if blacklist else None,
-            tilesize=tilesize,
-            quantile=quantile,
-            merge=merge,
-            tmp_dir=tmp_dir,
-        )
+            call_peaks_from_zarr(
+                zarr_path=zarr,
+                output_dir=output_dir,
+                blacklist_file=blacklist,
+                tilesize=tilesize,
+                window_overlap=window_overlap,
+                quantile=quantile,
+                merge=merge,
+            )
+        elif method == "seacr":
+            from quantnado.peak_calling.call_seacr_peaks import call_seacr_peaks_from_zarr
+
+            call_seacr_peaks_from_zarr(
+                zarr_path=zarr,
+                output_dir=output_dir,
+                control_zarr_path=control_zarr,
+                fdr_threshold=fdr_threshold,
+                norm=norm,
+                stringency=stringency,
+                blacklist_file=blacklist,
+            )
+        elif method == "lanceotron":
+            from quantnado.peak_calling.call_lanceotron_peaks import call_lanceotron_peaks_from_zarr
+
+            call_lanceotron_peaks_from_zarr(
+                zarr_path=zarr,
+                output_dir=output_dir,
+                score_threshold=score_threshold,
+                blacklist_file=blacklist,
+                smooth_window=smooth_window,
+                batch_size=lanceotron_batch_size,
+            )
+        else:
+            logger.error(f"Unknown method '{method}'. Choose 'quantile', 'seacr', or 'lanceotron'.")
+            raise typer.Exit(code=1)
+
         logger.success(f"Finished calling peaks: {output_dir}")
+    except typer.Exit:
+        raise
     except Exception as e:
         logger.error(f"Peak calling failed: {type(e).__name__}: {e}")
         logger.debug(traceback.format_exc())
