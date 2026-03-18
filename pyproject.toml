@@ -11,7 +11,7 @@ name = "quantnado"
 description = "Dataset generation and peak calling for multi-modal Next-Generation Sequencing data"
 authors = [
     { name = "Catherine Chahrour", email = "catherine.chahrour@imm.ox.ac.uk" },
-    { name = "Alastair Smith" }
+    { name = "Alastair Smith", email = "alastair.smith@imm.ox.ac.uk" },
 ]
 readme = "README.md"
 requires-python = ">=3.12, <3.14"
@@ -19,10 +19,9 @@ license = "GPL-3.0-only"
 dynamic = ["version"]
 
 dependencies = [
-    "bamnado==0.4.4",
+    "bamnado>=0.5.6",
     "dask-ml>=2025,<2027",
     "dask>=2026",
-    "icechunk>=1.1",
     "loguru>=0.7",
     "matplotlib==3.10.8",
     "numpy>=2.0,<3.0",
@@ -35,7 +34,7 @@ dependencies = [
     "tqdm>=4.67",
     "typer>=0.24",
     "xarray>=2026",
-    "zarr>=3.0,<4.0",
+    "zarr>=3.1.5,<4.0",
     "plotnado>=0.3"
 ]
 
@@ -56,7 +55,7 @@ dev = [
     "ruff==0.15.4",
 ]
 example = [
-    "ipykernel>=6.0.0,<7.0.0",
+    "ipykernel>6.0.0,<7.3.0",
     "jupyterlab==4.5.5",
 ]
 

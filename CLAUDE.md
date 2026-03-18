@@ -4,6 +4,36 @@ High-performance genomic signal quantification and peak calling. Stores per-bp c
 
 ---
 
+## Dev setup
+
+```bash
+uv sync --all-extras
+```
+
+## Commands
+
+```bash
+# CLI
+quantnado --help
+quantnado create-dataset --help
+quantnado call-peaks --help
+
+# Tests
+uv run pytest tests               # all
+uv run pytest tests -m unit       # fast, no file I/O
+uv run pytest tests -m integration
+uv run pytest tests -m cli
+
+# Lint
+uv run ruff check .
+uv run ruff format .
+
+# Docs
+uv run mkdocs serve
+```
+
+---
+
 ## Project layout
 
 ```
@@ -140,4 +170,4 @@ tests/
 └── cli/           # CLI smoke tests      (pytest -m cli)
 ```
 
-Run: `pytest` from project root (respects `testpaths = ["tests"]` in `pyproject.toml`).
+Run: `uv run pytest` from project root (respects `testpaths = ["tests"]` in `pyproject.toml`).
