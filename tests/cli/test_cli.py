@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from quantnado.cli import app, combine_metadata_main, make_zarr_main
-from quantnado.dataset.store_bam import BamStore, CoverageType
+from quantnado.dataset.store_coverage import BamStore, CoverageType
 from quantnado.dataset.store_multiomics import MultiomicsStore
 
 
@@ -249,13 +249,25 @@ def test_create_dataset_propagates_exception(tmp_path, monkeypatch):
 
 def test_call_peaks_basic(tmp_path, monkeypatch):
     calls = []
+    import pyranges1 as pr
+    from unittest.mock import MagicMock
 
     def fake_call_peaks(**kwargs):
         calls.append(kwargs)
+        return pr.PyRanges()
 
+    # Mock QuantNado.call_peaks
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
+        "quantnado.api.QuantNado.call_peaks",
         fake_call_peaks,
+    )
+
+    # Mock QuantNado.open_dataset to return a mock object
+    mock_ds = MagicMock()
+    mock_ds.call_peaks = fake_call_peaks
+    monkeypatch.setattr(
+        "quantnado.api.QuantNado.open_dataset",
+        MagicMock(return_value=mock_ds),
     )
 
     zarr_path = tmp_path / "input.zarr"
@@ -270,13 +282,16 @@ def test_call_peaks_basic(tmp_path, monkeypatch):
     ])
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
-    assert calls[0]["quantile"] == 0.98
+    assert calls[0]["options"].quantile == 0.98
 
 
 def test_call_peaks_propagates_exception(tmp_path, monkeypatch):
+    def raise_error(**kwargs):
+        raise RuntimeError("peak error")
+
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("peak error")),
+        "quantnado.api.QuantNado.call_peaks",
+        raise_error,
     )
     result = runner.invoke(app, [
         "call-peaks",
@@ -465,13 +480,25 @@ def test_create_dataset_multiomics_error_propagation(tmp_path, monkeypatch):
 
 def test_call_peaks_blacklist_and_merge_flags(tmp_path, monkeypatch):
     calls = []
+    import pyranges1 as pr
+    from unittest.mock import MagicMock
 
     def fake_call_peaks(**kwargs):
         calls.append(kwargs)
+        return pr.PyRanges()
 
+    # Mock QuantNado.call_peaks
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
+        "quantnado.api.QuantNado.call_peaks",
         fake_call_peaks,
+    )
+
+    # Mock QuantNado.open_dataset to return a mock object
+    mock_ds = MagicMock()
+    mock_ds.call_peaks = fake_call_peaks
+    monkeypatch.setattr(
+        "quantnado.api.QuantNado.open_dataset",
+        MagicMock(return_value=mock_ds),
     )
 
     zarr_path = tmp_path / "input.zarr"
@@ -488,7 +515,7 @@ def test_call_peaks_blacklist_and_merge_flags(tmp_path, monkeypatch):
         "--log-file", str(tmp_path / "peaks.log"),
     ])
     assert result.exit_code == 0, result.output
-    assert calls[0]["merge"] is True
+    assert calls[0]["options"].merge is True
     assert calls[0]["blacklist_file"] == blacklist
 
 
@@ -508,7 +535,7 @@ def test_combine_metadata_main_merges_csvs(tmp_path):
 
     # combine_metadata_main() creates a new app internally; invoke it directly
     # by calling BamStore._combine_metadata_files (the underlying logic is tested here)
-    from quantnado.dataset.store_bam import BamStore
+    from quantnado.dataset.store_coverage import BamStore
     combined = BamStore._combine_metadata_files([str(f1), str(f2)])
     combined.to_csv(out, index=False)
 

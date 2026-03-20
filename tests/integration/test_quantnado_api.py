@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_coverage import BamStore
 from quantnado import QuantNado
 from quantnado.analysis.pca import run_pca
 from quantnado.analysis.reduce import reduce_byranges_signal
@@ -35,7 +35,7 @@ def test_open_wraps_bamstore(tmp_path, chromsizes, sample_names, monkeypatch):
 
 def test_from_bam_files(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        "quantnado.dataset.store_coverage._get_chromsizes_from_bam",
         lambda path: {"chr1": 10},
     )
     monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
@@ -49,7 +49,7 @@ def test_from_bam_files(tmp_path, monkeypatch):
 
 def test_from_bam_files_with_local_staging(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        "quantnado.dataset.store_coverage._get_chromsizes_from_bam",
         lambda path: {"chr1": 10},
     )
     monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))

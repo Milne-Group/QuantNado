@@ -7,7 +7,7 @@ import pytest
 
 import bamnado
 
-from quantnado.dataset.store_bam import BamStore, CoverageType
+from quantnado.dataset.store_coverage import BamStore, CoverageType
 from quantnado.dataset.core import BaseStore as QuantNadoDataset
 from quantnado.utils import estimate_chunk_len
 
@@ -175,7 +175,7 @@ def test_bamstore_hash_validation_on_resume(tmp_path, monkeypatch):
 
 def test_bamstore_auto_chromsizes(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        "quantnado.dataset.store_coverage._get_chromsizes_from_bam",
         lambda path: {"chr1": 100, "chr2": 200},
     )
     monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
@@ -365,7 +365,7 @@ def test_extract_region_error_cases(tmp_path, chromsizes, sample_names, monkeypa
 def test_bamstore_auto_chunk_len_uses_filesystem_hint(tmp_path, monkeypatch):
     chromsizes = {"chr1": 250_000_000}
 
-    monkeypatch.setattr("quantnado.dataset.store_bam.is_network_fs", lambda path: False)
+    monkeypatch.setattr("quantnado.dataset.store_coverage.is_network_fs", lambda path: False)
     local_store = BamStore(tmp_path / "local_ds", chromsizes, ["s1"])
     expected_local = estimate_chunk_len(
         contig_lengths=chromsizes,
@@ -375,7 +375,7 @@ def test_bamstore_auto_chunk_len_uses_filesystem_hint(tmp_path, monkeypatch):
     assert local_store.chunk_len == expected_local
     assert local_store.root.attrs["chunk_len"] == expected_local
 
-    monkeypatch.setattr("quantnado.dataset.store_bam.is_network_fs", lambda path: True)
+    monkeypatch.setattr("quantnado.dataset.store_coverage.is_network_fs", lambda path: True)
     network_store = BamStore(tmp_path / "network_ds", chromsizes, ["s1"])
     expected_network = estimate_chunk_len(
         contig_lengths=chromsizes,
@@ -388,7 +388,7 @@ def test_bamstore_auto_chunk_len_uses_filesystem_hint(tmp_path, monkeypatch):
 
 
 def test_bamstore_explicit_chunk_len_overrides_auto(tmp_path, monkeypatch):
-    monkeypatch.setattr("quantnado.dataset.store_bam.is_network_fs", lambda path: True)
+    monkeypatch.setattr("quantnado.dataset.store_coverage.is_network_fs", lambda path: True)
 
     store = BamStore(
         tmp_path / "manual_chunk_ds",
@@ -467,7 +467,7 @@ def test_process_samples_streaming_writes_correct_data(
 
 def test_bamstore_from_bam_files_with_local_staging_publishes_to_final_path(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        "quantnado.dataset.store_coverage._get_chromsizes_from_bam",
         lambda path: {"chr1": 5},
     )
     monkeypatch.setattr(
@@ -497,7 +497,7 @@ def test_bamstore_from_bam_files_with_local_staging_publishes_to_final_path(tmp_
 
 def test_bamstore_staging_rejects_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        "quantnado.dataset.store_coverage._get_chromsizes_from_bam",
         lambda path: {"chr1": 5},
     )
 
@@ -802,11 +802,11 @@ class TestMCCUnit:
     def _mock_env(self, monkeypatch, viewpoints, chromsizes=None):
         """Apply the three monkeypatches needed for a unit-level MCC test."""
         monkeypatch.setattr(
-            "quantnado.dataset.store_bam._get_viewpoints_from_mcc_bam",
+            "quantnado.dataset.store_coverage._get_viewpoints_from_mcc_bam",
             lambda path: viewpoints,
         )
         monkeypatch.setattr(
-            "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+            "quantnado.dataset.store_coverage._get_chromsizes_from_bam",
             lambda path: chromsizes or {"chr1": 10},
         )
         monkeypatch.setattr(
@@ -870,7 +870,7 @@ class TestMCCUnit:
     def test_mixed_mcc_and_regular_bam(self, tmp_path, monkeypatch):
         """Non-MCC BAM files are not expanded; only MCC ones get viewpoint suffixes."""
         monkeypatch.setattr(
-            "quantnado.dataset.store_bam._get_viewpoints_from_mcc_bam",
+            "quantnado.dataset.store_coverage._get_viewpoints_from_mcc_bam",
             lambda path: ["VP_A", "VP_B"],
         )
         monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))

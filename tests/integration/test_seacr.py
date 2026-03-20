@@ -26,7 +26,7 @@ from zarr.storage import LocalStore
 from loguru import logger
 
 from quantnado.peak_calling.call_seacr_peaks import call_seacr_peaks_from_zarr
-from quantnado.peak_calling.call_quantile_peaks import call_peaks_from_zarr as call_quantile_peaks_from_zarr
+from quantnado.peak_calling.call_quantile_peaks import call_quantile_peaks_from_zarr as call_quantile_peaks_from_zarr
 
 # Setup logging to show only info-level messages and above, without timestamps or other metadata
 logger.remove()

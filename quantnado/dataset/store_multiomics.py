@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
-from .store_bam import BamStore, CoverageType
+from .store_coverage import BamStore, CoverageType
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
 from .constants import DEFAULT_CHUNK_LEN

@@ -49,7 +49,7 @@ from quantnado.analysis.pca import run_pca as _run_pca
 from quantnado.analysis.plot import correlate, heatmap, locus_plot, metaplot, tornadoplot
 from quantnado.analysis.reduce import extract_byranges_signal, reduce_byranges_signal
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
-from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_coverage import BamStore
 from quantnado.dataset.store_methyl import MethylStore
 from quantnado.dataset.store_multiomics import DEFAULT_CHUNK_LEN, MultiomicsStore
 from quantnado.dataset.store_variants import VariantStore
@@ -976,6 +976,148 @@ class QuantNado:
             library_sizes=library_sizes,
             feature_lengths=feature_lengths,
         )
+
+    def call_peaks(
+        self,
+        method: str = "quantile",
+        sample_name: str | None = None,
+        output_dir: Path | None = None,
+        blacklist_file: Path | None = None,
+        options: Any | None = None,
+        device: str | None = None,
+        n_workers: int = 1,
+    ) -> Any:
+        """
+        Call peaks from genomic signal.
+
+        Returns PyRanges with a "Sample" column containing all samples' peaks.
+        Optionally write one BED file per sample to output_dir.
+
+        Parameters
+        ----------
+        method : str, default "quantile"
+            Peak calling method: "quantile", "seacr", or "lanceotron"
+        sample_name : str, optional
+            Call peaks for a single sample. If None, call for all completed samples.
+        output_dir : Path, optional
+            If provided, write one BED file per sample to this directory.
+        blacklist_file : Path, optional
+            BED file with regions to exclude from peak calling.
+        options : QuantileOptions | SeacrOptions | LanceotronOptions, optional
+            Method-specific options. If None, uses method defaults.
+        device : str, optional
+            Compute device for lanceotron: 'cuda', 'mps', 'cpu', or None for auto-detect.
+        n_workers : int, default 1
+            Number of parallel workers for chromosome processing (quantile) or SEACR/lanceotron samples.
+
+        Returns
+        -------
+        pr.PyRanges
+            Called peaks with a "Sample" column. Empty if no peaks found.
+
+        Examples
+        --------
+        >>> ds = QuantNado.open_dataset("coverage.zarr")
+        >>> peaks = ds.call_peaks("quantile")
+        >>> peaks = ds.call_peaks("seacr", sample_name="chip_rep1")
+        >>> from quantnado.peak_calling import QuantileOptions
+        >>> peaks = ds.call_peaks("quantile", options=QuantileOptions(quantile=0.95))
+        """
+        import pyranges1 as pr
+        from quantnado.peak_calling._utils import _call_peaks_for_store, load_blacklist
+        from quantnado.peak_calling._options import QuantileOptions, SeacrOptions, LanceotronOptions
+        from quantnado.analysis.normalise import get_library_sizes
+
+        if self._bam is None:
+            raise ValueError("No coverage store available. Cannot call peaks.")
+
+        blacklist_pr = load_blacklist(blacklist_file)
+        library_sizes = get_library_sizes(self._bam)
+
+        # Dispatch to method-specific caller
+        if method == "quantile":
+            from quantnado.peak_calling.call_quantile_peaks import call_quantile_peaks
+
+            if options is None:
+                options = QuantileOptions()
+            elif not isinstance(options, QuantileOptions):
+                raise TypeError(f"options must be QuantileOptions, got {type(options).__name__}")
+
+            def algo(stream, sname):
+                return call_quantile_peaks(
+                    coverage_stream=stream,
+                    sample_name=sname,
+                    library_size=library_sizes[sname],
+                    blacklist=blacklist_pr,
+                    tilesize=options.tilesize,
+                    window_overlap=options.window_overlap,
+                    quantile=options.quantile,
+                    merge=options.merge,
+                    merge_distance=options.merge_distance,
+                    n_workers=options.n_workers,
+                )
+
+        elif method == "seacr":
+            from quantnado.peak_calling.call_seacr_peaks import call_seacr_peaks_from_zarr
+
+            if options is None:
+                options = SeacrOptions()
+            elif not isinstance(options, SeacrOptions):
+                raise TypeError(f"options must be SeacrOptions, got {type(options).__name__}")
+
+            # For SEACR, we delegate to the existing wrapper for now
+            # TODO: refactor SEACR to use CoverageStream
+            output_dir_actual = Path(output_dir) if output_dir else None
+            results = call_seacr_peaks_from_zarr(
+                zarr_path=self._bam.path,
+                output_dir=output_dir_actual,
+                control_zarr_path=None,
+                fdr_threshold=options.fdr_threshold,
+                norm=options.norm,
+                stringency=options.stringency,
+                blacklist_file=blacklist_file,
+                n_workers=n_workers,
+                device=device,
+            )
+            # Return empty PyRanges for now (results are written to BED files)
+            return pr.PyRanges()
+
+        elif method == "lanceotron":
+            from quantnado.peak_calling.call_lanceotron_peaks import call_lanceotron_peaks_from_zarr
+
+            if options is None:
+                options = LanceotronOptions()
+            elif not isinstance(options, LanceotronOptions):
+                raise TypeError(f"options must be LanceotronOptions, got {type(options).__name__}")
+
+            # For LanceOtron, we delegate to the existing wrapper for now
+            # TODO: refactor LanceOtron to use CoverageStream
+            output_dir_actual = Path(output_dir) if output_dir else None
+            results = call_lanceotron_peaks_from_zarr(
+                zarr_path=self._bam.path,
+                output_dir=output_dir_actual,
+                score_threshold=options.score_threshold,
+                smooth_window=options.smooth_window,
+                batch_size=options.batch_size,
+                blacklist_file=blacklist_file,
+                n_workers=n_workers,
+                device=device,
+            )
+            # Return empty PyRanges for now (results are written to BED files)
+            return pr.PyRanges()
+
+        else:
+            raise ValueError(f"Unknown method '{method}'. Choose 'quantile', 'seacr', or 'lanceotron'.")
+
+        # Run peak calling via unified orchestration (quantile only for now)
+        peaks_pr = _call_peaks_for_store(
+            self._bam,
+            algo,
+            sample_name=sample_name,
+            output_dir=output_dir,
+        )
+
+        return peaks_pr
 
     def pca(
         self,

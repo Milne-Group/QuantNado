@@ -233,7 +233,7 @@ def _parse_chromsizes(
     return chromsizes_dict
 
 
-class BamStore(BaseStore):
+class CoverageStore(BaseStore):
     """
     Zarr-backed BAM signal store for per-chromosome, per-sample data and metadata.
 
@@ -1151,3 +1151,5 @@ class BamStore(BaseStore):
         with open(path) as f:
             data = json.load(f)
         return pd.DataFrame(data)
+# Backwards compatibility alias
+BamStore = CoverageStore

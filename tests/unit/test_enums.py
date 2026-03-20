@@ -4,7 +4,7 @@ import pytest
 import bamnado
 
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
-from quantnado.dataset.store_bam import CoverageType, _copy_read_filter
+from quantnado.dataset.store_coverage import CoverageType, _copy_read_filter
 
 
 class TestFeatureType:

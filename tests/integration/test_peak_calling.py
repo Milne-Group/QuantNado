@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from quantnado.peak_calling.call_quantile_peaks import call_quantile_peaks
+from quantnado.peak_calling.call_quantile_peaks import call_quantile_peaks_from_signal_table
 
 
 def test_call_quantile_peaks_basic():
@@ -11,7 +11,7 @@ def test_call_quantile_peaks_basic():
     starts = pd.Series([0, 100, 200, 300, 400, 500])
     ends = pd.Series([100, 200, 300, 400, 500, 600])
 
-    peaks = call_quantile_peaks(
+    peaks = call_quantile_peaks_from_signal_table(
         signal=signal,
         chroms=chroms,
         starts=starts,
@@ -35,7 +35,7 @@ def test_call_quantile_peaks_no_peaks_above_threshold():
     starts = pd.Series([0, 100, 200, 300])
     ends = pd.Series([100, 200, 300, 400])
 
-    peaks = call_quantile_peaks(
+    peaks = call_quantile_peaks_from_signal_table(
         signal=signal,
         chroms=chroms,
         starts=starts,
@@ -56,7 +56,7 @@ def test_call_quantile_peaks_multiple_chroms():
     starts = pd.Series([0, 100, 0, 100])
     ends = pd.Series([100, 200, 100, 200])
 
-    peaks = call_quantile_peaks(
+    peaks = call_quantile_peaks_from_signal_table(
         signal=signal,
         chroms=chroms,
         starts=starts,

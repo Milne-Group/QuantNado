@@ -15,7 +15,7 @@ from zarr.storage import LocalStore
 
 from .core import BaseStore
 from .constants import DEFAULT_CHUNK_LEN
-from .store_bam import _compute_sample_hash, _to_str_list
+from .store_coverage import _compute_sample_hash, _to_str_list
 
 
 def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[str, pd.DataFrame]:

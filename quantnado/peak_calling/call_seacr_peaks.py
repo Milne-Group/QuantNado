@@ -760,7 +760,7 @@ def call_seacr_peaks_from_zarr(
     n_workers:
         Number of parallel processes for chromosome-level island computation (default: 1).
     """
-    from ..dataset.store_bam import BamStore
+    from ..dataset.store_coverage import CoverageStore
     from ._device import get_device as _get_device
 
     zarr_path = Path(zarr_path)
@@ -774,7 +774,7 @@ def call_seacr_peaks_from_zarr(
     if norm not in ("norm", "non"):
         raise ValueError(f"norm must be 'norm' or 'non', got {norm!r}")
 
-    store = BamStore.open(zarr_path, read_only=True)
+    store = CoverageStore.open(zarr_path, read_only=True)
     chromsizes = {chrom: size for chrom, size in store.chromsizes.items() if "_" not in chrom}
 
     sample_names = store.sample_names
@@ -846,7 +846,7 @@ def call_seacr_peaks_from_zarr(
     ctrl_islands_df: pd.DataFrame | None = None
 
     if control_zarr_path is not None:
-        ctrl_store = BamStore.open(Path(control_zarr_path), read_only=True)
+        ctrl_store = CoverageStore.open(Path(control_zarr_path), read_only=True)
         ctrl_samples = [s for s, c in zip(ctrl_store.sample_names, ctrl_store.completed_mask) if c]
         ctrl_indices = [i for i, c in enumerate(ctrl_store.completed_mask) if c]
 
