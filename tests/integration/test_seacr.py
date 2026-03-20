@@ -51,6 +51,8 @@ PY_BED_DIR = OUTPUT_DIR / "bedfiles_python"
 QUANTILE_BED_DIR = OUTPUT_DIR / "bedfiles_quantile"
 REPORT_DIR = OUTPUT_DIR / "diff_reports"
 SAMPLE_NAME = "CTCF_DE_chr1_100Mb"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SEACR_DOCKER_IMAGE = os.environ.get("SEACR_DOCKER_IMAGE")
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 BED_DIR.mkdir(exist_ok=True)
@@ -61,6 +63,59 @@ REPORT_DIR.mkdir(exist_ok=True)
 # Timing store populated by each test; written by test_write_benchmark_report()
 _TIMINGS: dict[str, float] = {}
 
+
+def _have_host_seacr_backend() -> bool:
+    return shutil.which("Rscript") is not None
+
+
+def _have_docker_seacr_backend() -> bool:
+    return bool(SEACR_DOCKER_IMAGE and shutil.which("docker"))
+
+
+def _seacr_shell_backend_available() -> bool:
+    return _have_host_seacr_backend() or _have_docker_seacr_backend()
+
+
+def _run_seacr_shell(*args: str) -> None:
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+
+    if _have_host_seacr_backend():
+        subprocess.run(
+            ["bash", str(SEACR_DIR / "SEACR_1.3.sh"), *args],
+            check=True,
+            cwd=str(SEACR_DIR),
+            env=env,
+        )
+        return
+
+    if _have_docker_seacr_backend():
+        command = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{REPO_ROOT}:{REPO_ROOT}",
+            "-w",
+            str(SEACR_DIR),
+        ]
+        if os.name == "posix":
+            command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        command.extend(
+            [
+                SEACR_DOCKER_IMAGE,
+                "bash",
+                str(SEACR_DIR / "SEACR_1.3.sh"),
+                *args,
+            ]
+        )
+        subprocess.run(command, check=True, cwd=str(SEACR_DIR), env=env)
+        return
+
+    pytest.skip(
+        "SEACR shell regression tests require either host Rscript or a configured "
+        "SEACR_DOCKER_IMAGE with docker available."
+    )
+
 # ---------------------------------------------------------------------------
 # Shell SEACR tests — write peak files via the original bash script
 # ---------------------------------------------------------------------------
@@ -69,19 +124,12 @@ _TIMINGS: dict[str, float] = {}
 def test_seacr_stringent():
     BED_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    subprocess.run(
-        [
-            "bash",
-            str(SEACR_DIR / "SEACR_1.3.sh"),
-            str(EXP_BG),
-            str(CTRL_BG),
-            "norm",
-            "stringent",
-            str(BED_DIR / f"seacr_{SAMPLE_NAME}"),
-        ],
-        check=True,
-        cwd=str(SEACR_DIR),
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+    _run_seacr_shell(
+        str(EXP_BG),
+        str(CTRL_BG),
+        "norm",
+        "stringent",
+        str(BED_DIR / f"seacr_{SAMPLE_NAME}"),
     )
     _TIMINGS["shell_CTCF_stringent"] = time.perf_counter() - t0
     out = BED_DIR / f"seacr_{SAMPLE_NAME}.stringent.bed"
@@ -92,19 +140,12 @@ def test_seacr_stringent():
 def test_seacr_relaxed():
     BED_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    subprocess.run(
-        [
-            "bash",
-            str(SEACR_DIR / "SEACR_1.3.sh"),
-            str(EXP_BG),
-            str(CTRL_BG),
-            "norm",
-            "relaxed",
-            str(BED_DIR / f"seacr_{SAMPLE_NAME}"),
-        ],
-        check=True,
-        cwd=str(SEACR_DIR),
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+    _run_seacr_shell(
+        str(EXP_BG),
+        str(CTRL_BG),
+        "norm",
+        "relaxed",
+        str(BED_DIR / f"seacr_{SAMPLE_NAME}"),
     )
     _TIMINGS["shell_CTCF_relaxed"] = time.perf_counter() - t0
     out = BED_DIR / f"seacr_{SAMPLE_NAME}.relaxed.bed"
@@ -333,6 +374,11 @@ def _run_quantile_peak_call(zarr_path: Path, sample_name: str) -> Path:
 def _write_diff_report(sample_name: str, mode: str) -> Path:
     shell_file = BED_DIR / f"seacr_{sample_name}.{mode}.bed"
     py_file = PY_BED_DIR / f"{sample_name}.{mode}.bed"
+    if not shell_file.exists() and not _seacr_shell_backend_available():
+        pytest.skip(
+            "Skipping SEACR diff report because no shell backend is available "
+            "to generate reference output."
+        )
     assert shell_file.exists(), f"Shell {mode} output not found: {shell_file}"
     assert py_file.exists(), f"Python {mode} output not found: {py_file}"
 
@@ -426,19 +472,12 @@ def test_diff_report_relaxed():
 def test_seacr_sem_h3k27ac_stringent():
     BED_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    subprocess.run(
-        [
-            "bash",
-            str(SEACR_DIR / "SEACR_1.3.sh"),
-            str(SEM_H3K27AC_BG),
-            str(FDR_THRESHOLD),
-            "non",
-            "stringent",
-            str(BED_DIR / f"seacr_{SEM_H3K27AC_NAME}"),
-        ],
-        check=True,
-        cwd=str(SEACR_DIR),
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+    _run_seacr_shell(
+        str(SEM_H3K27AC_BG),
+        str(FDR_THRESHOLD),
+        "non",
+        "stringent",
+        str(BED_DIR / f"seacr_{SEM_H3K27AC_NAME}"),
     )
     _TIMINGS["shell_SEM_H3K27ac_stringent"] = time.perf_counter() - t0
     out = BED_DIR / f"seacr_{SEM_H3K27AC_NAME}.stringent.bed"
@@ -451,19 +490,12 @@ def test_seacr_sem_h3k27ac_stringent():
 def test_seacr_sem_h3k27ac_relaxed():
     BED_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    subprocess.run(
-        [
-            "bash",
-            str(SEACR_DIR / "SEACR_1.3.sh"),
-            str(SEM_H3K27AC_BG),
-            str(FDR_THRESHOLD),
-            "non",
-            "relaxed",
-            str(BED_DIR / f"seacr_{SEM_H3K27AC_NAME}"),
-        ],
-        check=True,
-        cwd=str(SEACR_DIR),
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+    _run_seacr_shell(
+        str(SEM_H3K27AC_BG),
+        str(FDR_THRESHOLD),
+        "non",
+        "relaxed",
+        str(BED_DIR / f"seacr_{SEM_H3K27AC_NAME}"),
     )
     _TIMINGS["shell_SEM_H3K27ac_relaxed"] = time.perf_counter() - t0
     out = BED_DIR / f"seacr_{SEM_H3K27AC_NAME}.relaxed.bed"
@@ -476,19 +508,12 @@ def test_seacr_sem_h3k27ac_relaxed():
 def test_seacr_sem_mll_stringent():
     BED_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    subprocess.run(
-        [
-            "bash",
-            str(SEACR_DIR / "SEACR_1.3.sh"),
-            str(SEM_MLL_BG),
-            str(FDR_THRESHOLD),
-            "non",
-            "stringent",
-            str(BED_DIR / f"seacr_{SEM_MLL_NAME}"),
-        ],
-        check=True,
-        cwd=str(SEACR_DIR),
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+    _run_seacr_shell(
+        str(SEM_MLL_BG),
+        str(FDR_THRESHOLD),
+        "non",
+        "stringent",
+        str(BED_DIR / f"seacr_{SEM_MLL_NAME}"),
     )
     _TIMINGS["shell_SEM_MLL_stringent"] = time.perf_counter() - t0
     out = BED_DIR / f"seacr_{SEM_MLL_NAME}.stringent.bed"
@@ -501,19 +526,12 @@ def test_seacr_sem_mll_stringent():
 def test_seacr_sem_mll_relaxed():
     BED_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    subprocess.run(
-        [
-            "bash",
-            str(SEACR_DIR / "SEACR_1.3.sh"),
-            str(SEM_MLL_BG),
-            str(FDR_THRESHOLD),
-            "non",
-            "relaxed",
-            str(BED_DIR / f"seacr_{SEM_MLL_NAME}"),
-        ],
-        check=True,
-        cwd=str(SEACR_DIR),
-        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+    _run_seacr_shell(
+        str(SEM_MLL_BG),
+        str(FDR_THRESHOLD),
+        "non",
+        "relaxed",
+        str(BED_DIR / f"seacr_{SEM_MLL_NAME}"),
     )
     _TIMINGS["shell_SEM_MLL_relaxed"] = time.perf_counter() - t0
     out = BED_DIR / f"seacr_{SEM_MLL_NAME}.relaxed.bed"

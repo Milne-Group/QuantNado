@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 import zarr
 import xarray as xr
+from zarr.core.dtype import VariableLengthUTF8
 
 from quantnado.dataset.core import BaseStore as AnalysisCore
 from quantnado.dataset.core import QuantNadoDataset as DatasetCore
@@ -32,7 +33,12 @@ def _make_store(tmp_path, chrom_sizes=None, sample_names=None, all_complete=True
     meta = root.require_group("metadata")
     completed = np.array([True] * len(sample_names)) if all_complete else np.array([True, False] + [True] * max(0, len(sample_names) - 2))
     meta.create_array("completed", data=completed[:len(sample_names)])
-    meta.create_array("sample_names", data=np.array(sample_names, dtype="U"))
+    sample_name_array = meta.create_array(
+        "sample_names",
+        shape=(len(sample_names),),
+        dtype=VariableLengthUTF8(),
+    )
+    sample_name_array[:] = sample_names
     root.attrs["chromsizes"] = chrom_sizes
     root.attrs["chunk_len"] = 1024
     root.attrs["sample_names"] = sample_names
@@ -136,7 +142,12 @@ class TestValidSampleIndices:
         root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([True, False]))
-        meta.create_array("sample_names", data=np.array(["s1", "s2"], dtype="U"))
+        sample_name_array = meta.create_array(
+            "sample_names",
+            shape=(2,),
+            dtype=VariableLengthUTF8(),
+        )
+        sample_name_array[:] = ["s1", "s2"]
         root.attrs["chromsizes"] = chrom_sizes
         root.attrs["chunk_len"] = 1024
         ds = cls(tmp_path / "mixed.zarr")
@@ -191,7 +202,12 @@ class TestToXarray:
         root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([True, False]))
-        meta.create_array("sample_names", data=np.array(["s1", "s2"], dtype="U"))
+        sample_name_array = meta.create_array(
+            "sample_names",
+            shape=(2,),
+            dtype=VariableLengthUTF8(),
+        )
+        sample_name_array[:] = ["s1", "s2"]
         root.attrs["chromsizes"] = {"chr1": 10}
         ds = cls(tmp_path / "inc.zarr")
         with pytest.raises(RuntimeError, match="incomplete"):
@@ -341,7 +357,12 @@ class TestExtractRegion:
         root.create_array("chr1", shape=(2, 100), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([False, True]))
-        meta.create_array("sample_names", data=np.array(["s1", "s2"], dtype="U"))
+        sample_name_array = meta.create_array(
+            "sample_names",
+            shape=(2,),
+            dtype=VariableLengthUTF8(),
+        )
+        sample_name_array[:] = ["s1", "s2"]
         root.attrs["chromsizes"] = {"chr1": 100}
         ds = AnalysisCore(tmp_path / "inc2.zarr")
         with pytest.raises(RuntimeError, match="incomplete"):
