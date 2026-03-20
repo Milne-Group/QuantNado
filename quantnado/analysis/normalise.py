@@ -142,6 +142,7 @@ def normalise(
     library_sizes: pd.Series | dict | None = None,
     feature_lengths: pd.Series | np.ndarray | None = None,
     mean_read_lengths: pd.Series | dict | None = None,
+    device: str = "cpu",
 ) -> xr.Dataset | xr.DataArray | pd.DataFrame:
     """
     Normalise coverage signal or feature counts.
@@ -214,11 +215,11 @@ def normalise(
         mean_read_lengths = pd.Series(mean_read_lengths, name="mean_read_length")
 
     if isinstance(data, pd.DataFrame):
-        return _normalise_dataframe(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths)
+        return _normalise_dataframe(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths, device=device)
     if isinstance(data, xr.Dataset):
         return _normalise_xr_dataset(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths)
     if isinstance(data, xr.DataArray):
-        return _normalise_xr_dataarray(data, method=method, lib_sizes=lib_sizes, mean_read_lengths=mean_read_lengths)
+        return _normalise_xr_dataarray(data, method=method, lib_sizes=lib_sizes, mean_read_lengths=mean_read_lengths, device=device)
 
     raise TypeError(
         f"data must be xr.Dataset, xr.DataArray, or pd.DataFrame, got {type(data).__name__}"
@@ -257,6 +258,7 @@ def _normalise_dataframe(
     method: str,
     lib_sizes: pd.Series | None,
     feature_lengths: pd.Series | np.ndarray | None,
+    device: str = "cpu",
 ) -> pd.DataFrame:
     sample_labels = list(data.columns)
 
@@ -279,6 +281,17 @@ def _normalise_dataframe(
     scale_series = pd.Series(scale, index=sample_labels)
 
     if method == "cpm":
+        if device != "cpu" and data.shape[0] > 10_000:
+            try:
+                import torch
+                mat_t = torch.from_numpy(data.to_numpy(dtype=float)).to(device)
+                scale_t = torch.from_numpy(scale_series.to_numpy(dtype=float)).to(device)
+                result_np = (mat_t / scale_t.unsqueeze(0)).cpu().numpy()
+                result = pd.DataFrame(result_np, index=data.index, columns=data.columns)
+                logger.info("Normalised DataFrame to CPM.")
+                return result
+            except Exception:
+                pass
         result = data.div(scale_series, axis=1)
         logger.info("Normalised DataFrame to CPM.")
         return result
@@ -292,6 +305,18 @@ def _normalise_dataframe(
             f"feature_lengths length ({lengths_kb.shape[0]}) does not match "
             f"data rows ({data.shape[0]})."
         )
+    if device != "cpu" and data.shape[0] > 10_000:
+        try:
+            import torch
+            mat_t = torch.from_numpy(data.to_numpy(dtype=float)).to(device)
+            scale_t = torch.from_numpy(scale_series.to_numpy(dtype=float)).to(device)
+            lengths_t = torch.from_numpy(lengths_kb).to(device)
+            result_np = ((mat_t / scale_t.unsqueeze(0)) / lengths_t.unsqueeze(1)).cpu().numpy()
+            result = pd.DataFrame(result_np, index=data.index, columns=data.columns)
+            logger.info("Normalised DataFrame to RPKM.")
+            return result
+        except Exception:
+            pass
     result = data.div(scale_series, axis=1).div(lengths_kb, axis=0)
     logger.info("Normalised DataFrame to RPKM.")
     return result
@@ -353,6 +378,7 @@ def _normalise_xr_dataarray(
     method: str,
     lib_sizes: pd.Series,
     mean_read_lengths: pd.Series | None = None,
+    device: str = "cpu",
 ) -> xr.DataArray:
     """
     Normalise a per-position / binned xr.DataArray across the sample axis.
@@ -392,8 +418,24 @@ def _normalise_xr_dataarray(
     # Find which axis is the sample axis and reshape scale for broadcasting
     sample_axis_idx = list(data.dims).index("sample")
     reshape_shape = tuple(n_samples if i == sample_axis_idx else 1 for i in range(arr.ndim))
-    scale_vec = scale.reshape(reshape_shape) if not _is_dask else da.from_array(scale, chunks=-1).reshape(reshape_shape)
-    normed_arr = arr / scale_vec
+
+    n_features = int(np.prod([data.sizes[d] for d in data.dims if d != "sample"]))
+    if device != "cpu" and n_features > 10_000:
+        try:
+            import torch
+            arr_np = arr.compute() if isinstance(arr, da.Array) else np.asarray(arr)
+            mat_t = torch.from_numpy(arr_np.astype(np.float32)).to(device)
+            scale_t = torch.from_numpy(scale.astype(np.float32)).to(device)
+            scale_reshaped = scale_t.reshape(reshape_shape)
+            normed_np = (mat_t / scale_reshaped).cpu().numpy()
+            normed_arr = normed_np
+            _is_dask = False
+        except Exception:
+            scale_vec = scale.reshape(reshape_shape) if not _is_dask else da.from_array(scale, chunks=-1).reshape(reshape_shape)
+            normed_arr = arr / scale_vec
+    else:
+        scale_vec = scale.reshape(reshape_shape) if not _is_dask else da.from_array(scale, chunks=-1).reshape(reshape_shape)
+        normed_arr = arr / scale_vec
 
     if method == "rpkm":
         # Resolve bin_size from attrs (set by extract()) or infer from coordinate spacing.
@@ -423,8 +465,21 @@ def _normalise_xr_dataarray(
         else:
             effective_lengths_kb = np.full(len(sample_labels), bin_size_bp / 1000.0, dtype=np.float64)
 
-        rl_vec = effective_lengths_kb.reshape(reshape_shape) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(reshape_shape)
-        normed_arr = normed_arr / rl_vec
+        if device != "cpu" and n_features > 10_000:
+            try:
+                import torch
+                normed_np = normed_arr if isinstance(normed_arr, np.ndarray) else (normed_arr.compute() if isinstance(normed_arr, da.Array) else np.asarray(normed_arr))
+                normed_t = torch.from_numpy(normed_np.astype(np.float32)).to(device)
+                rl_t = torch.from_numpy(effective_lengths_kb.astype(np.float32)).to(device)
+                rl_reshaped = rl_t.reshape(reshape_shape)
+                normed_arr = (normed_t / rl_reshaped).cpu().numpy()
+                _is_dask = False
+            except Exception:
+                rl_vec = effective_lengths_kb.reshape(reshape_shape) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(reshape_shape)
+                normed_arr = normed_arr / rl_vec
+        else:
+            rl_vec = effective_lengths_kb.reshape(reshape_shape) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(reshape_shape)
+            normed_arr = normed_arr / rl_vec
 
     result = data.copy(data=normed_arr).assign_attrs({**data.attrs, "normalised": method})
     logger.info(f"Normalised xr.DataArray to {method.upper()}.")
