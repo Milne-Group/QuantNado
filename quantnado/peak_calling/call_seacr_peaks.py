@@ -25,7 +25,6 @@ import numpy as np
 import pandas as pd
 import pyranges1 as pr
 from loguru import logger
-from scipy import ndimage
 
 # ── Numba JIT compilation ────────────────────────────────────────────────
 try:
@@ -126,23 +125,37 @@ def _compute_islands(cov: np.ndarray, chrom: str) -> pd.DataFrame | None:
     """Compute SEACR-style signal islands from a per-base coverage array.
 
     Each island is a maximal contiguous stretch of non-zero coverage.
-    Returns a list of dicts with keys:
+    Returns a DataFrame with columns:
         Chromosome, Start, End, AUC, MaxSignal, MaxRegion, Num
     where Num = number of distinct value runs within the island (RLE length),
     matching the bedgraph-entry count produced by the shell script's awk.
+
+    Memory-efficient: uses boundary detection via np.diff instead of
+    ndimage.label, avoiding a chromosome-length int64 labeled array.
     """
-    labeled, n_islands = ndimage.label(cov > 0)
-    if n_islands == 0:
+    mask = cov > 0
+    if not mask.any():
         return None
 
-    labels = np.arange(1, n_islands + 1)
-    aucs = ndimage.sum(cov, labeled, labels)
-    maxes = ndimage.maximum(cov, labeled, labels)
-    slices = ndimage.find_objects(labeled)
+    # Detect transitions: pad with False on both ends to catch edge islands
+    padded = np.empty(len(cov) + 2, dtype=np.bool_)
+    padded[0] = False
+    padded[1:-1] = mask
+    padded[-1] = False
+    diff = np.diff(padded.view(np.int8))
 
-    # Extract island boundaries from slices
-    starts_arr = np.array([sl[0].start for sl in slices], dtype=np.int64)
-    stops_arr = np.array([sl[0].stop for sl in slices], dtype=np.int64)
+    starts_arr = np.flatnonzero(diff == 1).astype(np.int64)
+    stops_arr = np.flatnonzero(diff == -1).astype(np.int64)
+    n_islands = len(starts_arr)
+
+    # Compute AUC and MaxSignal by iterating islands (still memory-efficient vs ndimage.label)
+    cov_f64 = cov.astype(np.float64)
+    aucs = np.empty(n_islands, dtype=np.float64)
+    maxes = np.empty(n_islands, dtype=np.float64)
+    for i in range(n_islands):
+        island_cov = cov_f64[starts_arr[i]:stops_arr[i]]
+        aucs[i] = island_cov.sum()
+        maxes[i] = island_cov.max()
 
     # Allocate output arrays for the kernel
     out_mr_start = np.empty(n_islands, dtype=np.int64)
@@ -150,7 +163,7 @@ def _compute_islands(cov: np.ndarray, chrom: str) -> pd.DataFrame | None:
     out_num = np.empty(n_islands, dtype=np.int64)
 
     # Call numba kernel to fill MaxRegion and Num in one JIT pass
-    _island_stats_kernel(cov, starts_arr, stops_arr, maxes.astype(np.float64), out_mr_start, out_mr_end, out_num)
+    _island_stats_kernel(cov.astype(np.float64), starts_arr, stops_arr, maxes, out_mr_start, out_mr_end, out_num)
 
     # Build MaxRegion coordinate strings via vectorized numpy operations
     n = n_islands
@@ -255,6 +268,8 @@ def _mode_via_kde(vec: np.ndarray, cutoff: float) -> float:
       - bandwidth = nrd0
       - n = 512 grid points
       - grid range extended by cut * bw on both sides (cut=3)
+
+    Memory-efficient: computes KDE in chunks to avoid large (512, N) outer products.
     """
     sub = np.asarray(vec[vec <= cutoff], dtype=float)
     if len(sub) == 0:
@@ -273,8 +288,14 @@ def _mode_via_kde(vec: np.ndarray, cutoff: float) -> float:
     grid = np.linspace(lo, hi, n_grid)
 
     # Gaussian kernel density estimate with explicit bandwidth, matching R's density shape.
-    u = (grid[:, None] - sub[None, :]) / bw
-    y = np.exp(-0.5 * u * u).sum(axis=1) / (len(sub) * bw * sqrt(2.0 * pi))
+    # Process sub in chunks to avoid allocating a large (512, N) matrix.
+    y = np.zeros(n_grid)
+    chunk_size = 50000
+    for i in range(0, len(sub), chunk_size):
+        chunk = sub[i:i + chunk_size]
+        u = (grid[:, None] - chunk[None, :]) / bw
+        y += np.exp(-0.5 * u * u).sum(axis=1)
+    y /= len(sub) * bw * sqrt(2.0 * pi)
     return float(grid[int(np.argmax(y))])
 
 
@@ -648,31 +669,28 @@ def _merge_nearby_islands(df: pd.DataFrame, gap: float) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def _compute_islands_for_chrom(
-    cov_chrom: np.ndarray,
-    valid_samples: list[str],
+def _compute_islands_for_sample_chrom(
+    cov: np.ndarray,
+    sample: str,
     chrom: str,
-) -> dict[str, pd.DataFrame]:
-    """Compute islands for one chromosome across all samples.
+) -> tuple[str, pd.DataFrame | None]:
+    """Compute islands for one sample and one chromosome.
 
     This is a top-level picklable function for ProcessPoolExecutor.
+    Processing one sample at a time minimizes memory usage in parallel mode.
 
     Parameters
     ----------
-    cov_chrom : (n_samples, chrom_len) numpy array, pre-read from zarr
-    valid_samples : list of sample names
+    cov : 1D coverage array for one sample on one chromosome
+    sample : sample name
     chrom : chromosome name
 
     Returns
     -------
-    dict[str, DataFrame] : sample -> islands DataFrame
+    tuple[str, DataFrame | None] : (sample, islands_df)
     """
-    result = {}
-    for i, sample in enumerate(valid_samples):
-        islands_df = _compute_islands(cov_chrom[i], chrom)
-        if islands_df is not None:
-            result[sample] = islands_df
-    return result
+    islands_df = _compute_islands(cov, chrom)
+    return sample, islands_df
 
 # ---------------------------------------------------------------------------
 # Main public function
@@ -753,42 +771,46 @@ def call_seacr_peaks_from_zarr(
     islands_by_sample: dict[str, list[pd.DataFrame]] = {s: [] for s in valid_samples}
 
     if n_workers == 1:
-        # Sequential chromosome processing
+        # Sequential chromosome processing, one sample at a time (memory-efficient)
         for chrom, chrom_len in chromsizes.items():
             if chrom not in store.chromosomes:
                 continue
             logger.debug(f"Computing islands for {chrom} ({chrom_len:,} bp)")
             chrom_arr = store.root[chrom]
-            cov = chrom_arr[valid_indices, :chrom_len].astype(np.float32)
 
-            for i, sample in enumerate(valid_samples):
-                islands_df = _compute_islands(cov[i], chrom)
+            for idx, sample in zip(valid_indices, valid_samples):
+                # Load and process one sample per chromosome to avoid large memory allocation
+                cov = chrom_arr[idx:idx+1, :chrom_len].astype(np.float32).ravel()
+                islands_df = _compute_islands(cov, chrom)
                 if islands_df is not None:
                     islands_by_sample[sample].append(islands_df)
     else:
-        # Parallel chromosome processing via ProcessPoolExecutor
+        # Parallel processing via ProcessPoolExecutor (one sample-chromosome per task)
         from concurrent.futures import ProcessPoolExecutor
 
-        # Pre-read all chromosome data
-        chrom_data_list = []
-        chroms_to_process = []
+        # Build task list: (sample_idx, sample_name, chrom, chrom_len)
+        tasks = []
         for chrom, chrom_len in chromsizes.items():
             if chrom not in store.chromosomes:
                 continue
-            chrom_arr = store.root[chrom]
-            cov = chrom_arr[valid_indices, :chrom_len].astype(np.float32)
-            chrom_data_list.append((cov, chrom))
-            chroms_to_process.append(chrom)
+            for sample_idx, sample in zip(valid_indices, valid_samples):
+                tasks.append((sample_idx, sample, chrom, chrom_len))
 
         # Submit futures
+        chrom_arr_cache = {}  # cache zarr arrays to avoid re-opening
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = [
-                executor.submit(_compute_islands_for_chrom, cov, valid_samples, chrom)
-                for cov, chrom in chrom_data_list
-            ]
+            futures = {}
+            for sample_idx, sample, chrom, chrom_len in tasks:
+                if chrom not in chrom_arr_cache:
+                    chrom_arr_cache[chrom] = store.root[chrom]
+                chrom_arr = chrom_arr_cache[chrom]
+                cov = chrom_arr[sample_idx:sample_idx+1, :chrom_len].astype(np.float32).ravel()
+                future = executor.submit(_compute_islands_for_sample_chrom, cov, sample, chrom)
+                futures[future] = sample
+
             for future in futures:
-                chrom_islands_dict = future.result()
-                for sample, islands_df in chrom_islands_dict.items():
+                sample, islands_df = future.result()
+                if islands_df is not None:
                     islands_by_sample[sample].append(islands_df)
 
     # -------------- load control islands --------------
@@ -809,9 +831,13 @@ def call_seacr_peaks_from_zarr(
                 if chrom not in ctrl_store.chromosomes:
                     continue
                 ctrl_arr = ctrl_store.root[chrom]
-                ctrl_cov = ctrl_arr[ctrl_indices, :chrom_len].astype(np.float32)
-                # Average across control samples before island-calling
-                islands_df = _compute_islands(ctrl_cov.mean(axis=0), chrom)
+                # Load control samples one at a time and average to minimize memory
+                ctrl_mean = np.zeros(chrom_len, dtype=np.float64)
+                for idx in ctrl_indices:
+                    ctrl_mean += ctrl_arr[idx:idx+1, :chrom_len].astype(np.float64).ravel()
+                ctrl_mean /= len(ctrl_indices)
+                # Call islands on averaged control signal
+                islands_df = _compute_islands(ctrl_mean.astype(np.float32), chrom)
                 if islands_df is not None:
                     ctrl_islands_parts.append(islands_df)
 

@@ -33,7 +33,7 @@ logger.remove()
 logger.add(lambda msg: print(msg, flush=True), level="INFO")
 
 SEACR_DIR = Path(__file__).parent / "seacr_data"
-TESTFILES = SEACR_DIR / "Testfiles"
+TESTFILES = Path(__file__).parent.parent / "data" / "seacr"
 EXP_BG = TESTFILES / "CTCF_DE_chr1_100Mb.bedgraph.txt"
 CTRL_BG = TESTFILES / "IgG_DE_chr1_100Mb.bedgraph.txt"
 SEM_H3K27AC_BG = TESTFILES / "CT-SEM_H3K27ac_chr7_9_13.bdg"

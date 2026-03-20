@@ -55,6 +55,7 @@ dev = [
     "pymdown-extensions==10.21",
     "pytest==9.0.2",
     "pytest-cov==7.0.0",
+    "pytest-xdist>=3.0",
     "ruff==0.15.4",
 ]
 example = [
