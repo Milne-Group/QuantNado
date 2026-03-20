@@ -735,6 +735,7 @@ class QuantNado:
         anchor: AnchorPoint | str = AnchorPoint.MIDPOINT,
         bin_size: int | None = None,
         bin_agg: ReductionMethod | str = ReductionMethod.MEAN,
+        n_bins: int | None = None,
         filter_incomplete: bool = True,
         modality: str | None = None,
         variable: str | None = None,
@@ -770,6 +771,9 @@ class QuantNado:
             Aggregate positions into bins of this size.
         bin_agg : ReductionMethod or str, default "mean"
             Aggregation method for binning (coverage only).
+        n_bins : int, optional
+            Resample each extracted interval to exactly this many bins.
+            Mutually exclusive with ``bin_size``.
         filter_incomplete : bool, default True
             Exclude samples not yet marked complete (coverage only).
         modality : {"coverage", "methylation"}, optional
@@ -800,6 +804,25 @@ class QuantNado:
         if modality == "methylation":
             if self.methylation is None:
                 raise RuntimeError("No methylation store available.")
+            methyl_bin_size = bin_size if bin_size is not None else 50
+            if n_bins is not None:
+                if bin_size is not None:
+                    raise ValueError("n_bins and bin_size are mutually exclusive")
+                if n_bins <= 0:
+                    raise ValueError("n_bins must be a positive integer")
+                if upstream is not None or downstream is not None:
+                    total_width = (upstream or 0) + (downstream or 0)
+                elif fixed_width is not None:
+                    total_width = fixed_width
+                else:
+                    raise ValueError(
+                        "n_bins for methylation requires fixed_width or upstream/downstream"
+                    )
+                if total_width % n_bins != 0:
+                    raise ValueError(
+                        f"Total window ({total_width}) must be divisible by n_bins ({n_bins})"
+                    )
+                methyl_bin_size = total_width // n_bins
             return self.methylation.extract(
                 intervals_path=intervals_path,
                 ranges_df=ranges_df,
@@ -810,7 +833,7 @@ class QuantNado:
                 downstream=downstream,
                 fixed_width=fixed_width,
                 anchor=anchor if isinstance(anchor, str) else anchor.value,
-                bin_size=bin_size if bin_size is not None else 50,
+                bin_size=methyl_bin_size,
                 samples=samples,
             )
 
@@ -833,6 +856,7 @@ class QuantNado:
             anchor=anchor,
             bin_size=bin_size,
             bin_agg=bin_agg,
+            n_bins=n_bins,
             include_incomplete=not filter_incomplete,
             sample_indices=_sample_indices,
             strand_aware=strand_aware,
