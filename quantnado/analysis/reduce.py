@@ -246,6 +246,7 @@ def _reduce_byranges_prefix(
 	data: xr.DataArray | np.ndarray | da.Array,
 	*,
 	min_count: int = 1,
+	device: str = "cpu",
 ) -> dict[str, da.Array]:
 	"""
 	Reduce ranges via prefix sums (efficient for large range sets).
@@ -281,6 +282,31 @@ def _reduce_byranges_prefix(
 	# NaN-aware reductions require a floating dtype.
 	if not np.issubdtype(arr.dtype, np.floating):
 		arr = arr.astype(np.float32)
+
+	if device != "cpu":
+		try:
+			import torch
+			arr_np = arr.compute() if isinstance(arr, da.Array) else np.asarray(arr)
+			t = torch.from_numpy(arr_np.astype(np.float32)).to(device)
+			zero_row = torch.zeros((1, t.shape[1]), dtype=t.dtype, device=device)
+			nan_mask = torch.isnan(t)
+			values_t = torch.nan_to_num(t, nan=0.0)
+			mask_t = (~nan_mask).to(torch.int64)
+			sum_pref_t = torch.cat([zero_row, torch.cumsum(values_t, dim=0)], dim=0)
+			count_pref_t = torch.cat(
+				[torch.zeros((1, t.shape[1]), dtype=torch.int64, device=device), torch.cumsum(mask_t, dim=0)],
+				dim=0,
+			)
+			sums_np = (sum_pref_t[ends] - sum_pref_t[starts]).cpu().numpy()
+			counts_np = (count_pref_t[ends] - count_pref_t[starts]).cpu().numpy()
+			with np.errstate(invalid="ignore"):
+				means_np = np.where(counts_np >= min_count, sums_np / counts_np, np.nan)
+			sums_da = da.from_array(sums_np, chunks=sums_np.shape)
+			counts_da = da.from_array(counts_np.astype(np.int64), chunks=counts_np.shape)
+			means_da = da.from_array(means_np, chunks=means_np.shape)
+			return {"sum": sums_da, "count": counts_da, "mean": means_da}
+		except Exception:
+			pass
 
 	is_float = np.issubdtype(arr.dtype, np.floating)
 	# Prepare value and mask arrays for prefix sums.
@@ -320,6 +346,7 @@ def _reduce_ranges_vectorized(
 	starts: np.ndarray,
 	ends: np.ndarray,
 	reduction: str,
+	device: str = "cpu",
 ) -> da.Array:
 	"""
 	Reduce ranges using vectorized operations (max/min/median).
@@ -369,6 +396,25 @@ def _reduce_ranges_vectorized(
 	mask = offsets[None, :] < lengths[:, None]
 	mask_da = da.from_array(mask, chunks=(min(mask.shape[0], 256), mask.shape[1]))
 	masked = da.where(mask_da[:, :, None], gathered, np.nan)
+
+	if device != "cpu":
+		try:
+			import torch
+			gathered_np = masked.compute() if isinstance(masked, da.Array) else np.asarray(masked)
+			g_t = torch.from_numpy(gathered_np.astype(np.float32)).to(device)
+			if reduction == "max":
+				result_np = torch.amax(g_t, dim=1).cpu().numpy()
+			elif reduction == "min":
+				result_np = torch.amin(g_t, dim=1).cpu().numpy()
+			elif reduction == "median":
+				result_np = torch.nanmedian(g_t, dim=1).values.cpu().numpy()
+			elif reduction == "sum":
+				result_np = torch.nansum(g_t, dim=1).cpu().numpy()
+			else:
+				raise ValueError(f"Unknown reduction: {reduction}")
+			return da.from_array(result_np, chunks=result_np.shape)
+		except Exception:
+			pass
 
 	if reduction == "max":
 		return da.nanmax(masked, axis=1)

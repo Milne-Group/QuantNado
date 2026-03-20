@@ -46,6 +46,9 @@ lanceotron = [
     "torch>=2.0",
     "scipy>=1.10",
 ]
+gpu = [
+    "torch>=2.0",
+]
 dev = [
     "mkdocs-material==9.7.4",
     "mkdocs>=1.6,<2.0",

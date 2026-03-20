@@ -22,5 +22,10 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-extras
 
+      - name: Build SEACR test image
+        run: docker build -f tests/integration/seacr_data/Dockerfile -t quantnado-seacr-test:local .
+
       - name: Run tests
+        env:
+          SEACR_DOCKER_IMAGE: quantnado-seacr-test:local
         run: uv run pytest tests

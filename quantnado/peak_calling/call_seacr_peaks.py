@@ -148,14 +148,18 @@ def _compute_islands(cov: np.ndarray, chrom: str) -> pd.DataFrame | None:
     stops_arr = np.flatnonzero(diff == -1).astype(np.int64)
     n_islands = len(starts_arr)
 
-    # Compute AUC and MaxSignal by iterating islands (still memory-efficient vs ndimage.label)
+    # Compute AUC via prefix sum (O(N) vectorized, avoids Python loop)
     cov_f64 = cov.astype(np.float64)
-    aucs = np.empty(n_islands, dtype=np.float64)
-    maxes = np.empty(n_islands, dtype=np.float64)
-    for i in range(n_islands):
-        island_cov = cov_f64[starts_arr[i]:stops_arr[i]]
-        aucs[i] = island_cov.sum()
-        maxes[i] = island_cov.max()
+    prefix = np.empty(len(cov_f64) + 1, dtype=np.float64)
+    prefix[0] = 0.0
+    np.cumsum(cov_f64, out=prefix[1:])
+    aucs = prefix[stops_arr] - prefix[starts_arr]
+
+    # Compute MaxSignal by concatenating island coverages and using reduceat (vectorized)
+    island_sizes = stops_arr - starts_arr
+    compact_starts = np.r_[0, np.cumsum(island_sizes[:-1])]
+    compact_cov = np.concatenate([cov_f64[s:e] for s, e in zip(starts_arr, stops_arr)])
+    maxes = np.maximum.reduceat(compact_cov, compact_starts)
 
     # Allocate output arrays for the kernel
     out_mr_start = np.empty(n_islands, dtype=np.int64)
@@ -260,7 +264,7 @@ def _nrd0_bandwidth(vec: np.ndarray) -> float:
     return float(0.9 * scale * (n ** (-0.2)))
 
 
-def _mode_via_kde(vec: np.ndarray, cutoff: float) -> float:
+def _mode_via_kde(vec: np.ndarray, cutoff: float, device: str = "cpu") -> float:
     """Estimate the mode of vec[vec <= cutoff] to mirror R density().
 
     This uses the same defaults as R's density():
@@ -269,7 +273,9 @@ def _mode_via_kde(vec: np.ndarray, cutoff: float) -> float:
       - n = 512 grid points
       - grid range extended by cut * bw on both sides (cut=3)
 
-    Memory-efficient: computes KDE in chunks to avoid large (512, N) outer products.
+    When *device* is not 'cpu' and torch is available, the Gaussian kernel
+    accumulation is performed on the GPU for large arrays.  Falls back to the
+    NumPy chunked path on any error.
     """
     sub = np.asarray(vec[vec <= cutoff], dtype=float)
     if len(sub) == 0:
@@ -287,8 +293,24 @@ def _mode_via_kde(vec: np.ndarray, cutoff: float) -> float:
     hi = float(sub.max()) + cut * bw
     grid = np.linspace(lo, hi, n_grid)
 
-    # Gaussian kernel density estimate with explicit bandwidth, matching R's density shape.
-    # Process sub in chunks to avoid allocating a large (512, N) matrix.
+    if device != "cpu":
+        try:
+            import torch
+
+            grid_t = torch.from_numpy(grid.astype(np.float32)).to(device)
+            y_t = torch.zeros(n_grid, device=device, dtype=torch.float32)
+            chunk_size = 50000
+            for i in range(0, len(sub), chunk_size):
+                chunk_t = torch.from_numpy(sub[i : i + chunk_size].astype(np.float32)).to(device)
+                u = (grid_t.unsqueeze(1) - chunk_t.unsqueeze(0)) / bw
+                y_t += torch.exp(-0.5 * u * u).sum(dim=1)
+            y = y_t.cpu().numpy().astype(np.float64)
+            y /= len(sub) * bw * sqrt(2.0 * pi)
+            return float(grid[int(np.argmax(y))])
+        except Exception as exc:
+            logger.debug(f"GPU KDE failed ({exc}); using numpy fallback.")
+
+    # NumPy chunked path (CPU)
     y = np.zeros(n_grid)
     chunk_size = 50000
     for i in range(0, len(sub), chunk_size):
@@ -299,12 +321,12 @@ def _mode_via_kde(vec: np.ndarray, cutoff: float) -> float:
     return float(grid[int(np.argmax(y))])
 
 
-def _compute_norm_constant(expvec: np.ndarray, ctrlvec: np.ndarray) -> float:
+def _compute_norm_constant(expvec: np.ndarray, ctrlvec: np.ndarray, device: str = "cpu") -> float:
     """Return the normalisation constant (exp_mode / ctrl_mode) à la SEACR."""
     exp_cutoff = _lorenz_peak_value(expvec)
     ctrl_cutoff = _lorenz_peak_value(ctrlvec)
-    exp_mode = _mode_via_kde(expvec, exp_cutoff)
-    ctrl_mode = _mode_via_kde(ctrlvec, ctrl_cutoff)
+    exp_mode = _mode_via_kde(expvec, exp_cutoff, device=device)
+    ctrl_mode = _mode_via_kde(ctrlvec, ctrl_cutoff, device=device)
     if ctrl_mode == 0:
         logger.warning("Control mode is 0; skipping normalisation.")
         return 1.0
@@ -427,6 +449,7 @@ def _thresholds_from_control(
     ctrl_auc: np.ndarray,
     ctrl_num: np.ndarray,
     norm: bool,
+    device: str = "cpu",
 ) -> tuple[float, float, float, float | None]:
     """
     Compute (x0_stringent, z0_relaxed, d0_num, norm_constant) from control data.
@@ -436,7 +459,7 @@ def _thresholds_from_control(
     norm_constant: float | None = None
 
     if norm:
-        norm_constant = _compute_norm_constant(exp_auc, ctrl_auc)
+        norm_constant = _compute_norm_constant(exp_auc, ctrl_auc, device=device)
         ctrl_auc = ctrl_auc * norm_constant
         logger.debug(f"\nSEACR normalisation constant: {norm_constant:.4f}")
 
@@ -706,6 +729,7 @@ def call_seacr_peaks_from_zarr(
     stringency: str = "stringent",
     blacklist_file: Optional[Path] = None,
     n_workers: int = 1,
+    device: str | None = None,
 ) -> list[str]:
     """Call SEACR peaks from a QuantNado zarr coverage store (pure Python).
 
@@ -737,10 +761,13 @@ def call_seacr_peaks_from_zarr(
         Number of parallel processes for chromosome-level island computation (default: 1).
     """
     from ..dataset.store_bam import BamStore
+    from ._device import get_device as _get_device
 
     zarr_path = Path(zarr_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_device = _get_device(device)
 
     if stringency not in ("stringent", "relaxed"):
         raise ValueError(f"stringency must be 'stringent' or 'relaxed', got {stringency!r}")
@@ -870,6 +897,7 @@ def call_seacr_peaks_from_zarr(
                 ctrl_auc_arr,
                 ctrl_num_arr,
                 norm=(norm == "norm"),
+                device=resolved_device,
             )
             # Normalize control AUC for filtering (matches shell awk: the control bed
             # is multiplied by the norm constant *before* the AUC > thresh filter)

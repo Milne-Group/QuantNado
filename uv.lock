@@ -2469,7 +2469,7 @@ wheels = [
 
 [[package]]
 name = "quantnado"
-version = "0.4.4.dev47"
+version = "0.4.4.dev49"
 source = { editable = "." }
 dependencies = [
     { name = "bamnado" },
@@ -2508,6 +2508,9 @@ example = [
     { name = "ipykernel" },
     { name = "jupyterlab" },
 ]
+gpu = [
+    { name = "torch" },
+]
 lanceotron = [
     { name = "scipy" },
     { name = "torch" },
@@ -2545,6 +2548,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'lanceotron'", specifier = ">=1.10" },
     { name = "seaborn", specifier = ">=0.13" },
     { name = "sparse", specifier = ">=0.18" },
+    { name = "torch", marker = "extra == 'gpu'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'lanceotron'", specifier = ">=2.0" },
     { name = "tqdm", specifier = ">=4.67" },
     { name = "typer", specifier = ">=0.24" },

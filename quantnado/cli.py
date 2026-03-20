@@ -71,6 +71,7 @@ def call_peaks(
     smooth_window: int = typer.Option(400, "--smooth-window", help="[lanceotron] Rolling mean window for candidate detection (bp)"),
     lanceotron_batch_size: int = typer.Option(512, "--batch-size", help="[lanceotron] Inference batch size"),
     # shared
+    device: str | None = typer.Option(None, "--device", help="Compute device: 'cuda', 'mps', 'cpu', or None for auto-detect (seacr/lanceotron only)"),
     n_workers: int = typer.Option(1, "--n-workers", help="Number of parallel workers for peak calling (seacr/lanceotron only)"),
     log_file: Path = typer.Option("quantnado_peaks.log", "--log-file", help="Path to the log file"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
@@ -108,6 +109,7 @@ def call_peaks(
                 stringency=stringency,
                 blacklist_file=blacklist,
                 n_workers=n_workers,
+                device=device,
             )
         elif method == "lanceotron":
             from quantnado.peak_calling.call_lanceotron_peaks import call_lanceotron_peaks_from_zarr
@@ -120,6 +122,7 @@ def call_peaks(
                 smooth_window=smooth_window,
                 batch_size=lanceotron_batch_size,
                 n_workers=n_workers,
+                device=device,
             )
         else:
             logger.error(f"Unknown method '{method}'. Choose 'quantile', 'seacr', or 'lanceotron'.")

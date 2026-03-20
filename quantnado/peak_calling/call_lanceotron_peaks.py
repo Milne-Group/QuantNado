@@ -215,8 +215,8 @@ def _load_scalers() -> tuple[
     return (wide_mean, wide_scale), (deep_mean, deep_scale)
 
 
-def _load_model():
-    """Build LanceOtronModel and load pre-trained weights."""
+def _load_model(device: str = "cpu"):
+    """Build LanceOtronModel and load pre-trained weights, then move to *device*."""
     import torch
 
     _check_static_assets()
@@ -225,6 +225,11 @@ def _load_model():
     state = torch.load(STATIC_DIR / "lanceotron_v5_03.pt", weights_only=True)
     model.load_state_dict(state)
     model.eval()
+    try:
+        model = model.to(device)
+    except Exception as exc:
+        logger.warning(f"Failed to move model to {device} ({exc}); falling back to CPU.")
+        model = model.to("cpu")
     return model
 
 
@@ -244,8 +249,29 @@ def _rpkm_normalise(cov: np.ndarray, total_reads: int) -> np.ndarray:
     return (cov.astype(np.float64) * 1e9 / total_reads).astype(np.float32)
 
 
-def _rolling_mean(arr: np.ndarray, window: int) -> np.ndarray:
-    """Fast uniform rolling mean using scipy.ndimage."""
+def _rolling_mean(arr: np.ndarray, window: int, device: str = "cpu") -> np.ndarray:
+    """Fast uniform rolling mean.
+
+    Uses torch.nn.functional.avg_pool1d on GPU/MPS devices (faster for large
+    chromosome-length arrays); falls back to scipy.ndimage on CPU.
+    """
+    if device != "cpu":
+        try:
+            import torch
+            import torch.nn.functional as F
+
+            t = torch.from_numpy(arr.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(device)
+            # replicate padding matches scipy nearest mode
+            t = F.pad(t, (window // 2, window // 2), mode="replicate")
+            result = F.avg_pool1d(t, kernel_size=window, stride=1).squeeze().cpu().numpy()
+            # avg_pool1d may be 1 element short when window is even; trim/pad to match
+            if result.shape[0] < arr.shape[0]:
+                result = np.pad(result, (0, arr.shape[0] - result.shape[0]), mode="edge")
+            elif result.shape[0] > arr.shape[0]:
+                result = result[: arr.shape[0]]
+            return result
+        except Exception as exc:
+            logger.debug(f"GPU rolling mean failed ({exc}); using scipy fallback.")
     return ndimage.uniform_filter1d(arr.astype(np.float32), size=window, mode="nearest")
 
 
@@ -498,6 +524,7 @@ def _normalise_features(
     wide_scale: np.ndarray,
     deep_mean: np.ndarray,
     deep_scale: np.ndarray,
+    device: str = "cpu",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Two-pass normalisation matching the original LanceOtron preprocessing.
 
@@ -509,9 +536,31 @@ def _normalise_features(
     Wide:
         (X_wide - wide_mean) / wide_scale
     """
+    if device != "cpu":
+        try:
+            import torch
+
+            # Use float64 for numerically sensitive z-score step, matching CPU path
+            d = torch.from_numpy(X_deep.astype(np.float64)).to(device)  # (n, 2000)
+            # Step 1: per-peak z-score
+            peak_mean = d.mean(dim=1, keepdim=True)
+            peak_std = d.std(dim=1, keepdim=True) + 1e-8
+            d = (d - peak_mean) / peak_std
+            # Step 2: pre-trained scaler
+            dm = torch.from_numpy(deep_mean.astype(np.float64)).to(device)
+            ds = torch.from_numpy(deep_scale.astype(np.float64)).to(device) + 1e-8
+            d = (d - dm) / ds
+            X_deep_norm = d.cpu().numpy().astype(np.float32)
+
+            w = torch.from_numpy(X_wide.astype(np.float64)).to(device)
+            wm = torch.from_numpy(wide_mean.astype(np.float64)).to(device)
+            ws = torch.from_numpy(wide_scale.astype(np.float64)).to(device) + 1e-8
+            X_wide_norm = ((w - wm) / ws).cpu().numpy().astype(np.float32)
+            return X_deep_norm, X_wide_norm
+        except Exception as exc:
+            logger.debug(f"GPU normalise_features failed ({exc}); using numpy fallback.")
+
     # ── Deep step 1: per-sample z-score ──────────────────────────────────
-    # Per-peak z-score: (n_peaks, 2000) → mean/std over axis=1 → (n_peaks, 1)
-    # Avoids double transpose — same semantics, no copy
     peak_mean = X_deep.mean(axis=1, keepdims=True).astype(np.float64)  # (n_peaks, 1)
     peak_std = X_deep.std(axis=1, keepdims=True).astype(np.float64) + 1e-8
     X_deep_norm = ((X_deep.astype(np.float64) - peak_mean) / peak_std).astype(np.float32)
@@ -535,6 +584,7 @@ def _score_candidates(
     X_wide: np.ndarray,
     model,
     batch_size: int = 512,
+    device: str = "cpu",
 ) -> np.ndarray:
     """Run batched inference. Returns (n_peaks, 3): overall, shape, enrichment scores.
 
@@ -547,8 +597,8 @@ def _score_candidates(
 
     with torch.no_grad():
         for i in range(0, n, batch_size):
-            d = torch.from_numpy(X_deep[i : i + batch_size])
-            w = torch.from_numpy(X_wide[i : i + batch_size])
+            d = torch.from_numpy(X_deep[i : i + batch_size]).to(device)
+            w = torch.from_numpy(X_wide[i : i + batch_size]).to(device)
             overall, shape, enrich = model(d, w)
             scores[i : i + batch_size, 0] = overall[:, 0].cpu().numpy()
             scores[i : i + batch_size, 1] = shape[:, 0].cpu().numpy()
@@ -573,9 +623,10 @@ def _process_chromosome(
     smooth_window: int,
     initial_threshold_factor: float,
     batch_size: int,
+    device: str = "cpu",
 ) -> list[dict]:
     """Run the full LanceOtron pipeline on one chromosome's coverage array."""
-    smooth = _rolling_mean(norm_cov, smooth_window)
+    smooth = _rolling_mean(norm_cov, smooth_window, device=device)
     chrom_mean = float(smooth.mean())
     if chrom_mean == 0:
         logger.debug(f"  [{chrom}] skipping — zero coverage")
@@ -593,8 +644,9 @@ def _process_chromosome(
         X_deep, X_wide,
         wide_mean=wide_scaler[0], wide_scale=wide_scaler[1],
         deep_mean=deep_scaler[0], deep_scale=deep_scaler[1],
+        device=device,
     )
-    scores = _score_candidates(X_deep_n, X_wide_n, model, batch_size)
+    scores = _score_candidates(X_deep_n, X_wide_n, model, batch_size, device=device)
 
     peaks = []
     for (start, end), score_row in zip(candidates, scores):
@@ -629,6 +681,7 @@ def _process_one_sample(
     smooth_window: int,
     initial_threshold_factor: float,
     batch_size: int,
+    device: str = "cpu",
 ) -> list[dict]:
     """Process one sample across all chromosomes.
 
@@ -660,6 +713,7 @@ def _process_one_sample(
             smooth_window=smooth_window,
             initial_threshold_factor=initial_threshold_factor,
             batch_size=batch_size,
+            device=device,
         )
         all_peaks.extend(peaks)
 
@@ -679,6 +733,7 @@ def call_lanceotron_peaks_from_zarr(
     initial_threshold_factor: float = INITIAL_THRESHOLD_FACTOR,
     batch_size: int = 512,
     n_workers: int = 1,
+    device: str | None = None,
 ) -> list[str]:
     """Call LanceOtron peaks from a QuantNado zarr coverage store.
 
@@ -714,19 +769,17 @@ def call_lanceotron_peaks_from_zarr(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── resolve device ────────────────────────────────────────────────────
+    from ._device import get_device as _get_device
+    resolved_device = _get_device(device)
+    if resolved_device != "cpu":
+        logger.info(f"GPU detected ({resolved_device}); forcing n_workers=1 for thread safety")
+        n_workers = 1
+
     # ── load assets ──────────────────────────────────────────────────────
     logger.info("Loading LanceOtron model and scaler assets …")
-    model = _load_model()
+    model = _load_model(resolved_device)
     wide_scaler, deep_scaler = _load_scalers()
-
-    # ── Check for GPU and force n_workers=1 if available ──────────────────
-    try:
-        import torch
-        if torch.cuda.is_available():
-            logger.info("GPU detected; forcing n_workers=1 for thread safety")
-            n_workers = 1
-    except (ImportError, AttributeError):
-        pass
 
     # ── open dataset ─────────────────────────────────────────────────────
     ds = QuantNadoDataset(zarr_path)
@@ -795,6 +848,7 @@ def call_lanceotron_peaks_from_zarr(
                 smooth_window=smooth_window,
                 initial_threshold_factor=initial_threshold_factor,
                 batch_size=batch_size,
+                device=resolved_device,
             )
             out_path = _write_sample_peaks(sample, all_peaks, blacklist_pr)
             if out_path:
@@ -819,6 +873,7 @@ def call_lanceotron_peaks_from_zarr(
                     smooth_window=smooth_window,
                     initial_threshold_factor=initial_threshold_factor,
                     batch_size=batch_size,
+                    device=resolved_device,
                 ): sample for sample in valid_samples
             }
             # Collect results as they complete

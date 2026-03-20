@@ -73,6 +73,7 @@ def metaplot(
     figsize: "tuple[float, float]" = (8, 4),
     ax: "plt.Axes | None" = None,
     filepath: "str | Path | None" = None,
+    device: str = "cpu",
 ) -> "plt.Axes":
     """
     Plot a metagene profile from the output of ``qn.extract()``.
@@ -265,11 +266,40 @@ def metaplot(
 
         colors = _resolve_palette(palette, len(sample_labels), labels=sample_labels)
         n_intervals = data.sizes["interval"]
-        mean_profile = data.mean(dim="interval")  # (position, sample)
-        std_profile = data.std(dim="interval")    # (position, sample)
-        if data_rev is not None:
-            mean_profile_rev = data_rev.mean(dim="interval")
-            std_profile_rev = data_rev.std(dim="interval")
+        if device != "cpu":
+            try:
+                import torch
+                _data_np = data.values if not hasattr(data.data, "compute") else data.compute().values
+                _t = torch.from_numpy(_data_np.astype(np.float32)).to(device)
+                _interval_dim = list(data.dims).index("interval")
+                _mean_np = _t.mean(dim=_interval_dim).cpu().numpy()
+                _std_np = _t.std(dim=_interval_dim).cpu().numpy()
+                _remaining_dims = [d for d in data.dims if d != "interval"]
+                _remaining_coords = {d: data.coords[d] for d in _remaining_dims if d in data.coords}
+                mean_profile = xr.DataArray(_mean_np, dims=_remaining_dims, coords=_remaining_coords)
+                std_profile = xr.DataArray(_std_np, dims=_remaining_dims, coords=_remaining_coords)
+                if data_rev is not None:
+                    _data_rev_np = data_rev.values if not hasattr(data_rev.data, "compute") else data_rev.compute().values
+                    _t_rev = torch.from_numpy(_data_rev_np.astype(np.float32)).to(device)
+                    _interval_dim_rev = list(data_rev.dims).index("interval")
+                    _mean_rev_np = _t_rev.mean(dim=_interval_dim_rev).cpu().numpy()
+                    _std_rev_np = _t_rev.std(dim=_interval_dim_rev).cpu().numpy()
+                    _remaining_dims_rev = [d for d in data_rev.dims if d != "interval"]
+                    _remaining_coords_rev = {d: data_rev.coords[d] for d in _remaining_dims_rev if d in data_rev.coords}
+                    mean_profile_rev = xr.DataArray(_mean_rev_np, dims=_remaining_dims_rev, coords=_remaining_coords_rev)
+                    std_profile_rev = xr.DataArray(_std_rev_np, dims=_remaining_dims_rev, coords=_remaining_coords_rev)
+            except Exception:
+                mean_profile = data.mean(dim="interval")
+                std_profile = data.std(dim="interval")
+                if data_rev is not None:
+                    mean_profile_rev = data_rev.mean(dim="interval")
+                    std_profile_rev = data_rev.std(dim="interval")
+        else:
+            mean_profile = data.mean(dim="interval")  # (position, sample)
+            std_profile = data.std(dim="interval")    # (position, sample)
+            if data_rev is not None:
+                mean_profile_rev = data_rev.mean(dim="interval")
+                std_profile_rev = data_rev.std(dim="interval")
 
         for sample, color in zip(sample_labels, colors):
             y = mean_profile.sel(sample=sample).values
@@ -1038,6 +1068,7 @@ def correlate(
     figsize: "tuple[float, float]" = (6, 6),
     title: str = "Sample–sample correlation",
     filepath: "str | Path | None" = None,
+    device: str = "cpu",
 ) -> "tuple[pd.DataFrame, Any]":
     """
     Compute and plot a sample–sample correlation matrix.
@@ -1113,7 +1144,15 @@ def correlate(
         )
 
     if method == "pearson":
-        corr = np.corrcoef(mat.T)
+        if device != "cpu":
+            try:
+                import torch
+                t = torch.from_numpy(mat.astype(np.float32)).to(device)
+                corr = torch.corrcoef(t.T).cpu().numpy()
+            except Exception:
+                corr = np.corrcoef(mat.T)
+        else:
+            corr = np.corrcoef(mat.T)
     else:
         corr, _ = spearmanr(mat)
         if corr.ndim == 0:  # single sample edge case
