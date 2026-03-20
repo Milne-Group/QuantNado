@@ -73,6 +73,7 @@ def metaplot(
     figsize: "tuple[float, float]" = (8, 4),
     ax: "plt.Axes | None" = None,
     filepath: "str | Path | None" = None,
+    device: str = "cpu",
 ) -> "plt.Axes":
     """
     Plot a metagene profile from the output of ``qn.extract()``.
@@ -265,11 +266,40 @@ def metaplot(
 
         colors = _resolve_palette(palette, len(sample_labels), labels=sample_labels)
         n_intervals = data.sizes["interval"]
-        mean_profile = data.mean(dim="interval")  # (position, sample)
-        std_profile = data.std(dim="interval")    # (position, sample)
-        if data_rev is not None:
-            mean_profile_rev = data_rev.mean(dim="interval")
-            std_profile_rev = data_rev.std(dim="interval")
+        if device != "cpu":
+            try:
+                import torch
+                _data_np = data.values if not hasattr(data.data, "compute") else data.compute().values
+                _t = torch.from_numpy(_data_np.astype(np.float32)).to(device)
+                _interval_dim = list(data.dims).index("interval")
+                _mean_np = _t.mean(dim=_interval_dim).cpu().numpy()
+                _std_np = _t.std(dim=_interval_dim).cpu().numpy()
+                _remaining_dims = [d for d in data.dims if d != "interval"]
+                _remaining_coords = {d: data.coords[d] for d in _remaining_dims if d in data.coords}
+                mean_profile = xr.DataArray(_mean_np, dims=_remaining_dims, coords=_remaining_coords)
+                std_profile = xr.DataArray(_std_np, dims=_remaining_dims, coords=_remaining_coords)
+                if data_rev is not None:
+                    _data_rev_np = data_rev.values if not hasattr(data_rev.data, "compute") else data_rev.compute().values
+                    _t_rev = torch.from_numpy(_data_rev_np.astype(np.float32)).to(device)
+                    _interval_dim_rev = list(data_rev.dims).index("interval")
+                    _mean_rev_np = _t_rev.mean(dim=_interval_dim_rev).cpu().numpy()
+                    _std_rev_np = _t_rev.std(dim=_interval_dim_rev).cpu().numpy()
+                    _remaining_dims_rev = [d for d in data_rev.dims if d != "interval"]
+                    _remaining_coords_rev = {d: data_rev.coords[d] for d in _remaining_dims_rev if d in data_rev.coords}
+                    mean_profile_rev = xr.DataArray(_mean_rev_np, dims=_remaining_dims_rev, coords=_remaining_coords_rev)
+                    std_profile_rev = xr.DataArray(_std_rev_np, dims=_remaining_dims_rev, coords=_remaining_coords_rev)
+            except Exception:
+                mean_profile = data.mean(dim="interval")
+                std_profile = data.std(dim="interval")
+                if data_rev is not None:
+                    mean_profile_rev = data_rev.mean(dim="interval")
+                    std_profile_rev = data_rev.std(dim="interval")
+        else:
+            mean_profile = data.mean(dim="interval")  # (position, sample)
+            std_profile = data.std(dim="interval")    # (position, sample)
+            if data_rev is not None:
+                mean_profile_rev = data_rev.mean(dim="interval")
+                std_profile_rev = data_rev.std(dim="interval")
 
         for sample, color in zip(sample_labels, colors):
             y = mean_profile.sel(sample=sample).values
@@ -305,6 +335,16 @@ def metaplot(
             linewidth=0.8,
             label=reference_label,
         )
+
+    # Set xlim so the full window is shown, including the right edge of the last bin.
+    # Bin coords are left-edges, so the true range extends one bin-step beyond x[-1].
+    _upstream = data.attrs.get("upstream")
+    _downstream = data.attrs.get("downstream")
+    if _upstream is not None and _downstream is not None:
+        ax.set_xlim(-_upstream, _downstream)
+    elif len(x) > 1:
+        step = abs(float(x[1] - x[0]))
+        ax.set_xlim(x[0], x[-1] + step)
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -1028,6 +1068,7 @@ def correlate(
     figsize: "tuple[float, float]" = (6, 6),
     title: str = "Sample–sample correlation",
     filepath: "str | Path | None" = None,
+    device: str = "cpu",
 ) -> "tuple[pd.DataFrame, Any]":
     """
     Compute and plot a sample–sample correlation matrix.
@@ -1080,15 +1121,38 @@ def correlate(
     if log_transform:
         mat = np.log1p(mat)
 
-    # Drop zero-variance columns before correlating
-    col_var = mat.var(axis=0)
+    # Drop rows (features/ranges) that are NaN in any sample — NaN means arise from
+    # sparse regions where count < min_count (by design in reduce()).  Keeping NaN rows
+    # causes mat.var(axis=0) to return NaN for every sample, which would filter ALL
+    # samples via the zero-variance check below.
+    nan_rows = np.any(~np.isfinite(mat), axis=1)
+    if nan_rows.any():
+        mat = mat[~nan_rows]
+
+    # Drop zero-variance columns (samples with constant signal after NaN removal).
+    col_var = np.nanvar(mat, axis=0)
     keep = col_var > 0
     if not keep.all():
         sample_labels = [s for s, k in zip(sample_labels, keep) if k]
         mat = mat[:, keep]
 
+    if len(sample_labels) < 2:
+        raise ValueError(
+            f"Too few samples with variable signal to compute a correlation matrix "
+            f"(got {len(sample_labels)} after filtering constant/empty columns). "
+            "Check that your data has coverage across the requested regions."
+        )
+
     if method == "pearson":
-        corr = np.corrcoef(mat.T)
+        if device != "cpu":
+            try:
+                import torch
+                t = torch.from_numpy(mat.astype(np.float32)).to(device)
+                corr = torch.corrcoef(t.T).cpu().numpy()
+            except Exception:
+                corr = np.corrcoef(mat.T)
+        else:
+            corr = np.corrcoef(mat.T)
     else:
         corr, _ = spearmanr(mat)
         if corr.ndim == 0:  # single sample edge case
@@ -1096,6 +1160,8 @@ def correlate(
 
     corr_df = pd.DataFrame(corr, index=sample_labels, columns=sample_labels)
 
+    n_samples = len(sample_labels)
+    cluster = n_samples > 1
     g = sns.clustermap(
         corr_df,
         xticklabels=sample_labels,
@@ -1110,6 +1176,8 @@ def correlate(
         dendrogram_ratio=0.1,
         annot=annotate,
         fmt=".2f" if annotate else "",
+        row_cluster=cluster,
+        col_cluster=cluster,
     )
     g.figure.suptitle(title, y=1.02)
 

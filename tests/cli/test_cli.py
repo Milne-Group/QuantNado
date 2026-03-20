@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from quantnado.cli import app, combine_metadata_main, make_zarr_main
-from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_bam import BamStore, CoverageType
 from quantnado.dataset.store_multiomics import MultiomicsStore
 
 
@@ -45,7 +45,9 @@ def test_create_dataset_help():
 def test_call_peaks_help():
     result = runner.invoke(app, ["call-peaks", "--help"])
     assert result.exit_code == 0
-    assert "--bigwig-dir" in _strip_ansi(result.output)
+    output = _strip_ansi(result.output)
+    assert "--zarr" in output
+    assert "--window-overlap" in output
 
 
 # ---------------------------------------------------------------------------
@@ -252,21 +254,17 @@ def test_call_peaks_basic(tmp_path, monkeypatch):
         calls.append(kwargs)
 
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_bigwig_dir",
+        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
         fake_call_peaks,
     )
 
-    bw_dir = tmp_path / "bigwigs"
-    bw_dir.mkdir()
-    chromsizes = tmp_path / "hg38.sizes"
-    chromsizes.write_text("chr1\t248956422\n")
+    zarr_path = tmp_path / "input.zarr"
     out_dir = tmp_path / "peaks"
 
     result = runner.invoke(app, [
         "call-peaks",
-        "--bigwig-dir", str(bw_dir),
+        "--zarr", str(zarr_path),
         "--output-dir", str(out_dir),
-        "--chromsizes", str(chromsizes),
         "--quantile", "0.98",
         "--log-file", str(tmp_path / "peaks.log"),
     ])
@@ -277,14 +275,13 @@ def test_call_peaks_basic(tmp_path, monkeypatch):
 
 def test_call_peaks_propagates_exception(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_bigwig_dir",
+        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("peak error")),
     )
     result = runner.invoke(app, [
         "call-peaks",
-        "--bigwig-dir", str(tmp_path),
+        "--zarr", str(tmp_path / "input.zarr"),
         "--output-dir", str(tmp_path / "out"),
-        "--chromsizes", str(tmp_path / "cs.txt"),
         "--log-file", str(tmp_path / "log.log"),
     ])
     assert result.exit_code == 1
@@ -473,30 +470,26 @@ def test_call_peaks_blacklist_and_merge_flags(tmp_path, monkeypatch):
         calls.append(kwargs)
 
     monkeypatch.setattr(
-        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_bigwig_dir",
+        "quantnado.peak_calling.call_quantile_peaks.call_peaks_from_zarr",
         fake_call_peaks,
     )
 
-    bw_dir = tmp_path / "bigwigs"
-    bw_dir.mkdir()
-    chromsizes = tmp_path / "hg38.sizes"
-    chromsizes.write_text("chr1\t248956422\n")
+    zarr_path = tmp_path / "input.zarr"
     blacklist = tmp_path / "blacklist.bed"
     blacklist.write_text("")
     out_dir = tmp_path / "peaks"
 
     result = runner.invoke(app, [
         "call-peaks",
-        "--bigwig-dir", str(bw_dir),
+        "--zarr", str(zarr_path),
         "--output-dir", str(out_dir),
-        "--chromsizes", str(chromsizes),
         "--blacklist", str(blacklist),
         "--merge",
         "--log-file", str(tmp_path / "peaks.log"),
     ])
     assert result.exit_code == 0, result.output
     assert calls[0]["merge"] is True
-    assert calls[0]["blacklist_file"] == str(blacklist)
+    assert calls[0]["blacklist_file"] == blacklist
 
 
 def test_combine_metadata_main_merges_csvs(tmp_path):
@@ -522,3 +515,183 @@ def test_combine_metadata_main_merges_csvs(tmp_path):
     reloaded = pd.read_csv(out)
     assert set(reloaded["sample_id"]) == {"s1", "s2"}
     assert len(reloaded) == 2
+
+
+# ---------------------------------------------------------------------------
+# --coverage-type flag
+# ---------------------------------------------------------------------------
+
+
+def _fake_from_files_capture(calls, monkeypatch):
+    def fake(**kwargs):
+        calls.append(kwargs)
+    monkeypatch.setattr("quantnado.dataset.store_multiomics.MultiomicsStore.from_files", fake)
+
+
+def test_create_dataset_coverage_type_default_is_unstranded(tmp_path, monkeypatch):
+    """Omitting --coverage-type passes CoverageType.UNSTRANDED to from_files."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["coverage_type"] == CoverageType.UNSTRANDED
+
+
+def test_create_dataset_coverage_type_bare_string(tmp_path, monkeypatch):
+    """--coverage-type stranded passes CoverageType.STRANDED to from_files."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--coverage-type", "stranded",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["coverage_type"] == CoverageType.STRANDED
+
+
+def test_create_dataset_coverage_type_mcc(tmp_path, monkeypatch):
+    """--coverage-type mcc passes CoverageType.MICRO_CAPTURE_C to from_files."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--coverage-type", "mcc",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["coverage_type"] == CoverageType.MICRO_CAPTURE_C
+
+
+def test_create_dataset_coverage_type_csv_list(tmp_path, monkeypatch):
+    """--coverage-type comma-separated list is parsed into a list of CoverageType."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    b1, b2 = tmp_path / "a.bam", tmp_path / "b.bam"
+    b1.write_text("dummy")
+    b2.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset",
+        "--bam", f"{b1},{b2}",
+        "--output", str(tmp_path / "out"),
+        "--coverage-type", "stranded,unstranded",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["coverage_type"] == [CoverageType.STRANDED, CoverageType.UNSTRANDED]
+
+
+def test_create_dataset_coverage_type_csv_dict(tmp_path, monkeypatch):
+    """--coverage-type key:value pairs are parsed into a dict of CoverageType per sample."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--coverage-type", "s:stranded",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["coverage_type"] == {"s": CoverageType.STRANDED}
+
+
+def test_create_dataset_coverage_type_csv_dict_multi(tmp_path, monkeypatch):
+    """Multiple key:value pairs are all parsed correctly."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    b1, b2 = tmp_path / "rna.bam", tmp_path / "mcc.bam"
+    b1.write_text("dummy")
+    b2.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", f"{b1},{b2}",
+        "--output", str(tmp_path / "out"),
+        "--coverage-type", "rna:stranded,mcc:mcc",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["coverage_type"] == {"rna": CoverageType.STRANDED, "mcc": CoverageType.MICRO_CAPTURE_C}
+
+
+def test_create_dataset_coverage_type_invalid_value_exits(tmp_path, monkeypatch):
+    """An unrecognised BAM type string should exit non-zero."""
+    _fake_from_files_capture([], monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--coverage-type", "paired_end",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code != 0
+
+
+def test_create_dataset_coverage_type_invalid_dict_value_exits(tmp_path, monkeypatch):
+    """An unrecognised type in a key:value pair should exit non-zero."""
+    _fake_from_files_capture([], monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--coverage-type", "s:bad_type",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# --count-fragments and --viewpoint-tag flags
+# ---------------------------------------------------------------------------
+
+
+def test_create_dataset_count_fragments_flag(tmp_path, monkeypatch):
+    """--count-fragments passes count_fragments=True to from_files."""
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    result = runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--count-fragments",
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls[0]["count_fragments"] is True
+
+
+def test_create_dataset_count_fragments_default_false(tmp_path, monkeypatch):
+    calls = []
+    _fake_from_files_capture(calls, monkeypatch)
+    bam = tmp_path / "s.bam"
+    bam.write_text("dummy")
+    runner.invoke(app, [
+        "create-dataset", "--bam", str(bam),
+        "--output", str(tmp_path / "out"),
+        "--log-file", str(tmp_path / "log.log"),
+    ])
+    assert calls[0]["count_fragments"] is False
+
+
+def test_create_dataset_help_shows_coverage_type_and_count_fragments():
+    result = runner.invoke(app, ["create-dataset", "--help"])
+    out = _strip_ansi(result.output)
+    assert "coverage-type" in out
+    assert "count-frag" in out      # may be truncated to --count-fragme… in narrow terminals
+    assert "viewpoint-tag" in out
+    assert "--stranded" not in out  # old flag must be gone

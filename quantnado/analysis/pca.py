@@ -72,6 +72,7 @@ def run_pca(
     random_state: int | None = None,
     subset_size: int | None = None,
     subset_strategy: str = "random",
+    device: str = "cpu",
     **kwargs,
 ):
     """Run PCA on a 2D xarray.DataArray with samples x features.
@@ -147,7 +148,29 @@ def run_pca(
 
     # Optional standardization
     if standardize:
-        if isinstance(array, da.Array):
+        if device != "cpu":
+            try:
+                import torch
+                _arr_np = array.compute() if isinstance(array, da.Array) else np.asarray(array)
+                t = torch.from_numpy(_arr_np.astype(np.float32)).to(device)
+                mean = t.nanmean(dim=0)
+                std = t.std(dim=0)
+                array = ((t - mean) / torch.clamp(std, min=1e-12)).cpu().numpy()
+                logger.info("Standardized features by z-scoring for PCA")
+            except Exception:
+                if isinstance(array, da.Array):
+                    mean = da.nanmean(array, axis=0)
+                    std = da.nanstd(array, axis=0)
+                    array = (array - mean) / da.maximum(std, 1e-12)
+                    logger.info("Standardized features by z-scoring for PCA")
+                else:
+                    if not isinstance(array, np.ndarray):
+                        array = np.asarray(array)
+                    mean = np.nanmean(array, axis=0)
+                    std = np.nanstd(array, axis=0)
+                    array = (array - mean) / np.maximum(std, 1e-12)
+                    logger.info("Standardized features by z-scoring for PCA")
+        elif isinstance(array, da.Array):
             mean = da.nanmean(array, axis=0)
             std = da.nanstd(array, axis=0)
             array = (array - mean) / da.maximum(std, 1e-12)
@@ -171,9 +194,22 @@ def run_pca(
         pca_kwargs["random_state"] = random_state
         logger.info(f"Using random_state={random_state} for PCA")
 
-    pca = PCA(**pca_kwargs)
-    pca_object = pca.fit(array)
-    transformed_np = pca_object.transform(array)
+    if device != "cpu" and n_components is not None:
+        try:
+            import torch
+            t = torch.from_numpy(array.astype(np.float32)).to(device)
+            _, _, V = torch.pca_lowrank(t, q=n_components)
+            transformed_np = (t @ V).cpu().numpy()
+            pca = PCA(**pca_kwargs)
+            pca_object = pca.fit(array)
+        except Exception:
+            pca = PCA(**pca_kwargs)
+            pca_object = pca.fit(array)
+            transformed_np = pca_object.transform(array)
+    else:
+        pca = PCA(**pca_kwargs)
+        pca_object = pca.fit(array)
+        transformed_np = pca_object.transform(array)
 
     sample_dim = arr_2d.dims[0]
     sample_coord = arr_2d.coords[sample_dim] if sample_dim in arr_2d.coords else np.arange(array.shape[0])

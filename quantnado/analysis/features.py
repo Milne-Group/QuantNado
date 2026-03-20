@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from typing import Iterable
 from loguru import logger
+from functools import lru_cache
 
 from ..dataset.enums import FeatureType
 
@@ -43,6 +44,55 @@ def _parse_attributes(attr_str: str) -> dict:
 	return attrs
 
 
+@lru_cache(maxsize=8)
+def _load_gtf_cached(
+	paths: tuple[str, ...],
+	feature_types: tuple[str, ...] | None,
+	usecols: tuple[str, ...],
+) -> pr.PyRanges:
+	ranges_list = []
+
+	for path in paths:
+		pr_obj = pr.read_gtf(path)
+		df = pd.DataFrame(pr_obj)
+		df = df.rename(columns={"Chromosome": "seqname", "Start": "start", "End": "end"})
+
+		if "feature" not in df.columns:
+			df["feature"] = df.get("Feature", "unknown")
+
+		if feature_types is not None:
+			df = df[df["feature"].isin(feature_types)]
+
+		if "attribute" in df.columns:
+			attr_dicts = df["attribute"].apply(_parse_attributes)
+			for key in usecols:
+				df[key] = attr_dicts.apply(lambda d: d.get(key))
+			df = df.drop(columns=["attribute"])
+		else:
+			for key in usecols:
+				if key not in df.columns:
+					df[key] = pd.NA
+
+		ranges_list.append(df)
+
+	if not ranges_list:
+		empty_df = pd.DataFrame({
+			"seqname": pd.Series([], dtype=str),
+			"start": pd.Series([], dtype=np.int64),
+			"end": pd.Series([], dtype=np.int64),
+			"strand": pd.Series([], dtype=str),
+			"feature": pd.Series([], dtype=str),
+		})
+		for col in usecols:
+			empty_df[col] = pd.Series([], dtype=object)
+		empty_df = empty_df.rename(columns={"seqname": "Chromosome", "start": "Start", "end": "End"})
+		return pr.PyRanges(empty_df)
+
+	combined_df = pd.concat(ranges_list, ignore_index=True)
+	combined_df = combined_df.rename(columns={"seqname": "Chromosome", "start": "Start", "end": "End"})
+	return pr.PyRanges(combined_df)
+
+
 def load_gtf(
 	gtf_path: str | Iterable[str],
 	feature_types: Iterable[str] | None = None,
@@ -70,55 +120,9 @@ def load_gtf(
 	if usecols is None:
 		usecols = ["gene_id", "gene_name", "transcript_id", "gene_type", "gene_biotype"]
 
-	paths = [gtf_path] if isinstance(gtf_path, str) else list(gtf_path)
-	ranges_list = []
-	
-	for path in paths:
-		# Use PyRanges to read GTF for proper handling of 1-based coordinates
-		pr_obj = pr.read_gtf(path)
-		
-		# Convert to DataFrame for attribute parsing
-		df = pd.DataFrame(pr_obj)
-		df = df.rename(columns={"Chromosome": "seqname", "Start": "start", "End": "end"})
-		
-		if "feature" not in df.columns:
-			df["feature"] = df.get("Feature", "unknown")
-		
-		if feature_types is not None:
-			df = df[df["feature"].isin(feature_types)]
-
-		# Parse attributes if present (for custom GTF parsing)
-		if "attribute" in df.columns:
-			attr_dicts = df["attribute"].apply(_parse_attributes)
-			for key in usecols:
-				df[key] = attr_dicts.apply(lambda d: d.get(key))
-			df = df.drop(columns=["attribute"])
-		else:
-			# PyRanges may have already parsed attributes into columns; only fill missing ones
-			for key in usecols:
-				if key not in df.columns:
-					df[key] = pd.NA
-
-		ranges_list.append(df)
-
-	if not ranges_list:
-		# Return empty PyRanges with proper structure
-		empty_df = pd.DataFrame({
-			"seqname": pd.Series([], dtype=str),
-			"start": pd.Series([], dtype=np.int64),
-			"end": pd.Series([], dtype=np.int64),
-			"strand": pd.Series([], dtype=str),
-			"feature": pd.Series([], dtype=str),
-		})
-		for col in usecols:
-			empty_df[col] = pd.Series([], dtype=object)
-		empty_df = empty_df.rename(columns={"seqname": "Chromosome", "start": "Start", "end": "End"})
-		return pr.PyRanges(empty_df)
-
-	combined_df = pd.concat(ranges_list, ignore_index=True)
-	combined_df = combined_df.rename(columns={"seqname": "Chromosome", "start": "Start", "end": "End"})
-
-	return pr.PyRanges(combined_df)
+	paths = (gtf_path,) if isinstance(gtf_path, str) else tuple(gtf_path)
+	ft_key = tuple(feature_types) if feature_types is not None else None
+	return _load_gtf_cached(paths, ft_key, tuple(usecols))
 
 
 def extract_feature_ranges(

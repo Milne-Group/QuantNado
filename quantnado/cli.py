@@ -14,7 +14,7 @@ from loguru import logger
 import traceback
 from pathlib import Path
 
-from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_bam import BamStore, CoverageType
 from quantnado.utils import classify_methylation_files, setup_logging
 from quantnado._version import __version__
 
@@ -52,36 +52,85 @@ def _setup_cli_logging(log_file: Path, verbose: bool):
 
 @app.command()
 def call_peaks(
-    bigwig_dir: Path = typer.Option(..., "--bigwig-dir", help="Directory containing bigWig files"),
+    zarr: Path = typer.Option(..., "--zarr", help="Path to a QuantNado zarr coverage store"),
+    method: str = typer.Option("quantile", "--method", help="Peak calling method: quantile, seacr, or lanceotron"),
     output_dir: Path = typer.Option(..., "--output-dir", help="Directory to save output peak files (BED format)"),
-    chromsizes: str = typer.Option(..., "--chromsizes", help="Path to a two-column chromsizes file"),
     blacklist: Path | None = typer.Option(None, "--blacklist", help="Path to a BED file with regions to exclude"),
-    tilesize: int = typer.Option(128, "--tilesize", help="Size of genomic tiles to create (default: 128 bp)"),
-    quantile: float = typer.Option(0.98, "--quantile", help="Quantile threshold for peak calling"),
-    merge: bool = typer.Option(False, "--merge/--no-merge", help="Merge overlapping peaks after quantile calling"),
-    tmp_dir: Path = typer.Option("tmp", "--tmp-dir", help="Temporary directory for intermediate files"),
+    # quantile options
+    tilesize: int = typer.Option(128, "--tilesize", help="[quantile] Size of genomic tiles in bp"),
+    window_overlap: int = typer.Option(8, "--window-overlap", help="[quantile] Overlap between adjacent windows in bp"),
+    quantile: float = typer.Option(0.98, "--quantile", help="[quantile] Quantile threshold for peak calling"),
+    merge: bool = typer.Option(True, "--merge/--no-merge", help="[quantile] Merge overlapping and adjacent peaks after calling"),
+    # seacr options
+    control_zarr: Path | None = typer.Option(None, "--control-zarr", help="[seacr] Path to a control (IgG) QuantNado zarr store"),
+    fdr_threshold: float = typer.Option(0.01, "--fdr", help="[seacr] Numeric FDR threshold (0–1) used when no control zarr is provided"),
+    norm: str = typer.Option("non", "--norm", help='[seacr] "norm" to normalise control to experimental signal, "non" to skip'),
+    stringency: str = typer.Option("stringent", "--stringency", help='[seacr] "stringent" (peak of AUC curve) or "relaxed" (knee of curve)'),
+    # lanceotron options
+    score_threshold: float = typer.Option(0.5, "--score-threshold", help="[lanceotron] Minimum overall_classification score (0–1)"),
+    smooth_window: int = typer.Option(400, "--smooth-window", help="[lanceotron] Rolling mean window for candidate detection (bp)"),
+    lanceotron_batch_size: int = typer.Option(512, "--batch-size", help="[lanceotron] Inference batch size"),
+    # shared
+    device: str | None = typer.Option(None, "--device", help="Compute device: 'cuda', 'mps', 'cpu', or None for auto-detect (seacr/lanceotron only)"),
+    n_workers: int = typer.Option(1, "--n-workers", help="Number of parallel workers for peak calling (seacr/lanceotron only)"),
     log_file: Path = typer.Option("quantnado_peaks.log", "--log-file", help="Path to the log file"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
 ):
     """
-    Call quantile-based peaks from bigWig files.
+    Call peaks from a QuantNado zarr coverage store.
+
+    --method quantile   quantile-threshold peak calling (default)
+    --method seacr      SEACR-style AUC island calling (pure Python)
+    --method lanceotron LanceOtron ML classifier (requires: pip install quantnado[lanceotron])
     """
     _setup_cli_logging(log_file, verbose)
     try:
-        # Lazy import to avoid zarr/anndata compatibility issues
-        from quantnado.peak_calling.call_quantile_peaks import call_peaks_from_bigwig_dir
+        if method == "quantile":
+            from quantnado.peak_calling.call_quantile_peaks import call_peaks_from_zarr
 
-        call_peaks_from_bigwig_dir(
-            bigwig_dir=bigwig_dir,
-            output_dir=output_dir,
-            chromsizes_file=chromsizes,
-            blacklist_file=str(blacklist) if blacklist else None,
-            tilesize=tilesize,
-            quantile=quantile,
-            merge=merge,
-            tmp_dir=tmp_dir,
-        )
+            call_peaks_from_zarr(
+                zarr_path=zarr,
+                output_dir=output_dir,
+                blacklist_file=blacklist,
+                tilesize=tilesize,
+                window_overlap=window_overlap,
+                quantile=quantile,
+                merge=merge,
+            )
+        elif method == "seacr":
+            from quantnado.peak_calling.call_seacr_peaks import call_seacr_peaks_from_zarr
+
+            call_seacr_peaks_from_zarr(
+                zarr_path=zarr,
+                output_dir=output_dir,
+                control_zarr_path=control_zarr,
+                fdr_threshold=fdr_threshold,
+                norm=norm,
+                stringency=stringency,
+                blacklist_file=blacklist,
+                n_workers=n_workers,
+                device=device,
+            )
+        elif method == "lanceotron":
+            from quantnado.peak_calling.call_lanceotron_peaks import call_lanceotron_peaks_from_zarr
+
+            call_lanceotron_peaks_from_zarr(
+                zarr_path=zarr,
+                output_dir=output_dir,
+                score_threshold=score_threshold,
+                blacklist_file=blacklist,
+                smooth_window=smooth_window,
+                batch_size=lanceotron_batch_size,
+                n_workers=n_workers,
+                device=device,
+            )
+        else:
+            logger.error(f"Unknown method '{method}'. Choose 'quantile', 'seacr', or 'lanceotron'.")
+            raise typer.Exit(code=1)
+
         logger.success(f"Finished calling peaks: {output_dir}")
+    except typer.Exit:
+        raise
     except Exception as e:
         logger.error(f"Peak calling failed: {type(e).__name__}: {e}")
         logger.debug(traceback.format_exc())
@@ -122,15 +171,25 @@ def create_dataset(
     vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
     # Coverage options
     filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
-    stranded: str | None = typer.Option(
+    coverage_type: str | None = typer.Option(
         None,
-        "--stranded",
+        "--coverage-type",
         help=(
-            "Strand-specific coverage configuration as JSON. "
-            "List form: '[\"sample1\",\"sample2\"]' (uses library type 'U'). "
-            "Dict form: '{\"sample1\":\"R\",\"sample2\":\"R\"}' mapping each sample name to "
-            "its library type: 'R' (ISR/dUTP/TruSeq), 'F' (ISF/ligation), or 'U'."
+            "BAM type for coverage processing. "
+            "Single value: 'unstranded' (default), 'stranded', or 'mcc' (Micro-Capture C) — applies to all BAM files. "
+            "Comma-separated list: 'stranded,unstranded' — one entry per BAM file in order. "
+            "Comma-separated key:value pairs: 'sample1:stranded,sample2:mcc' — per sample name."
         ),
+    ),
+    count_fragments: bool = typer.Option(
+        False,
+        "--count-fragments/--no-count-fragments",
+        help="Count fragments (insert-level) instead of individual reads.",
+    ),
+    viewpoint_tag: str = typer.Option(
+        "VP",
+        "--viewpoint-tag",
+        help="SAM tag used to identify MCC viewpoints (default: VP). Only relevant when --coverage-type includes 'mcc'.",
     ),
     # Process control
     overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite", help="Overwrite existing sub-stores."),
@@ -170,21 +229,73 @@ def create_dataset(
 
     At least one of --bam, --methylation, or --vcf must be provided.
     Multiple files can be passed as a comma-separated list, e.g. --bam a.bam,b.bam
+
+    Coverage type (--coverage-type) controls how BAM reads are counted:
+
+    \b
+      unstranded          combined-strand coverage (default)
+      stranded            separate forward and reverse arrays
+      mcc                 Micro-Capture C — one virtual sample per viewpoint tag
+
+    Pass a single value to apply to all BAM files, a comma-separated list
+    in the same order as --bam, or sample:type pairs for per-sample control:
+
+    \b
+      --coverage-type stranded
+      --coverage-type stranded,unstranded,mcc
+      --coverage-type rna-rep1:stranded,chip-rep1:unstranded,capture:mcc
     """
     _setup_cli_logging(log_file, verbose)
 
-    import json
+    def _parse_coverage_type(raw: str | None) -> CoverageType | list[CoverageType] | dict[str, CoverageType]:
+        """Convert the --coverage-type CLI string into the form BamStore expects.
 
-    stranded_parsed: list[str] | dict[str, str] | None = None
-    if stranded is not None:
+        Accepted formats:
+            single:  "stranded"
+            list:    "stranded,unstranded"
+            dict:    "sample1:stranded,sample2:mcc"
+        """
+        if raw is None:
+            return CoverageType.UNSTRANDED
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        # Single bare value
+        if len(parts) == 1 and ":" not in parts[0]:
+            try:
+                return CoverageType(parts[0].lower())
+            except ValueError:
+                logger.error(
+                    f"--coverage-type '{parts[0]}' is not a valid coverage type. "
+                    f"Valid values: {[e.value for e in CoverageType]}"
+                )
+                raise typer.Exit(code=1)
+        # Detect dict form (any part contains ":")
+        if any(":" in p for p in parts):
+            result: dict[str, CoverageType] = {}
+            for part in parts:
+                if ":" not in part:
+                    logger.error(
+                        f"--coverage-type: '{part}' is missing a sample name — "
+                        "use 'sample:type' pairs, e.g. 'sample1:stranded,sample2:mcc'"
+                    )
+                    raise typer.Exit(code=1)
+                sample, _, type_str = part.partition(":")
+                try:
+                    result[sample.strip()] = CoverageType(type_str.strip().lower())
+                except ValueError:
+                    logger.error(
+                        f"--coverage-type: '{type_str.strip()}' is not a valid coverage type. "
+                        f"Valid values: {[e.value for e in CoverageType]}"
+                    )
+                    raise typer.Exit(code=1)
+            return result
+        # List form
         try:
-            stranded_parsed = json.loads(stranded)
-        except json.JSONDecodeError as exc:
-            logger.error(f"--stranded must be valid JSON (list or dict): {exc}")
+            return [CoverageType(p.lower()) for p in parts]
+        except ValueError as exc:
+            logger.error(f"--coverage-type list contains invalid value: {exc}")
             raise typer.Exit(code=1)
-        if not isinstance(stranded_parsed, (list, dict)):
-            logger.error("--stranded must be a JSON list or object.")
-            raise typer.Exit(code=1)
+
+    coverage_type_parsed = _parse_coverage_type(coverage_type)
 
     def _split(s: str | None) -> list[str]:
         return [v.strip() for v in s.split(",") if v.strip()] if s else []
@@ -249,7 +360,8 @@ def create_dataset(
             resume=resume,
             max_workers=max_workers,
             test=test,
-            stranded=stranded_parsed,
+            coverage_type=coverage_type_parsed,
+            count_fragments=count_fragments,
         )
         logger.success(f"Multiomics store created: {output}")
     except Exception as e:

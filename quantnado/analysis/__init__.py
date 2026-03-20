@@ -15,5 +15,5 @@ from .ranges import (
     merge_ranges,
     ranges_loader,
 )
-from .normalise import get_library_sizes, normalise
+from .normalise import get_library_sizes, get_mean_read_lengths, normalise
 from .reduce import extract_byranges_signal, reduce_byranges_signal

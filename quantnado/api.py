@@ -86,7 +86,7 @@ class QuantNado:
     >>> qn.modalities   # ['coverage', 'methylation', ...]
     """
 
-    def __init__(self, store: MultiomicsStore | BamStore) -> None:
+    def __init__(self, store: MultiomicsStore | BamStore, _sample_subset: list[str] | None = None) -> None:
         if isinstance(store, MultiomicsStore):
             self._multiomics: MultiomicsStore | None = store
             self._bam: BamStore | None = store.coverage
@@ -97,6 +97,7 @@ class QuantNado:
             raise TypeError(
                 f"store must be a MultiomicsStore or BamStore, got {type(store).__name__}"
             )
+        self._sample_subset: list[str] | None = _sample_subset
 
     # ========== Construction ==========
 
@@ -526,9 +527,35 @@ class QuantNado:
         """Path to the coverage Zarr store."""
         return self._require_coverage().store_path
 
+    def subset(self, samples: list[str]) -> "QuantNado":
+        """
+        Return a view of this dataset restricted to the given samples.
+
+        The underlying store is shared (no data is copied). All subsequent
+        calls to ``extract()``, ``reduce()``, ``count_features()``, and
+        ``get_metadata()`` will only operate on the selected samples.
+
+        Parameters
+        ----------
+        samples : list of str
+            Sample names to keep.
+
+        Returns
+        -------
+        QuantNado
+        """
+        all_samples = self._require_coverage().sample_names
+        unknown = set(samples) - set(all_samples)
+        if unknown:
+            raise ValueError(f"Unknown samples: {sorted(unknown)}")
+        store = self._multiomics if self._multiomics is not None else self._bam
+        return QuantNado(store, _sample_subset=list(samples))
+
     @property
     def samples(self) -> list[str]:
-        """Sample names in the coverage store."""
+        """Sample names in the coverage store (respects any active subset)."""
+        if self._sample_subset is not None:
+            return self._sample_subset
         return self._require_coverage().sample_names
 
     @property
@@ -552,11 +579,16 @@ class QuantNado:
 
         If this is a multiomics store, returns combined metadata across all
         modalities with a ``modalities`` column. Otherwise returns coverage
-        store metadata.
+        store metadata. Rows are filtered to the active sample subset if one
+        is set via :meth:`subset`.
         """
         if self._multiomics is not None:
-            return self._multiomics.get_metadata()
-        return self._require_coverage().get_metadata()
+            df = self._multiomics.get_metadata()
+        else:
+            df = self._require_coverage().get_metadata()
+        if self._sample_subset is not None:
+            df = df[df.index.isin(self._sample_subset)]
+        return df
 
     @property
     def n_completed(self) -> int:
@@ -646,6 +678,7 @@ class QuantNado:
         gtf_path: str | Path | Iterable[str | Path] | None = None,
         reduction: ReductionMethod | str = ReductionMethod.MEAN,
         filter_incomplete: bool = True,
+        samples: list[str] | None = None,
     ) -> xr.Dataset:
         """
         Reduce per-sample coverage signal over genomic ranges.
@@ -664,20 +697,30 @@ class QuantNado:
             Aggregation statistic: 'mean', 'sum', 'max', 'min', 'median'.
         filter_incomplete : bool, default True
             Exclude samples not yet marked complete.
+        samples : list of str, optional
+            Specific sample names to include. Defaults to the active subset
+            if one is set via :meth:`subset`.
 
         Returns
         -------
         Dataset
             Dimensions: (ranges, sample).
         """
+        _coverage = self._require_coverage()
+        _samples = samples if samples is not None else self._sample_subset
+        _sample_indices = None
+        if _samples is not None:
+            _all = _coverage.sample_names
+            _sample_indices = [_all.index(s) for s in _samples if s in _all]
         return reduce_byranges_signal(
-            self._require_coverage(),
+            _coverage,
             ranges_df=ranges_df,
             intervals_path=intervals_path,
             feature_type=feature_type,
             gtf_path=gtf_path,
             reduction=reduction,
             include_incomplete=not filter_incomplete,
+            sample_indices=_sample_indices,
         )
 
     def extract(
@@ -773,9 +816,10 @@ class QuantNado:
 
         _coverage = self._require_coverage()
         _sample_indices = None
-        if samples is not None:
+        _samples = samples if samples is not None else self._sample_subset
+        if _samples is not None:
             _all = getattr(_coverage, "sample_names", None) or []
-            _sample_indices = [_all.index(s) for s in samples if s in _all]
+            _sample_indices = [_all.index(s) for s in _samples if s in _all]
 
         return extract_byranges_signal(
             _coverage,
@@ -875,7 +919,7 @@ class QuantNado:
             aggregate_by=aggregation,
             strand=strand,
             assay=assays[0] if assays else None,
-            samples=samples,
+            samples=samples if samples is not None else self._sample_subset,
             filter_chromosomes=filter_chromosomes,
             integerize=integerize,
             fillna_value=fillna_value,

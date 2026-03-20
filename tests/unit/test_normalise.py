@@ -11,6 +11,7 @@ from quantnado.analysis.normalise import (
     _resolve_library_sizes,
     _scale_per_sample,
     get_library_sizes,
+    get_mean_read_lengths,
     normalise,
 )
 
@@ -301,10 +302,16 @@ class TestNormaliseXrDataArray:
         result = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
         assert result.attrs.get("normalised") == "cpm"
 
-    def test_cpm_result_is_lazy(self):
+    def test_cpm_result_is_lazy_when_input_is_dask(self):
+        da_in = _make_xr_dataarray()
+        da_in_dask = da_in.copy(data=da.from_array(da_in.values))
+        result = normalise(da_in_dask, library_sizes=LIB_SIZES, method="cpm")
+        assert isinstance(result.data, da.Array)
+
+    def test_cpm_result_is_numpy_when_input_is_numpy(self):
         da_in = _make_xr_dataarray()
         result = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
-        assert isinstance(result.data, da.Array)
+        assert not isinstance(result.data, da.Array)
 
     def test_rpkm_returns_dataarray(self):
         da_in = _make_xr_dataarray()
@@ -312,19 +319,46 @@ class TestNormaliseXrDataArray:
         assert isinstance(result, xr.DataArray)
         assert result.shape == da_in.shape
 
-    def test_rpkm_divides_by_bin_size_kb(self):
-        """RPKM = CPM / bin_size_kb; bin spacing in _make_xr_dataarray is 40 (200-(-200)/(10-1))."""
+    def test_rpkm_without_read_lengths_uses_bin_size(self):
+        """Without mean_read_lengths, RPKM = CPM / bin_size_kb."""
         da_in = _make_xr_dataarray()
         cpm = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
         rpkm = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm")
-        # bin spacing: linspace(-200, 200, 10) → step ≈ 44.4; bin_size_kb = step/1000
         coords = da_in.coords["relative_position"].values
         bin_size_kb = abs(float(coords[1] - coords[0])) / 1000.0
         np.testing.assert_allclose(rpkm.values, cpm.values / bin_size_kb, rtol=1e-5)
 
-    def test_rpkm_result_is_lazy(self):
+    def test_rpkm_with_read_lengths_larger_than_bin_size_uses_bin_size_kb(self):
+        """When bin_size <= read_length (long reads span the bin), RPKM = CPM / bin_size_kb."""
+        # _make_xr_dataarray uses coords 0,1,...,9 so bin_size=1bp; read_length=150 >> bin_size
         da_in = _make_xr_dataarray()
-        result = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm")
+        read_lengths = pd.Series({"s1": 150.0, "s2": 150.0, "s3": 150.0}, name="mean_read_length")
+        cpm = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
+        rpkm = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm", mean_read_lengths=read_lengths)
+        # min(bin_size=1, read_length=150) = 1 → RPKM = CPM / 0.001
+        np.testing.assert_allclose(rpkm.values, cpm.values / 0.001, rtol=1e-5)
+
+    def test_rpkm_with_read_lengths_smaller_than_bin_size_uses_read_length_kb(self):
+        """When bin_size > read_length (reads shorter than bin), RPKM = CPM / read_length_kb."""
+        # Make a DataArray with bin coords spaced 200bp apart (bin_size=200)
+        rng = np.random.default_rng(99)
+        data = rng.random((4, 10, 3)).astype(np.float32)
+        da_in = xr.DataArray(
+            data,
+            dims=("interval", "bin", "sample"),
+            coords={"sample": SAMPLES, "bin": np.arange(10) * 200},
+            attrs={"bin_size": 200},
+        )
+        read_lengths = pd.Series({"s1": 50.0, "s2": 50.0, "s3": 50.0}, name="mean_read_length")
+        cpm = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
+        rpkm = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm", mean_read_lengths=read_lengths)
+        # min(bin_size=200, read_length=50) = 50 → RPKM = CPM / 0.05
+        np.testing.assert_allclose(rpkm.values, cpm.values / 0.05, rtol=1e-5)
+
+    def test_rpkm_result_is_lazy_when_input_is_dask(self):
+        da_in = _make_xr_dataarray()
+        da_in_dask = da_in.copy(data=da.from_array(da_in.values))
+        result = normalise(da_in_dask, library_sizes=LIB_SIZES, method="rpkm")
         assert isinstance(result.data, da.Array)
 
     def test_tpm_raises(self):
