@@ -33,12 +33,6 @@ def _make_store(tmp_path, chrom_sizes=None, sample_names=None, all_complete=True
     meta = root.require_group("metadata")
     completed = np.array([True] * len(sample_names)) if all_complete else np.array([True, False] + [True] * max(0, len(sample_names) - 2))
     meta.create_array("completed", data=completed[:len(sample_names)])
-    sample_name_array = meta.create_array(
-        "sample_names",
-        shape=(len(sample_names),),
-        dtype=VariableLengthUTF8(),
-    )
-    sample_name_array[:] = sample_names
     root.attrs["chromsizes"] = chrom_sizes
     root.attrs["chunk_len"] = 1024
     root.attrs["sample_names"] = sample_names
@@ -92,6 +86,25 @@ class TestInit:
         assert "chr2" in ds.chromosomes
 
     @pytest.mark.parametrize("cls", CLASSES)
+    def test_successful_init_with_metadata_sample_names(self, tmp_path, cls):
+        root = zarr.open(str(tmp_path / "meta_names_store.zarr"), mode="w")
+        root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
+        root["chr1"][:] = np.ones((2, 10), dtype=np.uint16)
+        meta = root.require_group("metadata")
+        meta.create_array("completed", data=np.array([True, True]))
+        sample_name_array = meta.create_array(
+            "sample_names",
+            shape=(2,),
+            dtype=VariableLengthUTF8(),
+        )
+        sample_name_array[:] = ["s1", "s2"]
+        root.attrs["chromsizes"] = {"chr1": 10}
+        root.attrs["chunk_len"] = 1024
+
+        ds = cls(tmp_path / "meta_names_store.zarr")
+        assert ds.sample_names == ["s1", "s2"]
+
+    @pytest.mark.parametrize("cls", CLASSES)
     def test_successful_init_with_bytes_sample_names(self, tmp_path, cls):
         # Build a store where sample_names are bytes (legacy format)
         root = zarr.open(str(tmp_path / "bytes_store.zarr"), mode="w")
@@ -142,14 +155,9 @@ class TestValidSampleIndices:
         root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([True, False]))
-        sample_name_array = meta.create_array(
-            "sample_names",
-            shape=(2,),
-            dtype=VariableLengthUTF8(),
-        )
-        sample_name_array[:] = ["s1", "s2"]
         root.attrs["chromsizes"] = chrom_sizes
         root.attrs["chunk_len"] = 1024
+        root.attrs["sample_names"] = ["s1", "s2"]
         ds = cls(tmp_path / "mixed.zarr")
         indices = ds.valid_sample_indices()
         np.testing.assert_array_equal(indices, [0])
@@ -202,13 +210,8 @@ class TestToXarray:
         root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([True, False]))
-        sample_name_array = meta.create_array(
-            "sample_names",
-            shape=(2,),
-            dtype=VariableLengthUTF8(),
-        )
-        sample_name_array[:] = ["s1", "s2"]
         root.attrs["chromsizes"] = {"chr1": 10}
+        root.attrs["sample_names"] = ["s1", "s2"]
         ds = cls(tmp_path / "inc.zarr")
         with pytest.raises(RuntimeError, match="incomplete"):
             ds.to_xarray()
@@ -357,13 +360,8 @@ class TestExtractRegion:
         root.create_array("chr1", shape=(2, 100), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([False, True]))
-        sample_name_array = meta.create_array(
-            "sample_names",
-            shape=(2,),
-            dtype=VariableLengthUTF8(),
-        )
-        sample_name_array[:] = ["s1", "s2"]
         root.attrs["chromsizes"] = {"chr1": 100}
+        root.attrs["sample_names"] = ["s1", "s2"]
         ds = AnalysisCore(tmp_path / "inc2.zarr")
         with pytest.raises(RuntimeError, match="incomplete"):
             ds.extract_region("chr1:0-10", samples=["s1"])
