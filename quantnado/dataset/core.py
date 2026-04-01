@@ -282,9 +282,10 @@ class BaseStore:
                 f"Requested chromosomes not in store: {invalid_chroms}. Available: {self.chromosomes}"
             )
 
-        # Default chunking: get from root attrs if available
-        chunk_len = self.root.attrs.get("chunk_len", DEFAULT_CHUNK_LEN)
+        # Default chunking: prefer root attrs, fall back to actual array chunk shape
         if chunks is None:
+            first_chrom = chroms_to_extract[0]
+            chunk_len = self.root.attrs.get("chunk_len") or self.root[first_chrom].chunks[1]
             chunks = {"sample": 1, "position": chunk_len}
 
         # Extract metadata
@@ -514,11 +515,20 @@ class BaseStore:
                 library_sizes=library_sizes,
             ).values
         
-        # Wrap in xarray DataArray with lazy dask array (lazy slice)
-        # Default chunking: get from root attrs or use DEFAULT_CHUNK_LEN
-        chunk_len = self.root.attrs.get("chunk_len", DEFAULT_CHUNK_LEN)
-        dask_arr = da.from_zarr(zarr_array, chunks={0: 1, 1: chunk_len})
-        dask_arr = dask_arr[sample_indices.tolist(), start:end]
+        # Wrap in xarray DataArray with lazy dask array
+        # Prefer root attrs, fall back to actual array chunk shape
+        chunk_len = self.root.attrs.get("chunk_len") or zarr_array.chunks[1]
+        region_len = end - start
+        if region_len < 10 * chunk_len:
+            # Small region: eagerly load only the touched zarr chunks, then wrap in dask.
+            # Building da.from_zarr over the full chromosome would create thousands of
+            # graph tasks for a query that touches just a handful of chunks.
+            data = zarr_array.oindex[sample_indices.tolist(), start:end]
+            dask_arr = da.from_array(data, chunks={0: 1, 1: min(chunk_len, region_len)})
+        else:
+            # Large region (whole-chromosome or similar): keep fully lazy graph.
+            dask_arr = da.from_zarr(zarr_array, chunks={0: 1, 1: chunk_len})
+            dask_arr = dask_arr[sample_indices.tolist(), start:end]
 
         
         # Build coordinates with metadata

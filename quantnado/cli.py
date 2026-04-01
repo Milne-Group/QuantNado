@@ -370,6 +370,33 @@ def create_dataset(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def combine_stores(
+    inputs: list[Path] = typer.Option(..., "--input", "-i", help="Per-sample Zarr store paths (repeat flag or pass multiple)"),
+    output: Path = typer.Option(..., "--output", "-o", help="Path for the combined output Zarr store"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite output if it already exists"),
+    log_file: Path = typer.Option(Path("quantnado_combine.log"), "--log-file", help="Path to log file"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging"),
+) -> None:
+    """Combine per-sample Zarr stores into one multi-sample store.
+
+    The combined store is rechunked with all samples in one chunk per position
+    window, so any region query reads all samples in a single I/O operation.
+
+    Example::
+
+        quantnado combine-stores -i s1.zarr -i s2.zarr -i s3.zarr -o combined.zarr
+    """
+    _setup_cli_logging(log_file, verbose)
+    from quantnado.dataset.combine_stores import combine_bam_stores
+    try:
+        combine_bam_stores(inputs, output, overwrite=overwrite)
+    except Exception as e:
+        logger.error(f"combine-stores failed: {e}")
+        logger.debug(traceback.format_exc())
+        raise typer.Exit(code=1)
+
+
 def make_zarr_main():
     """Alias entry point for quantnado-make-zarr."""
     app()

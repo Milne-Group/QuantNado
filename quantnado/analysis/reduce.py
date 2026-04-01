@@ -939,18 +939,9 @@ def extract_byranges_signal(
 			and f"{contig}_fwd" in root
 			and f"{contig}_rev" in root
 		)
-		if use_forced_strand:
-			akey = f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev"
-			arr = da.from_zarr(root[akey])[sample_indices, :].transpose(1, 0).astype(np.float32)
-		elif use_stranded:
-			arr_fwd = da.from_zarr(root[f"{contig}_fwd"])[sample_indices, :].transpose(1, 0).astype(np.float32)
-			arr_rev = da.from_zarr(root[f"{contig}_rev"])[sample_indices, :].transpose(1, 0).astype(np.float32)
-			arr = arr_fwd
-		else:
-			arr = da.from_zarr(root[contig])[sample_indices, :].transpose(1, 0)
-		if not np.issubdtype(arr.dtype, np.floating):
-			arr = arr.astype(np.float32)
-		arr_len = int(arr.shape[0])
+		# Get chromosome length from zarr shape without loading data
+		_ref_akey = (f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev") if use_forced_strand else contig
+		arr_len = int(root[_ref_akey].shape[1])
 
 		clipped_starts = np.maximum(starts, 0)
 		clipped_ends = np.minimum(ends, arr_len)
@@ -970,6 +961,7 @@ def extract_byranges_signal(
 		if starts.size == 0:
 			continue
 
+		# Compute anchor positions and span of positions to load
 		if _total_width is not None:
 			if anchor == AnchorPoint.MIDPOINT:
 				anchor_pos = (starts + ends) // 2
@@ -979,8 +971,36 @@ def extract_byranges_signal(
 				anchor_pos = np.where(strands == "-", starts, ends) if has_strand else ends
 			else:
 				raise ValueError(f"Unknown anchor point: {anchor}")
-
 			extract_starts = anchor_pos - _upstream
+			span_start = int(max(0, extract_starts.min()))
+			span_end = int(min(arr_len, int(extract_starts.max()) + _total_width))
+		else:
+			anchor_pos = None
+			extract_starts = None
+			span_start = int(clipped_starts.min())
+			span_end = int(clipped_ends.max())
+
+		# Load only the span of positions needed, transposed to (positions, samples)
+		def _load_arr(akey: str) -> "da.Array":
+			region = root[akey].oindex[sample_indices.tolist(), span_start:span_end].T.astype(np.float32)
+			return da.from_array(region, chunks=("auto", len(sample_indices)))
+
+		if use_forced_strand:
+			arr = _load_arr(f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev")
+		elif use_stranded:
+			arr_fwd = _load_arr(f"{contig}_fwd")
+			arr_rev = _load_arr(f"{contig}_rev")
+			arr = arr_fwd
+		else:
+			arr = _load_arr(contig)
+
+		# arr_len is now the loaded span length; rebase coordinates to span_start
+		arr_len = int(arr.shape[0])
+		clipped_starts = clipped_starts - span_start
+		clipped_ends = clipped_ends - span_start
+
+		if _total_width is not None:
+			extract_starts = extract_starts - span_start
 			pad_left = int(max(0, -int(extract_starts.min())))
 			pad_right = int(max(0, int(extract_starts.max() + _total_width) - arr_len))
 
@@ -1294,9 +1314,8 @@ def reduce_byranges_signal(
 			ends = np.asarray(sg[end_col], dtype=np.int64)
 			names = np.asarray(sg[name_col], dtype=object) if name_col is not None else None
 
-			# Load chromosome data: (samples × positions) → transpose to (positions × samples)
-			arr = da.from_zarr(root[akey])[sample_indices, :].transpose(1, 0)
-			arr_len = int(arr.shape[0])
+			# Chromosome length from zarr shape; no need to load data yet
+			arr_len = int(root[akey].shape[1])
 
 			# Clip coordinates to valid range
 			starts = starts.clip(min=0)
@@ -1314,13 +1333,24 @@ def reduce_byranges_signal(
 			if starts.size == 0:
 				continue
 
+			# Load only the span of positions touched by these ranges.
+			# Avoids building a full-chromosome dask graph when ranges cluster in a small region.
+			span_start = int(starts.min())
+			span_end = int(ends.max())
+			region_np = root[akey].oindex[sample_indices.tolist(), span_start:span_end].T
+			arr = da.from_array(region_np, chunks=("auto", len(sample_indices)))
+
+			# Rebase range coordinates to be relative to span_start
+			adj_starts = starts - span_start
+			adj_ends = ends - span_start
+
 			# Reduce using appropriate method
 			# Always compute sum/count/mean via prefix sums (fast + consistent API)
-			reduced = _reduce_byranges_prefix(starts, ends, arr, min_count=min_count)
+			reduced = _reduce_byranges_prefix(adj_starts, adj_ends, arr, min_count=min_count)
 			if reduction_str == "mean":
 				reduction_data = reduced["mean"]
 			else:
-				reduction_data = _reduce_ranges_vectorized(arr, starts, ends, reduction_str)
+				reduction_data = _reduce_ranges_vectorized(arr, adj_starts, adj_ends, reduction_str)
 
 			outputs.append(
 				{

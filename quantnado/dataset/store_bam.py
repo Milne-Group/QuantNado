@@ -1089,8 +1089,10 @@ class BamStore(BaseStore):
             if staging_enabled:
                 _publish_staged_store(build_store_path, final_store_path)
                 logger.info(f"Published staged dataset to {final_store_path}")
+                zarr.consolidate_metadata(str(final_store_path))
                 return cls.open(final_store_path, read_only=False)
 
+            zarr.consolidate_metadata(str(store.store_path))
             return store
         except Exception:
             if staging_enabled:
