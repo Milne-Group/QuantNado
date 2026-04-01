@@ -82,7 +82,7 @@ def test_mcc_runx1_coverage_array_accessible(mcc_store, mock_mcc_bam):
     idx = mcc_store.sample_names.index(sample)
     assert "chr21" in mcc_store.chromsizes, "chr21 not present in test store"
     # Verify the array exists and has correct shape
-    coverage = mcc_store.root["chr21"][idx, :]
+    coverage = mcc_store.root["coverage"]["chr21"][idx, :]
     assert coverage.shape == (mcc_store.chromsizes["chr21"],), f"Unexpected coverage shape: {coverage.shape}"
     assert len(coverage) > 0, "Coverage array is empty"
 
@@ -98,8 +98,8 @@ def test_mcc_viewpoints_have_independent_coverage_arrays(mcc_store, mock_mcc_bam
     idx_runx1 = mcc_store.sample_names.index(name_runx1)
     idx_exo1 = mcc_store.sample_names.index(name_exo1)
 
-    cov_runx1 = mcc_store.root["chr21"][idx_runx1, :]
-    cov_exo1 = mcc_store.root["chr21"][idx_exo1, :]
+    cov_runx1 = mcc_store.root["coverage"]["chr21"][idx_runx1, :]
+    cov_exo1 = mcc_store.root["coverage"]["chr21"][idx_exo1, :]
 
     # Verify both arrays are properly shaped
     assert cov_runx1.shape == cov_exo1.shape, "Coverage arrays have different shapes"
