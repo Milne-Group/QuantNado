@@ -76,6 +76,7 @@ def metadata_from_seqnado(seqnado_dir: str | Path, output_dir: str | Path | None
         ``methylation_path``, ``variant_path``.
     writes quantnado metadata CSV files to the specified directory.
     """
+    import yaml 
     seqnado_dir = Path(seqnado_dir)
     out = seqnado_dir / "seqnado_output"
 
@@ -116,7 +117,18 @@ def metadata_from_seqnado(seqnado_dir: str | Path, output_dir: str | Path | None
     ].copy()
 
     metadata["bam_path"] = metadata["sample_id"].apply(lambda s: next(b for b in bams if s in b))
-    metadata["stranded"] = metadata["assay"].apply(lambda a: "R" if a == "RNA" else None)
+    
+    # for strandedness get rna config from seqnado_dir/config_rna.yaml
+    rna_config_path = seqnado_dir / "config_rna.yaml"
+    if rna_config_path.exists():
+        with open(rna_config_path) as f:
+            rna_config = yaml.safe_load(f)
+        config_strand = rna_config["assay_config"]["rna_quantification"]["strandedness"]
+        strand_value = "R" if config_strand == 2 else "F" if config_strand == 1 else "U"
+    else:
+        strand_value = "U"
+    metadata["stranded"] = metadata["assay"].apply(lambda a: strand_value if a == "RNA" else None)
+
     metadata["methylation_path"] = metadata["sample_id"].apply(
         lambda s: next((m for m in meth_files if s in m), None)
     )
