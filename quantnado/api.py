@@ -49,10 +49,85 @@ from quantnado.analysis.pca import run_pca as _run_pca
 from quantnado.analysis.plot import correlate, heatmap, locus_plot, metaplot, tornadoplot
 from quantnado.analysis.reduce import extract_byranges_signal, reduce_byranges_signal
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
-from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_bam import BamStore, CoverageType
 from quantnado.dataset.store_methyl import MethylStore
 from quantnado.dataset.store_multiomics import DEFAULT_CHUNK_LEN, MultiomicsStore
 from quantnado.dataset.store_variants import VariantStore
+
+
+def metadata_from_seqnado(seqnado_dir: str | Path, output_dir: str | Path | None = None) -> pd.DataFrame:
+    """
+    Build a QuantNado metadata DataFrame from a SeqNado project directory.
+
+    Scans the standard SeqNado output layout for BAM files (indexed), MethylDackel
+    bedGraphs, and VCF files, then joins them against all ``metadata_*.csv`` design
+    files found in ``seqnado_dir``.
+
+    Parameters
+    ----------
+    seqnado_dir : str or Path
+        Root of the SeqNado project (the directory that contains ``metadata_*.csv``
+        files and a ``seqnado_output/`` subdirectory).
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``assay``, ``sample_id``, ``ip``, ``bam_path``, ``stranded``,
+        ``methylation_path``, ``variant_path``.
+    writes quantnado metadata CSV files to the specified directory.
+    """
+    seqnado_dir = Path(seqnado_dir)
+    out = seqnado_dir / "seqnado_output"
+
+    def _index_is_fresh(bam: Path) -> bool:
+        idx = Path(str(bam) + ".bai")
+        return idx.exists() and idx.stat().st_mtime >= bam.stat().st_mtime
+
+    bams = sorted(
+        str(p) for p in out.glob("*/aligned/*.bam")
+        if _index_is_fresh(p)
+    )
+    stale = [
+        str(p) for p in out.glob("*/aligned/*.bam")
+        if Path(str(p) + ".bai").exists() and not _index_is_fresh(p)
+    ]
+    if stale:
+        logger.warning(
+            "Skipping {} BAM(s) with stale index (re-run samtools index): {}",
+            len(stale), stale,
+        )
+    meth_files = sorted(str(p) for p in out.glob("meth/methylation/methyldackel/*.bedGraph"))
+    snp_files = sorted(str(p) for p in out.glob("snp/variant/*.vcf"))
+
+    design_files = sorted(seqnado_dir.glob("metadata_*.csv"))
+    if not design_files:
+        raise FileNotFoundError(f"No metadata_*.csv files found in {seqnado_dir}")
+
+    metadata = pd.concat(
+        [pd.read_csv(f) for f in design_files], ignore_index=True
+    )[["assay", "sample_id", "ip"]]
+
+    metadata["sample_id"] = metadata.apply(
+        lambda row: f"{row['sample_id']}_{row['ip']}" if pd.notna(row["ip"]) else row["sample_id"],
+        axis=1,
+    )
+    metadata = metadata[
+        metadata["sample_id"].apply(lambda s: any(s in b for b in bams))
+    ].copy()
+
+    metadata["bam_path"] = metadata["sample_id"].apply(lambda s: next(b for b in bams if s in b))
+    metadata["stranded"] = metadata["assay"].apply(lambda a: "R" if a == "RNA" else None)
+    metadata["methylation_path"] = metadata["sample_id"].apply(
+        lambda s: next((m for m in meth_files if s in m), None)
+    )
+    metadata["variant_path"] = metadata["sample_id"].apply(
+        lambda s: next((v for v in snp_files if s in v), None)
+    )
+    metadata.reset_index(drop=True, inplace=True)
+    if output_dir is not None:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        metadata.to_csv(Path(output_dir) / "quantnado_metadata.csv", index=False)
+    return metadata
 
 
 class QuantNado:
@@ -121,11 +196,16 @@ class QuantNado:
         QuantNado
         """
         path = Path(path)
+        if str(path).endswith(".zarr.zip"):
+            return cls(BamStore.open(path, read_only=read_only))
         if str(path).endswith(".zarr"):
             return cls(BamStore.open(path, read_only=read_only))
         zarr_path = path.with_suffix(".zarr")
         if zarr_path.exists():
             return cls(BamStore.open(zarr_path, read_only=read_only))
+        # Detect a plain zarr store directory (zarr v3 has zarr.json at root)
+        if (path / "zarr.json").exists() or (path / ".zattrs").exists():
+            return cls(BamStore.open(path, read_only=read_only))
         return cls(MultiomicsStore.open(path))
 
     # Alias for backward compatibility (optional, but requested rename)
@@ -176,6 +256,9 @@ class QuantNado:
         # Reference / metadata
         chromsizes: str | Path | dict[str, int] | None = None,
         metadata: pd.DataFrame | Path | str | None = None,
+        seqnado_dir: str | Path | None = None,
+        subset_samples: int | None = None,
+        sample: str | list[str] | None = None,
         *,
         sample_column: str = "sample_id",
         # Sample naming
@@ -276,6 +359,51 @@ class QuantNado:
         -------
         QuantNado
         """
+
+        # Build metadata from a SeqNado output directory when provided.
+        if seqnado_dir is not None and metadata is None:
+            metadata = metadata_from_seqnado(seqnado_dir)
+
+        if subset_samples is not None and metadata is not None and isinstance(metadata, pd.DataFrame):
+            metadata = metadata.groupby("assay").head(subset_samples).reset_index(drop=True)
+
+        if sample is not None and metadata is not None and isinstance(metadata, pd.DataFrame):
+            _samples = [sample] if isinstance(sample, str) else list(sample)
+            metadata = metadata[metadata[sample_column].isin(_samples)].reset_index(drop=True)
+
+        # Infer file lists and stranded config from metadata columns when not provided
+        # explicitly.  Supported columns: bam_path, methylation_path, variant_path, stranded.
+        _meta_df: pd.DataFrame | None = None
+        if isinstance(metadata, (str, Path)):
+            _meta_df = pd.read_csv(metadata)
+        elif isinstance(metadata, pd.DataFrame):
+            _meta_df = metadata.reset_index(drop=True)
+
+        if _meta_df is not None:
+            _id_col = sample_column if sample_column in _meta_df.columns else None
+
+            if bam_files is None and "bam_path" in _meta_df.columns:
+                _valid_bam = _meta_df[_meta_df["bam_path"].notna()]
+                bam_files = _valid_bam["bam_path"].tolist() or None
+                if bam_files and bam_sample_names is None and _id_col:
+                    bam_sample_names = _valid_bam[_id_col].tolist()
+
+            if methylation_files is None and "methylation_path" in _meta_df.columns:
+                _valid_meth = _meta_df[_meta_df["methylation_path"].notna()]
+                methylation_files = _valid_meth["methylation_path"].tolist() or None
+                if methylation_files and methylation_sample_names is None and _id_col:
+                    methylation_sample_names = _valid_meth[_id_col].tolist()
+
+            if vcf_files is None and "variant_path" in _meta_df.columns:
+                _valid_vcf = _meta_df[_meta_df["variant_path"].notna()]
+                vcf_files = _valid_vcf["variant_path"].tolist() or None
+                if vcf_files and vcf_sample_names is None and _id_col:
+                    vcf_sample_names = _valid_vcf[_id_col].tolist()
+
+            if stranded is None and "stranded" in _meta_df.columns and _id_col:
+                _stranded_rows = _meta_df[_meta_df["stranded"].notna() & (_meta_df["stranded"] != "")]
+                if not _stranded_rows.empty:
+                    stranded = dict(zip(_stranded_rows[_id_col], _stranded_rows["stranded"]))
 
         # Classify methylation files by filename pattern, tracking names alongside files
         # so name assignment follows type-based reordering rather than alphabetical position.
@@ -456,6 +584,18 @@ class QuantNado:
             summary_lines.append(f"  {sample:<{col_width}}  [{', '.join(mods)}]")
         logger.info("\n".join(summary_lines))
 
+        # Translate the api-level `stranded` parameter (list of names, or dict of name→library)
+        # into the CoverageType dict that MultiomicsStore.from_files() expects.
+        if stranded is None:
+            coverage_type_arg: CoverageType | dict[str, CoverageType] = CoverageType.UNSTRANDED
+        else:
+            _stranded_keys = set(stranded.keys() if isinstance(stranded, dict) else stranded)
+            _bam_names_for_ct = bam_sample_names or [Path(f).stem for f in (bam_files or [])]
+            coverage_type_arg = {
+                n: (CoverageType.STRANDED if n in _stranded_keys else CoverageType.UNSTRANDED)
+                for n in _bam_names_for_ct
+            }
+
         ms = MultiomicsStore.from_files(
             store_dir=store_dir,
             bam_files=bam_files,
@@ -482,7 +622,7 @@ class QuantNado:
             log_file=log_file,
             max_workers=max_workers,
             test=test,
-            stranded=stranded,
+            coverage_type=coverage_type_arg,
         )
         return cls(ms)
 

@@ -479,10 +479,8 @@ class TestFromSplitCXreportFiles:
 
         assert store.sample_names == ["s1"]
         assert "chr1" in store.chromosomes
-        df = store.root["chr1"]
-        # n_mc and n_hmc arrays should exist
-        assert "n_mc" in df
-        assert "n_hmc" in df
+        assert "n_mc" in store.root
+        assert "n_hmc" in store.root
 
     def test_mc_files_only(self, tmp_path):
         mc = _write_split_cxreport(tmp_path / "s1.num_mc_cxreport.txt", self._mc_rows())

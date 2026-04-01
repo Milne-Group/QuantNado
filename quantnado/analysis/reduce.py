@@ -21,6 +21,58 @@ if TYPE_CHECKING:
 	pass
 
 
+class _RootView:
+	"""Adapts the new coverage-group layout to look like the old flat-at-root layout.
+
+	New layout: root["coverage"]["chr1"], root["coverage_fwd"]["chr1"]
+	Old layout: root["chr1"], root["chr1_fwd"]
+
+	Exposes:
+	  pos_axis      = 0  (position is axis 0 in new layout)
+	  samples_axis  = 1
+	"""
+
+	pos_axis = 0
+	samples_axis = 1
+
+	def __init__(self, zarr_root) -> None:
+		self._root = zarr_root
+		self._cov = zarr_root["coverage"]
+		self._fwd = zarr_root.get("coverage_fwd")
+		self._rev = zarr_root.get("coverage_rev")
+
+	def __contains__(self, key: str) -> bool:
+		if key.endswith("_fwd"):
+			return self._fwd is not None and key[:-4] in self._fwd
+		if key.endswith("_rev"):
+			return self._rev is not None and key[:-4] in self._rev
+		return key in self._cov
+
+	def __getitem__(self, key: str):
+		if key.endswith("_fwd") and self._fwd is not None:
+			return self._fwd[key[:-4]]
+		if key.endswith("_rev") and self._rev is not None:
+			return self._rev[key[:-4]]
+		return self._cov[key]
+
+	def keys(self):
+		return self._cov.keys()
+
+	def chrom_len(self, key: str) -> int:
+		"""Return the position-axis length for the given key."""
+		return int(self[key].shape[self.pos_axis])
+
+	def get(self, key: str, default=None):
+		try:
+			return self[key]
+		except KeyError:
+			return default
+
+	@property
+	def attrs(self):
+		return self._root.attrs
+
+
 def _ensure_dask_2d(data: xr.DataArray | np.ndarray | da.Array) -> da.Array:
 	"""Return a 2D dask array (positions x samples) for reduction."""
 	arr = data
@@ -211,10 +263,19 @@ def _select_samples(
 	if completed_mask is None and meta is not None and "completed" in meta:
 		completed_mask = meta["completed"][:].astype(bool)
 
-	first_chrom = next((k for k in root.keys() if k != "metadata"), None)
+	import zarr as _zarr
+	first_chrom = next(
+		(k for k in root.keys() if k != "metadata" and isinstance(root[k], _zarr.Array)),
+		None,
+	)
 	if first_chrom is None:
-		raise ValueError("No chromosome data found in dataset")
-	total_samples = root[first_chrom].shape[0]
+		# New layout: chromosomes live under coverage/ group — wrap with _RootView
+		if "coverage" in root:
+			root = _RootView(root)
+			first_chrom = next(iter(root.keys()), None)
+		if first_chrom is None:
+			raise ValueError("No chromosome data found in dataset")
+	total_samples = root[first_chrom].shape[_RootView.samples_axis if isinstance(root, _RootView) else 0]
 
 	if completed_mask is None:
 		completed_mask = np.ones(total_samples, dtype=bool)
@@ -879,7 +940,7 @@ def extract_byranges_signal(
 	# Determine global extraction width.
 	# If bin_size is provided, drop remainder bases (exact multiple of bin_size only).
 	if _total_width is None:
-		contig_lengths = {k: int(root[k].shape[1]) for k in root.keys() if k != "metadata"}
+		contig_lengths = {k: (root.chrom_len(k) if isinstance(root, _RootView) else int(root[k].shape[1])) for k in root.keys() if k != "metadata"}
 		contig_len = ranges_df[contig_col].map(contig_lengths)
 		starts_all = np.asarray(ranges_df[start_col], dtype=np.int64)
 		ends_all = np.asarray(ranges_df[end_col], dtype=np.int64)
@@ -941,7 +1002,7 @@ def extract_byranges_signal(
 		)
 		# Get chromosome length from zarr shape without loading data
 		_ref_akey = (f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev") if use_forced_strand else contig
-		arr_len = int(root[_ref_akey].shape[1])
+		arr_len = root.chrom_len(_ref_akey) if isinstance(root, _RootView) else int(root[_ref_akey].shape[1])
 
 		clipped_starts = np.maximum(starts, 0)
 		clipped_ends = np.minimum(ends, arr_len)
@@ -980,9 +1041,9 @@ def extract_byranges_signal(
 			span_start = int(clipped_starts.min())
 			span_end = int(clipped_ends.max())
 
-		# Load only the span of positions needed, transposed to (positions, samples)
+		# Load only the span of positions needed: array is (position, sample)
 		def _load_arr(akey: str) -> "da.Array":
-			region = root[akey].oindex[sample_indices.tolist(), span_start:span_end].T.astype(np.float32)
+			region = root[akey][span_start:span_end, sample_indices.tolist()].astype(np.float32)
 			return da.from_array(region, chunks=("auto", len(sample_indices)))
 
 		if use_forced_strand:
@@ -1315,7 +1376,7 @@ def reduce_byranges_signal(
 			names = np.asarray(sg[name_col], dtype=object) if name_col is not None else None
 
 			# Chromosome length from zarr shape; no need to load data yet
-			arr_len = int(root[akey].shape[1])
+			arr_len = root.chrom_len(akey) if isinstance(root, _RootView) else int(root[akey].shape[1])
 
 			# Clip coordinates to valid range
 			starts = starts.clip(min=0)
@@ -1334,10 +1395,10 @@ def reduce_byranges_signal(
 				continue
 
 			# Load only the span of positions touched by these ranges.
-			# Avoids building a full-chromosome dask graph when ranges cluster in a small region.
+			# Array is (position, sample) — slice directly, no transpose needed.
 			span_start = int(starts.min())
 			span_end = int(ends.max())
-			region_np = root[akey].oindex[sample_indices.tolist(), span_start:span_end].T
+			region_np = root[akey][span_start:span_end, sample_indices.tolist()]
 			arr = da.from_array(region_np, chunks=("auto", len(sample_indices)))
 
 			# Rebase range coordinates to be relative to span_start

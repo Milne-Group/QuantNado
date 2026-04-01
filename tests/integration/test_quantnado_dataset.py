@@ -25,10 +25,11 @@ def _make_store(tmp_path, chrom_sizes=None, sample_names=None, all_complete=True
         sample_names = ["s1", "s2"]
 
     root = zarr.open(str(tmp_path / "store.zarr"), mode="w")
+    cov_grp = root.require_group("coverage")
     for chrom, size in chrom_sizes.items():
-        arr = root.create_array(chrom, shape=(len(sample_names), size), dtype=np.uint16)
+        arr = cov_grp.create_array(chrom, shape=(size, len(sample_names)), dtype=np.uint16)
         for i in range(len(sample_names)):
-            arr[i, :] = np.ones(size, dtype=np.uint16) * (i + 1)
+            arr[:, i] = np.ones(size, dtype=np.uint16) * (i + 1)
 
     meta = root.require_group("metadata")
     completed = np.array([True] * len(sample_names)) if all_complete else np.array([True, False] + [True] * max(0, len(sample_names) - 2))
@@ -131,7 +132,7 @@ class TestGetChrom:
         ds = cls(store_path)
         arr = ds.get_chrom("chr1")
         assert arr is not None
-        assert arr.shape == (2, 100)
+        assert arr.shape == (100, 2)
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated", categor
 import typer
 from loguru import logger
 import traceback
+import pandas as pd
 from pathlib import Path
 
 from quantnado.dataset.store_bam import BamStore, CoverageType
@@ -140,6 +141,25 @@ def call_peaks(
 @app.command()
 def create_dataset(
     output: Path = typer.Option(..., "--output", "-o", help="Output directory for the multiomics store."),
+    # SeqNado convenience shortcut
+    seqnado_dir: Path | None = typer.Option(
+        None,
+        "--seqnado-dir",
+        help=(
+            "Path to a SeqNado project directory. When provided, BAM/methylation/VCF files "
+            "are discovered automatically from seqnado_output/ and design CSV files."
+        ),
+    ),
+    subset_samples: int | None = typer.Option(
+        None,
+        "--subset-samples",
+        help="When using --seqnado-dir, keep only the first N samples per assay.",
+    ),
+    sample: str | None = typer.Option(
+        None,
+        "--sample",
+        help="Comma-separated sample_id value(s) to process. Filters the metadata to matching rows.",
+    ),
     # Input files
     bam: str | None = typer.Option(None, "--bam", help="Comma-separated BAM files for coverage."),
     methylation: str | None = typer.Option(
@@ -156,7 +176,15 @@ def create_dataset(
     chromsizes: Path | None = typer.Option(
         None, "--chromsizes", help="Path to chromsizes. If omitted, extracted from first BAM."
     ),
-    metadata: Path | None = typer.Option(None, "--metadata", help="Path to metadata CSV file."),
+    metadata: str | None = typer.Option(
+        None,
+        "--metadata",
+        help=(
+            "Path to metadata CSV file, or a comma-separated list of CSV files (e.g. one SeqNado design "
+            "file per assay). Files are merged on shared columns; r1/r2 path columns are ignored. "
+            "Any 'assay' column present in the CSV(s) is stored per sample automatically."
+        ),
+    ),
     sample_column: str = typer.Option("sample_id", "--sample-column", help="Column in metadata matching sample names."),
     # Sample naming
     bam_sample_names: str | None = typer.Option(None, "--bam-sample-names", help="Comma-separated sample name overrides for BAM files."),
@@ -169,7 +197,22 @@ def create_dataset(
         ),
     ),
     vcf_sample_names: str | None = typer.Option(None, "--vcf-sample-names", help="Comma-separated sample name overrides for VCF files."),
-    # Coverage options
+    # Assay labels (optional, one per file or broadcast from a single value)
+    bam_assays: str | None = typer.Option(
+        None,
+        "--bam-assays",
+        help="Assay label(s) for BAM files. Single value is broadcast to all BAM files; comma-separated list must match the number of BAM files.",
+    ),
+    methylation_assays: str | None = typer.Option(
+        None,
+        "--methylation-assays",
+        help="Assay label(s) for methylation files. Single value is broadcast to all methylation files; comma-separated list must match the number of methylation files.",
+    ),
+    vcf_assays: str | None = typer.Option(
+        None,
+        "--vcf-assays",
+        help="Assay label(s) for VCF files. Single value is broadcast to all VCF files; comma-separated list must match the number of VCF files.",
+    ),
     filter_chromosomes: bool = typer.Option(True, "--filter-chromosomes/--no-filter-chromosomes", help="Keep only canonical chromosomes."),
     coverage_type: str | None = typer.Option(
         None,
@@ -247,6 +290,38 @@ def create_dataset(
     """
     _setup_cli_logging(log_file, verbose)
 
+    # --- SeqNado shortcut ---
+    if seqnado_dir is not None and not any([bam, methylation, vcf]):
+        from quantnado.api import QuantNado
+        _sample_list = [s.strip() for s in sample.split(",") if s.strip()] if sample else None
+        _sample_arg: str | list[str] | None = (
+            _sample_list[0] if _sample_list and len(_sample_list) == 1 else _sample_list
+        )
+        try:
+            QuantNado.create_dataset(
+                store_dir=output,
+                seqnado_dir=seqnado_dir,
+                subset_samples=subset_samples,
+                sample=_sample_arg,
+                sample_column=sample_column,
+                filter_chromosomes=filter_chromosomes,
+                overwrite=overwrite,
+                resume=resume,
+                max_workers=max_workers,
+                chunk_len=chunk_len,
+                construction_compression=construction_compression,
+                local_staging=local_staging,
+                staging_dir=staging_dir,
+                test=test,
+                log_file=log_file,
+            )
+            logger.success(f"Multiomics store created: {output}")
+        except Exception as e:
+            logger.error(f"Dataset creation failed: {e}")
+            logger.debug(traceback.format_exc())
+            raise typer.Exit(code=1)
+        return
+
     def _parse_coverage_type(raw: str | None) -> CoverageType | list[CoverageType] | dict[str, CoverageType]:
         """Convert the --coverage-type CLI string into the form BamStore expects.
 
@@ -318,10 +393,68 @@ def create_dataset(
     cxreport_names = all_meth_names[n_bg:n_bg + n_cx] if all_meth_names else []
     mc_hmc_names = all_meth_names[n_bg + n_cx:n_bg + n_cx + n_mchmc] if all_meth_names else []
 
+    # Load and merge metadata CSV(s). Multiple paths (comma-separated) are supported so that
+    # per-assay SeqNado design files can be passed together, e.g.:
+    #   --metadata metadata_atac.csv,metadata_chip.csv,metadata_rna.csv
+    # r1/r2 fastq path columns are stripped; all other columns (assay, scaling_group, etc.) are kept.
+    metadata_paths = [Path(p) for p in _split(metadata)]
+    if not metadata_paths:
+        base_metadata_df: pd.DataFrame | Path | None = None
+    elif len(metadata_paths) == 1:
+        base_metadata_df = metadata_paths[0]
+    else:
+        base_metadata_df = BamStore._combine_metadata_files(metadata_paths)
+
     if not any([bam_files, methyldackel_files, cxreport_files, mc_files, hmc_files, vcf_files]):
         logger.error("Provide at least one of --bam, --methylation, or --vcf.")
         raise typer.Exit(code=1)
 
+    # Build optional assay metadata DataFrame.
+    # Per-modality assay lists are resolved by broadcasting a single value
+    # or validating that a multi-value list matches the file count.
+    def _resolve_assays(raw: str | None, sample_names: list[str], label: str) -> list[tuple[str, str]]:
+        """Return [(sample_name, assay), ...] or [] if no assays specified."""
+        if raw is None:
+            return []
+        parts = [v.strip() for v in raw.split(",") if v.strip()]
+        if len(parts) == 1:
+            parts = parts * len(sample_names)
+        elif len(parts) != len(sample_names):
+            logger.error(
+                f"--{label}-assays: got {len(parts)} value(s) but {len(sample_names)} sample(s). "
+                "Provide a single value to broadcast or one value per sample."
+            )
+            raise typer.Exit(code=1)
+        return list(zip(sample_names, parts))
+
+    # Resolve effective sample names for each modality (mirrors what MultiomicsStore will use).
+    effective_bam_names = bam_names if bam_names else [Path(f).stem for f in bam_files]
+    effective_meth_names = (
+        bedgraph_names + cxreport_names + mc_hmc_names
+        if (bedgraph_names or cxreport_names or mc_hmc_names)
+        else [Path(f).stem for f in (methyldackel_files + cxreport_files + mc_files)]
+    )
+    effective_vcf_names = vcf_names if vcf_names else [Path(f).stem for f in vcf_files]
+
+    assay_pairs: list[tuple[str, str]] = (
+        _resolve_assays(bam_assays, effective_bam_names, "bam")
+        + _resolve_assays(methylation_assays, effective_meth_names, "methylation")
+        + _resolve_assays(vcf_assays, effective_vcf_names, "vcf")
+    )
+
+    # Merge assay labels from --bam-assays/--methylation-assays/--vcf-assays into metadata.
+    # When SeqNado design CSVs supply an 'assay' column these flags are not needed.
+    if assay_pairs:
+        assay_df = pd.DataFrame(assay_pairs, columns=[sample_column, "assay"])
+        if base_metadata_df is not None:
+            loaded = pd.read_csv(base_metadata_df) if isinstance(base_metadata_df, Path) else base_metadata_df
+            if "assay" not in loaded.columns:
+                loaded = loaded.merge(assay_df, on=sample_column, how="left")
+            metadata_to_pass: pd.DataFrame | Path | None = loaded
+        else:
+            metadata_to_pass = assay_df
+    else:
+        metadata_to_pass = base_metadata_df
     modality_counts = [
         f"{len(bam_files)} BAM" if bam_files else None,
         f"{len(methyldackel_files)} bedGraph" if methyldackel_files else None,
@@ -343,7 +476,7 @@ def create_dataset(
             hmc_files=hmc_files or None,
             vcf_files=vcf_files or None,
             chromsizes=chromsizes,
-            metadata=metadata,
+            metadata=metadata_to_pass,
             bam_sample_names=bam_names or None,
             methyldackel_sample_names=bedgraph_names or None,
             cxreport_sample_names=cxreport_names or None,

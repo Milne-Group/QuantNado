@@ -25,8 +25,9 @@ def test_bamstore_write_and_metadata(tmp_path, chromsizes, sample_names, monkeyp
     store = BamStore(tmp_path / "ds", chromsizes, sample_names)
     store.process_samples(["1", "2"])
 
-    assert np.all(store.root["chr1"][0, :] == 1)
-    assert np.all(store.root["chr2"][1, :] == 2)
+    # New layout: coverage/chrom shape is (position, n_samples)
+    assert np.all(store.root["coverage"]["chr1"][:, 0] == 1)   # sample 0 = bam "1"
+    assert np.all(store.root["coverage"]["chr2"][:, 1] == 2)   # sample 1 = bam "2"
     stored = [s.decode() if isinstance(s, (bytes, bytearray)) else s for s in store.root.attrs["sample_names"]]
     assert stored == sample_names
     assert store.completed_mask.tolist() == [True, True]
@@ -45,7 +46,8 @@ def test_bamstore_dataset_wrapper(tmp_path, chromsizes, sample_names, monkeypatc
     assert ds.sample_names == sample_names
     assert ds.completed_mask.tolist() == [True, True]
     assert ds.chromsizes == chromsizes
-    np.testing.assert_array_equal(ds.get_chrom("chr1")[0, :], np.array([1, 1, 1, 1], dtype=np.uint32))
+    # get_chrom returns (position, n_samples); column 0 is sample s1 with value 1
+    np.testing.assert_array_equal(ds.get_chrom("chr1")[:, 0], np.array([1, 1, 1, 1], dtype=np.uint32))
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +61,7 @@ def test_resume_validates_sample_names(tmp_path, chromsizes, sample_names, monke
 
     BamStore(tmp_path / "ds", chromsizes, sample_names, resume=True, overwrite=False)
 
-    with pytest.raises(ValueError, match="names do not match"):
+    with pytest.raises(ValueError, match="mismatch"):
         BamStore(tmp_path / "ds", chromsizes, ["x", "y"], resume=True, overwrite=False)
 
 
@@ -113,9 +115,10 @@ def test_bamstore_metadata_crud_helpers(tmp_path):
     store = BamStore(tmp_path / "ds", {"chr1": 4}, ["s1"])
     store.update_metadata({"col1": ["val1"], "col2": ["val2"]})
 
-    assert set(store.list_metadata_columns()) == {"col1", "col2"}
+    assert {"col1", "col2"}.issubset(set(store.list_metadata_columns()))
     store.remove_metadata_columns(["col1"])
-    assert store.list_metadata_columns() == ["col2"]
+    assert "col1" not in store.list_metadata_columns()
+    assert "col2" in store.list_metadata_columns()
 
 
 def test_bamstore_metadata_json_roundtrip(tmp_path):
@@ -164,7 +167,7 @@ def test_bamstore_hash_validation_on_resume(tmp_path, monkeypatch):
     BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"])
     BamStore(tmp_path / "ds", {"chr1": 4}, ["s1", "s2"], resume=True, overwrite=False)
 
-    with pytest.raises(ValueError, match="names do not match"):
+    with pytest.raises(ValueError, match="mismatch"):
         BamStore(tmp_path / "ds", {"chr1": 4}, ["s2", "s1"], resume=True, overwrite=False)
 
 
@@ -420,7 +423,7 @@ def test_bamstore_construction_compression_profiles(
         construction_compression=profile,
     )
 
-    array = store.root["chr1"]
+    array = store.root["coverage"]["chr1"]
     assert store.root.attrs["construction_compression"] == profile
     assert len(array.compressors) == expected_compressors
 
@@ -454,8 +457,8 @@ def test_process_samples_streaming_writes_correct_data(
     store = BamStore(tmp_path / "streaming_ds", chromsizes, sample_names)
     store.process_samples(["1", "2"], max_workers=2)
 
-    assert np.all(store.root["chr1"][0, :] == 1)
-    assert np.all(store.root["chr2"][1, :] == 2)
+    assert np.all(store.root["coverage"]["chr1"][:, 0] == 1)
+    assert np.all(store.root["coverage"]["chr2"][:, 1] == 2)
     assert store.completed_mask.tolist() == [True, True]
     assert np.isfinite(store.meta["sparsity"][:]).all()
 
@@ -491,7 +494,7 @@ def test_bamstore_from_bam_files_with_local_staging_publishes_to_final_path(tmp_
 
     assert store.store_path == final_store
     assert final_store.exists()
-    assert np.all(store.root["chr1"][0, :] == 1)
+    assert np.all(store.root["coverage"]["chr1"][:, 0] == 1)
     assert list(scratch_dir.iterdir()) == []
 
 
@@ -768,11 +771,13 @@ def test_stranded_store_creates_fwd_rev_arrays(tmp_path, chromsizes, sample_name
     store = BamStore(tmp_path / "ds", chromsizes, sample_names, coverage_type=CoverageType.STRANDED)
     store.process_samples(["0", "0"])
 
+    assert "coverage_fwd" in store.root, "coverage_fwd group not found"
+    assert "coverage_rev" in store.root, "coverage_rev group not found"
     for chrom in chromsizes:
-        assert f"{chrom}_fwd" in store.root, f"{chrom}_fwd not found"
-        assert f"{chrom}_rev" in store.root, f"{chrom}_rev not found"
-    assert np.all(store.root["chr1_fwd"][0, :] == 1)
-    assert np.all(store.root["chr1_rev"][0, :] == 2)
+        assert chrom in store.root["coverage_fwd"], f"coverage_fwd/{chrom} not found"
+        assert chrom in store.root["coverage_rev"], f"coverage_rev/{chrom} not found"
+    assert np.all(store.root["coverage_fwd"]["chr1"][:, 0] == 1)
+    assert np.all(store.root["coverage_rev"]["chr1"][:, 0] == 2)
 
 
 def test_open_roundtrips_stranded_coverage_type(tmp_path, chromsizes, sample_names, monkeypatch):

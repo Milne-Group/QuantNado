@@ -1,6 +1,6 @@
 """QuantNado package initialization."""
 
-from quantnado.api import QuantNado, correlate, heatmap, locus_plot, metaplot, tornadoplot
+from quantnado.api import QuantNado, correlate, heatmap, locus_plot, metaplot, metadata_from_seqnado, tornadoplot
 from quantnado.analysis.normalise import get_library_sizes, get_mean_read_lengths, normalise
 from quantnado.analysis.pca import plot_pca_scree, plot_pca_scatter, run_pca as pca
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
@@ -26,6 +26,7 @@ __all__ = [
     "locus_plot",
     "create_dataset",
     "open_dataset",
+    "metadata_from_seqnado",
     "plot_pca_scree",
     "plot_pca_scatter",
     "normalise",

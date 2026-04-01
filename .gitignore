@@ -10,6 +10,7 @@
 202*
 build/
 /data/
+.venv
 
 # Allow test data BAM files
 !tests/data/
@@ -21,11 +22,8 @@ my_test/
 notebooks/
 site/
 sps*
-test_dataset.ipynb
+
 test_output/
-full_test
-test_run
-scripts/profile_extract_promoters.py
-scripts/.cache/profile_extract_promoters.pkl
 local/
-*plan.md
+test_dataset.ipynb
+test_dataset/

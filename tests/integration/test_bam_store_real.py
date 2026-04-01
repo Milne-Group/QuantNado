@@ -67,19 +67,18 @@ def test_mv411_unstranded_store_completes(mv411_unstranded_store, mv411_bam):
 
 def test_mv411_unstranded_arrays_have_correct_shape(mv411_unstranded_store):
     for chrom, size in _TEST_CHROMS.items():
-        arr = mv411_unstranded_store.root[chrom]
-        assert arr.shape == (1, size), f"{chrom}: expected (1, {size}), got {arr.shape}"
+        arr = mv411_unstranded_store.root["coverage"][chrom]
+        assert arr.shape == (size, 1), f"{chrom}: expected ({size}, 1), got {arr.shape}"
 
 
 def test_mv411_unstranded_has_no_fwd_rev_arrays(mv411_unstranded_store):
-    for chrom in _TEST_CHROMS:
-        assert f"{chrom}_fwd" not in mv411_unstranded_store.root
-        assert f"{chrom}_rev" not in mv411_unstranded_store.root
+    assert "coverage_fwd" not in mv411_unstranded_store.root
+    assert "coverage_rev" not in mv411_unstranded_store.root
 
 
 def test_mv411_unstranded_coverage_is_nonzero(mv411_unstranded_store):
     """A real BAM must produce at least some coverage on chrY."""
-    cov = mv411_unstranded_store.root["chrY"][0, :]
+    cov = mv411_unstranded_store.root["coverage"]["chrY"][:, 0]
     assert cov.sum() > 0, "Expected non-zero coverage on chrY"
 
 
@@ -100,23 +99,25 @@ def test_mv411_stranded_store_completes(mv411_stranded_store):
 
 
 def test_mv411_stranded_creates_fwd_rev_arrays(mv411_stranded_store):
+    assert "coverage_fwd" in mv411_stranded_store.root, "Missing coverage_fwd group"
+    assert "coverage_rev" in mv411_stranded_store.root, "Missing coverage_rev group"
     for chrom in _TEST_CHROMS:
-        assert f"{chrom}_fwd" in mv411_stranded_store.root, f"Missing {chrom}_fwd"
-        assert f"{chrom}_rev" in mv411_stranded_store.root, f"Missing {chrom}_rev"
+        assert chrom in mv411_stranded_store.root["coverage_fwd"], f"Missing coverage_fwd/{chrom}"
+        assert chrom in mv411_stranded_store.root["coverage_rev"], f"Missing coverage_rev/{chrom}"
 
 
 def test_mv411_stranded_fwd_rev_shapes_correct(mv411_stranded_store):
     for chrom, size in _TEST_CHROMS.items():
-        fwd = mv411_stranded_store.root[f"{chrom}_fwd"]
-        rev = mv411_stranded_store.root[f"{chrom}_rev"]
-        assert fwd.shape == (1, size)
-        assert rev.shape == (1, size)
+        fwd = mv411_stranded_store.root["coverage_fwd"][chrom]
+        rev = mv411_stranded_store.root["coverage_rev"][chrom]
+        assert fwd.shape == (size, 1)
+        assert rev.shape == (size, 1)
 
 
 def test_mv411_stranded_fwd_and_rev_both_nonzero(mv411_stranded_store):
     """Real paired-end reads should produce signal on both strands."""
-    fwd = mv411_stranded_store.root["chrY_fwd"][0, :]
-    rev = mv411_stranded_store.root["chrY_rev"][0, :]
+    fwd = mv411_stranded_store.root["coverage_fwd"]["chrY"][:, 0]
+    rev = mv411_stranded_store.root["coverage_rev"]["chrY"][:, 0]
     assert fwd.sum() > 0, "Expected non-zero forward-strand coverage on chrY"
     assert rev.sum() > 0, "Expected non-zero reverse-strand coverage on chrY"
 
@@ -131,9 +132,9 @@ def test_mv411_stranded_fwd_plus_rev_consistent_with_unstranded(
     one count per fragment).  We just verify the stranded total is within the
     range [1×, 3×] of the unstranded total.
     """
-    fwd = mv411_stranded_store.root["chrY_fwd"][0, :].astype(np.int64)
-    rev = mv411_stranded_store.root["chrY_rev"][0, :].astype(np.int64)
-    unstranded = mv411_unstranded_store.root["chrY"][0, :].astype(np.int64)
+    fwd = mv411_stranded_store.root["coverage_fwd"]["chrY"][:, 0].astype(np.int64)
+    rev = mv411_stranded_store.root["coverage_rev"]["chrY"][:, 0].astype(np.int64)
+    unstranded = mv411_unstranded_store.root["coverage"]["chrY"][:, 0].astype(np.int64)
 
     stranded_total = int(fwd.sum() + rev.sum())
     unstranded_total = int(unstranded.sum())
@@ -162,7 +163,7 @@ def test_mv411_fragment_store_completes(mv411_fragment_store):
 
 
 def test_mv411_fragment_coverage_is_nonzero(mv411_fragment_store):
-    cov = mv411_fragment_store.root["chrY"][0, :]
+    cov = mv411_fragment_store.root["coverage"]["chrY"][:, 0]
     assert cov.sum() > 0, "Fragment coverage on chrY should be non-zero"
 
 
@@ -170,8 +171,8 @@ def test_mv411_fragment_count_differs_from_read_count(
     mv411_fragment_store, mv411_unstranded_store
 ):
     """Fragment-level counting should differ from read-level counting for paired-end data."""
-    frag_cov = mv411_fragment_store.root["chrY"][0, :].astype(np.int64)
-    read_cov = mv411_unstranded_store.root["chrY"][0, :].astype(np.int64)
+    frag_cov = mv411_fragment_store.root["coverage"]["chrY"][:, 0].astype(np.int64)
+    read_cov = mv411_unstranded_store.root["coverage"]["chrY"][:, 0].astype(np.int64)
 
     # Counts may differ; at minimum both should be positive
     assert frag_cov.sum() > 0
@@ -203,8 +204,8 @@ def test_mv411_mapq_filter_reduces_coverage(mv411_bam, tmp_path):
         bam_filters=bamnado.ReadFilter(min_mapq=60),
     )
 
-    total_no_filter = int(store_no_filter.root["chrY"][0, :].sum())
-    total_strict = int(store_strict.root["chrY"][0, :].sum())
+    total_no_filter = int(store_no_filter.root["coverage"]["chrY"][:, 0].sum())
+    total_strict = int(store_strict.root["coverage"]["chrY"][:, 0].sum())
 
     assert total_no_filter > 0
     assert total_strict >= 0
