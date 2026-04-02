@@ -108,7 +108,9 @@ def _process_chromosome_mcc(
         return result
 
     vp_set = set(viewpoints)
-    arrays: dict[str, np.ndarray] = {vp: np.zeros(contig_size, dtype=np.uint32) for vp in viewpoints}
+    # Difference arrays: diff[start] += 1, diff[end] -= 1, then cumsum → coverage.
+    # O(n_reads) point updates vs O(n_reads × read_length) slice increments.
+    diffs: dict[str, np.ndarray] = {vp: np.zeros(contig_size + 1, dtype=np.int32) for vp in viewpoints}
 
     min_mapq = base_filter.min_mapq
     require_proper_pair = base_filter.proper_pair
@@ -123,7 +125,7 @@ def _process_chromosome_mcc(
         try:
             reads = bam.fetch(contig)
         except ValueError:
-            return arrays  # contig not in BAM
+            return {vp: np.zeros(contig_size, dtype=np.uint32) for vp in viewpoints}
 
         try:
             for read in reads:
@@ -154,7 +156,7 @@ def _process_chromosome_mcc(
                 if vp not in vp_set:
                     continue
 
-                arr = arrays[vp]
+                diff = diffs[vp]
                 if use_fragment and read.template_length != 0:
                     start = min(read.reference_start, read.next_reference_start)
                     end = start + abs(read.template_length)
@@ -164,11 +166,12 @@ def _process_chromosome_mcc(
                 start = max(0, start)
                 end = min(contig_size, end)
                 if start < end:
-                    arr[start:end] += 1
+                    diff[start] += 1
+                    diff[end] -= 1
         except ValueError:
-            pass  # pysam spurious "Firing event N" at end of fetch — arrays are complete
+            pass  # pysam spurious "Firing event N" at end of fetch
 
-    return arrays
+    return {vp: np.cumsum(diffs[vp])[:contig_size].astype(np.uint32) for vp in viewpoints}
 
 
 def _get_viewpoints_from_mcc_bam(bam_path: Path | str, viewpoint_tag: str = "VP") -> list[str]:
@@ -949,6 +952,7 @@ class BamStore(BaseStore):
             hash_bytes = bytes.fromhex(bam_hash)
             self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(hash_bytes, dtype=np.uint8)
         self.meta["completed"][sample_idx] = True
+        logger.info(f"Completed {sample_name}: {total_reads:,} mapped reads")
 
     def _process_mcc_samples(
         self,
@@ -1043,6 +1047,9 @@ class BamStore(BaseStore):
                 dtype=np.uint8,
             )
         self.meta["completed"][sample_idx] = True
+        _name = self.sample_names[sample_idx]
+        _reads = int(attrs.get("total_reads", 0))
+        logger.info(f"Completed {_name}: {_reads:,} mapped reads")
 
     def process_samples(
         self,
