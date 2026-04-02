@@ -30,6 +30,7 @@ from loguru import logger
 from zarr.storage import LocalStore
 
 from quantnado.analysis.core import QuantNadoDataset
+from quantnado.utils import estimate_chunk_len, is_network_fs
 
 
 def combine_bam_stores(
@@ -138,16 +139,18 @@ def combine_bam_stores(
     # old (chromosomes at root, shape (n_samples, chrom_len))
     _new_layout = "coverage" in ref.root
 
-    if ref.root.attrs.get("chunk_len"):
-        chunk_len: int = int(ref.root.attrs["chunk_len"])
-    elif _new_layout:
-        chunk_len = ref.root["coverage"][ref.chromosomes[0]].chunks[0]
-    else:
-        chunk_len = ref.root[ref.chromosomes[0]].chunks[1]
+    # Per-sample stores use large chunks for sequential writes; use the standard
+    # analysis chunk size for the combined output so individual chunks are manageable.
+    out_chunk_len = estimate_chunk_len(
+        contig_lengths=all_chromsizes,
+        dtype_bytes=4,  # uint32
+        n_samples=n_total,
+        fs_is_network=is_network_fs(str(_write_path)),
+    )["chunk_len"]
 
     logger.info(
         f"Combining {n_total} samples across {len(all_chroms)} chromosomes "
-        f"with chunk_len={chunk_len} ({'new' if _new_layout else 'old'} layout)"
+        f"with chunk_len={out_chunk_len} ({'new' if _new_layout else 'old'} layout)"
     )
 
     # --- Build output store ---
@@ -159,6 +162,7 @@ def combine_bam_stores(
     src_attrs["sample_names"] = all_sample_names
     src_attrs["n_samples"] = n_total
     src_attrs["chromsizes"] = all_chromsizes
+    src_attrs["chunk_len"] = out_chunk_len
     # sample_names_hash is per-sample; clear it — will be rebuilt from metadata
     src_attrs.pop("sample_names_hash", None)
     out_root.attrs.update(src_attrs)
@@ -183,14 +187,14 @@ def combine_bam_stores(
                 for ds in datasets:
                     n = len(ds.sample_names)
                     if gkey not in ds.root or chrom not in ds.root[gkey]:
-                        arrays.append(da.zeros((chrom_len, n), dtype=np.uint32, chunks=(chunk_len, n)))
+                        arrays.append(da.zeros((chrom_len, n), dtype=np.uint32, chunks=(out_chunk_len, n)))
                     else:
-                        arrays.append(da.from_array(ds.root[gkey][chrom], chunks=(chunk_len, n)))
-                combined = da.concatenate(arrays, axis=1).rechunk((chunk_len, n_total))
+                        arrays.append(da.from_array(ds.root[gkey][chrom], chunks=(out_chunk_len, n)))
+                combined = da.concatenate(arrays, axis=1).rechunk((out_chunk_len, n_total))
                 out_arr = out_cov_group.create_array(
                     name=chrom,
                     shape=(chrom_len, n_total),
-                    chunks=(chunk_len, n_total),
+                    chunks=(out_chunk_len, n_total),
                     dtype=np.uint32,
                     fill_value=0,
                     overwrite=True,
@@ -208,14 +212,14 @@ def combine_bam_stores(
             for ds in datasets:
                 n = len(ds.sample_names)
                 if akey not in ds.root:
-                    arrays.append(da.zeros((n, chrom_len), dtype=np.uint32, chunks=(n, chunk_len)))
+                    arrays.append(da.zeros((n, chrom_len), dtype=np.uint32, chunks=(n, out_chunk_len)))
                 else:
-                    arrays.append(da.from_array(ds.root[akey], chunks=(n, chunk_len)))
-            combined = da.concatenate(arrays, axis=0).rechunk((n_total, chunk_len))
+                    arrays.append(da.from_array(ds.root[akey], chunks=(n, out_chunk_len)))
+            combined = da.concatenate(arrays, axis=0).rechunk((n_total, out_chunk_len))
             out_arr = out_root.create_array(
                 name=akey,
                 shape=(n_total, chrom_len),
-                chunks=(n_total, chunk_len),
+                chunks=(n_total, out_chunk_len),
                 dtype=np.uint32,
                 fill_value=0,
                 overwrite=True,

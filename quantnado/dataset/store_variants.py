@@ -13,15 +13,14 @@ import xarray as xr
 import dask.array as da
 
 from .core import BaseStore
-from .store_bam import _compute_sample_hash, _to_str_list
+from ._bam_utils import _compute_sample_hash
+from quantnado.utils import estimate_chunk_len, is_network_fs
 
 # Genotype encoding
 GT_MISSING: np.int8 = np.int8(-1)
 GT_HOM_REF: np.int8 = np.int8(0)
 GT_HET: np.int8 = np.int8(1)
 GT_HOM_ALT: np.int8 = np.int8(2)
-
-CHUNK_LEN = 65536
 
 
 def _callset_to_chrom_dfs(
@@ -216,16 +215,6 @@ class VariantStore(BaseStore):
         )
 
     @staticmethod
-    def _normalize_path(path: Path | str) -> Path:
-        path = Path(path)
-        if not str(path).endswith(".zarr"):
-            path = path.with_suffix(".zarr")
-        return path
-
-    def _check_writable(self) -> None:
-        if getattr(self, "read_only", False):
-            raise RuntimeError("Store is in read-only mode. Reopen with read_only=False to allow modifications.")
-
     def _init_store(self) -> None:
         store = LocalStore(str(self.store_path))
         self.root = zarr.group(store=store, overwrite=True, zarr_format=3)
@@ -239,19 +228,6 @@ class VariantStore(BaseStore):
             "metadata_data_type": ["variants"] * self.n_samples,
         })
         logger.info(f"Initialized VariantStore at {self.store_path}")
-
-    def _load_existing(self) -> None:
-        store = LocalStore(str(self.store_path))
-        self.root = zarr.open_group(store=store, mode="a")
-        self.meta = self.root["metadata"]
-        logger.info(f"Resuming existing VariantStore at {self.store_path}")
-
-    def _validate_sample_names(self) -> None:
-        stored = self.root.attrs.get("sample_names")
-        if stored is None:
-            raise ValueError("Existing store missing sample_names attribute")
-        if [str(s) for s in stored] != self.sample_names:
-            raise ValueError("sample_names mismatch; refusing to resume to prevent corruption")
 
     @property
     def completed_mask(self) -> np.ndarray:
@@ -304,7 +280,15 @@ class VariantStore(BaseStore):
         contig_arr = np.concatenate(all_contig_idx)
         position_arr = np.concatenate(all_positions)
 
-        chunk = min(CHUNK_LEN, max(1, n_variants))
+        chunk = min(
+            estimate_chunk_len(
+                total_positions=n_variants,
+                dtype_bytes=4,  # int32/float32 — largest dtype in this store
+                n_samples=1,
+                fs_is_network=is_network_fs(str(self.store_path)),
+            )["chunk_len"],
+            max(1, n_variants),
+        )
 
         self.root.create_array("contig", shape=(n_variants,), dtype=np.uint8, fill_value=0,
                                overwrite=True, chunks=(chunk,), compressors=[self.compressor])
@@ -398,25 +382,7 @@ class VariantStore(BaseStore):
 
     # ── Metadata ────────────────────────────────────────────────────────────
 
-    def set_metadata(self, metadata: pd.DataFrame, sample_column: str = "sample_id") -> None:
-        self._check_writable()
-        if sample_column not in metadata.columns:
-            raise ValueError(f"Sample column '{sample_column}' not found in metadata")
-        meta_subset = metadata.copy()
-        meta_subset[sample_column] = meta_subset[sample_column].astype(str)
-        meta_subset = meta_subset.set_index(sample_column)
-        for col in meta_subset.columns:
-            values = _to_str_list(meta_subset[col].reindex(self.sample_names, fill_value="").tolist())
-            self.root.attrs[f"metadata_{col}"] = values
-
     # ── Data access ──────────────────────────────────────────────────────────
-
-    def _contig_row_range(self, chrom: str) -> tuple[int, int]:
-        offsets = self.root.attrs.get("contig_offsets", {})
-        if chrom not in offsets:
-            raise ValueError(f"Chromosome '{chrom}' not in store. Available: {self.chromosomes}")
-        start, end = offsets[chrom]
-        return int(start), int(end)
 
     def get_positions(self, chrom: str) -> np.ndarray:
         """Return variant positions (1-based) for a chromosome."""

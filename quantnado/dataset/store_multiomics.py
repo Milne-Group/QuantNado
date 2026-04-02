@@ -538,7 +538,6 @@ class MultiomicsStore:
 
             # contig labels: decode uint8 index → chromosome name
             contig_idx = da.from_zarr(meth.root["contig"])[site_slice]
-            contig_names = np.array(contig_list)
             positions    = da.from_zarr(meth.root["position"])[site_slice]
 
             if meth.has_mc_hmc_split:

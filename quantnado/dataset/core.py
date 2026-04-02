@@ -6,6 +6,7 @@ import pandas as pd
 import zarr
 import xarray as xr
 import dask.array as da
+from loguru import logger
 
 from .metadata import extract_metadata
 
@@ -109,10 +110,42 @@ class BaseStore:
         ]
 
     def _check_writable(self):
-        if self.root.mode == "r":
+        if getattr(self, "read_only", False):
             raise RuntimeError(
                 "Store is in read-only mode. Reopen with read_only=False to allow modifications."
             )
+
+    @staticmethod
+    def _normalize_path(path: "Path | str") -> "Path":
+        path = Path(path)
+        if str(path).endswith(".zarr.zip") or str(path).endswith(".zarr"):
+            return path
+        return path.with_suffix(".zarr")
+
+    def _load_existing(self) -> None:
+        from zarr.storage import LocalStore
+        import zarr as _zarr
+        store = LocalStore(str(self.store_path))
+        self.root = _zarr.open_group(store=store, mode="a")
+        self.meta = self.root.get("metadata")
+        logger.info(f"Resuming existing store at {self.store_path}")
+
+    def _validate_sample_names(self) -> None:
+        stored = self.root.attrs.get("sample_names")
+        if stored is None:
+            raise ValueError("Existing store missing sample_names attribute; cannot validate")
+        if [str(s) for s in stored] != self.sample_names:
+            raise ValueError(
+                "sample_names mismatch; refusing to resume to prevent corruption"
+            )
+
+    def _contig_row_range(self, chrom: str) -> "tuple[int, int]":
+        """Return (start_row, end_row) for a chromosome in the flat arrays."""
+        offsets = self.root.attrs.get("contig_offsets", {})
+        if chrom not in offsets:
+            raise ValueError(f"Chromosome '{chrom}' not in store. Available: {self.chromosomes}")
+        start, end = offsets[chrom]
+        return int(start), int(end)
 
     def remove_metadata_columns(self, columns: list[str]) -> None:
         self._check_writable()

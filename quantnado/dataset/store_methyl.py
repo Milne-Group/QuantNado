@@ -13,7 +13,8 @@ from zarr.codecs import BloscCodec
 from zarr.storage import LocalStore
 
 from .core import BaseStore
-from .store_bam import _compute_sample_hash, _to_str_list
+from ._bam_utils import _compute_sample_hash
+from quantnado.utils import estimate_chunk_len, is_network_fs
 
 
 def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[str, pd.DataFrame]:
@@ -253,8 +254,6 @@ class MethylStore(BaseStore):
     >>> region = store.extract_region("chr1:1000000-2000000")
     """
 
-    CHUNK_LEN = 65536
-
     def __init__(
         self,
         store_path: Path | str,
@@ -327,16 +326,6 @@ class MethylStore(BaseStore):
         )
 
     @staticmethod
-    def _normalize_path(path: Path | str) -> Path:
-        path = Path(path)
-        if not str(path).endswith(".zarr"):
-            path = path.with_suffix(".zarr")
-        return path
-
-    def _check_writable(self) -> None:
-        if getattr(self, "read_only", False):
-            raise RuntimeError("Store is in read-only mode. Reopen with read_only=False to allow modifications.")
-
     def _init_store(self) -> None:
         store = LocalStore(str(self.store_path))
         self.root = zarr.group(store=store, overwrite=True, zarr_format=3)
@@ -351,19 +340,6 @@ class MethylStore(BaseStore):
             "metadata_data_type": ["methylation"] * self.n_samples,
         })
         logger.info(f"Initialized MethylStore at {self.store_path}")
-
-    def _load_existing(self) -> None:
-        store = LocalStore(str(self.store_path))
-        self.root = zarr.open_group(store=store, mode="a")
-        self.meta = self.root["metadata"]
-        logger.info(f"Resuming existing MethylStore at {self.store_path}")
-
-    def _validate_sample_names(self) -> None:
-        stored = self.root.attrs.get("sample_names")
-        if stored is None:
-            raise ValueError("Existing store missing sample_names attribute")
-        if [str(s) for s in stored] != self.sample_names:
-            raise ValueError("sample_names mismatch; refusing to resume to prevent corruption")
 
     @property
     def completed_mask(self) -> np.ndarray:
@@ -424,7 +400,15 @@ class MethylStore(BaseStore):
         contig_arr = np.concatenate(all_contig_idx)
         position_arr = np.concatenate(all_positions)
 
-        chunk = min(self.CHUNK_LEN, max(1, n_sites))
+        chunk = min(
+            estimate_chunk_len(
+                total_positions=n_sites,
+                dtype_bytes=4,  # float32 — largest dtype in this store
+                n_samples=1,
+                fs_is_network=is_network_fs(str(self.store_path)),
+            )["chunk_len"],
+            max(1, n_sites),
+        )
 
         # Create flat coordinate arrays
         self.root.create_array(
@@ -471,11 +455,11 @@ class MethylStore(BaseStore):
                     continue
                 df = fd[chrom]
                 row_start, row_end = contig_offsets[chrom]
-                # positions for this chrom in the flat array
+                # positions for this chrom in the flat array (sorted, from np.unique)
                 chrom_positions = position_arr[row_start:row_end]
-                pos_to_flat = {int(p): row_start + i for i, p in enumerate(chrom_positions)}
-
-                flat_indices = np.array([pos_to_flat[int(p)] for p in df["start"].values])
+                flat_indices = row_start + np.searchsorted(
+                    chrom_positions, df["start"].values.astype(np.uint32)
+                )
 
                 self.root["methylation_pct"][flat_indices, sample_idx] = df["methylation_pct"].values
 
@@ -725,26 +709,7 @@ class MethylStore(BaseStore):
 
     # ── Metadata ────────────────────────────────────────────────────────────
 
-    def set_metadata(self, metadata: pd.DataFrame, sample_column: str = "sample_id") -> None:
-        self._check_writable()
-        if sample_column not in metadata.columns:
-            raise ValueError(f"Sample column '{sample_column}' not found in metadata")
-        meta_subset = metadata.copy()
-        meta_subset[sample_column] = meta_subset[sample_column].astype(str)
-        meta_subset = meta_subset.set_index(sample_column)
-        for col in meta_subset.columns:
-            values = _to_str_list(meta_subset[col].reindex(self.sample_names, fill_value="").tolist())
-            self.root.attrs[f"metadata_{col}"] = values
-
     # ── Data access ──────────────────────────────────────────────────────────
-
-    def _contig_row_range(self, chrom: str) -> tuple[int, int]:
-        """Return (start_row, end_row) for a chromosome in the flat arrays."""
-        offsets = self.root.attrs.get("contig_offsets", {})
-        if chrom not in offsets:
-            raise ValueError(f"Chromosome '{chrom}' not in store. Available: {self.chromosomes}")
-        start, end = offsets[chrom]
-        return int(start), int(end)
 
     def get_positions(self, chrom: str) -> np.ndarray:
         """Return CpG positions (0-based) for a chromosome."""
