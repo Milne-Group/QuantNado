@@ -51,11 +51,13 @@ from quantnado.analysis.reduce import extract_byranges_signal, reduce_byranges_s
 from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
 from quantnado.dataset.store_bam import BamStore, CoverageType
 from quantnado.dataset.store_methyl import MethylStore
-from quantnado.dataset.store_multiomics import DEFAULT_CHUNK_LEN, MultiomicsStore
+from quantnado.dataset.store_multiomics import MultiomicsStore
 from quantnado.dataset.store_variants import VariantStore
 
 
-def metadata_from_seqnado(seqnado_dir: str | Path, output_dir: str | Path | None = None) -> pd.DataFrame:
+def metadata_from_seqnado(
+    seqnado_dir: str | Path, output_dir: str | Path | None = None
+) -> pd.DataFrame:
     """
     Build a QuantNado metadata DataFrame from a SeqNado project directory.
 
@@ -76,7 +78,8 @@ def metadata_from_seqnado(seqnado_dir: str | Path, output_dir: str | Path | None
         ``methylation_path``, ``variant_path``.
     writes quantnado metadata CSV files to the specified directory.
     """
-    import yaml 
+    import yaml
+
     seqnado_dir = Path(seqnado_dir)
     out = seqnado_dir / "seqnado_output"
 
@@ -84,40 +87,43 @@ def metadata_from_seqnado(seqnado_dir: str | Path, output_dir: str | Path | None
         idx = Path(str(bam) + ".bai")
         return idx.exists() and idx.stat().st_mtime >= bam.stat().st_mtime
 
-    bams = sorted(
-        str(p) for p in out.glob("*/aligned/*.bam")
-        if _index_is_fresh(p)
-    )
+    bams = sorted(str(p) for p in out.glob("*/aligned/*.bam") if _index_is_fresh(p))
     stale = [
-        str(p) for p in out.glob("*/aligned/*.bam")
+        str(p)
+        for p in out.glob("*/aligned/*.bam")
         if Path(str(p) + ".bai").exists() and not _index_is_fresh(p)
     ]
     if stale:
         logger.warning(
             "Skipping {} BAM(s) with stale index (re-run samtools index): {}",
-            len(stale), stale,
+            len(stale),
+            stale,
         )
     meth_files = sorted(str(p) for p in out.glob("meth/methylation/methyldackel/*.bedGraph"))
-    snp_files = sorted(str(p) for p in out.glob("snp/variant/*.vcf"))
+    # Per-sample: prefer .anno.vcf.gz over plain .vcf.gz when both exist.
+    _vcf_by_stem: dict[str, Path] = {}
+    for _p in out.glob("snp/variant/*.vcf.gz"):
+        _stem = _p.name.replace(".anno.vcf.gz", "").replace(".vcf.gz", "")
+        if _stem not in _vcf_by_stem or ".anno." in _p.name:
+            _vcf_by_stem[_stem] = _p
+    snp_files = sorted(str(p) for p in _vcf_by_stem.values())
 
     design_files = sorted(seqnado_dir.glob("metadata_*.csv"))
     if not design_files:
         raise FileNotFoundError(f"No metadata_*.csv files found in {seqnado_dir}")
 
-    metadata = pd.concat(
-        [pd.read_csv(f) for f in design_files], ignore_index=True
-    )[["assay", "sample_id", "ip"]]
+    metadata = pd.concat([pd.read_csv(f) for f in design_files], ignore_index=True)[
+        ["assay", "sample_id", "ip"]
+    ]
 
     metadata["sample_id"] = metadata.apply(
         lambda row: f"{row['sample_id']}_{row['ip']}" if pd.notna(row["ip"]) else row["sample_id"],
         axis=1,
     )
-    metadata = metadata[
-        metadata["sample_id"].apply(lambda s: any(s in b for b in bams))
-    ].copy()
+    metadata = metadata[metadata["sample_id"].apply(lambda s: any(s in b for b in bams))].copy()
 
     metadata["bam_path"] = metadata["sample_id"].apply(lambda s: next(b for b in bams if s in b))
-    
+
     # for strandedness get rna config from seqnado_dir/config_rna.yaml
     rna_config_path = seqnado_dir / "config_rna.yaml"
     if rna_config_path.exists():
@@ -173,7 +179,9 @@ class QuantNado:
     >>> qn.modalities   # ['coverage', 'methylation', ...]
     """
 
-    def __init__(self, store: MultiomicsStore | BamStore, _sample_subset: list[str] | None = None) -> None:
+    def __init__(
+        self, store: MultiomicsStore | BamStore, _sample_subset: list[str] | None = None
+    ) -> None:
         if isinstance(store, MultiomicsStore):
             self._multiomics: MultiomicsStore | None = store
             self._bam: BamStore | None = store.coverage
@@ -285,7 +293,7 @@ class QuantNado:
         resume: bool = False,
         max_workers: int = 1,
         # Store format
-        chunk_len: int = DEFAULT_CHUNK_LEN,
+        chunk_len: int | None = None,
         construction_compression: str = "default",
         # Staging
         local_staging: bool = False,
@@ -376,7 +384,11 @@ class QuantNado:
         if seqnado_dir is not None and metadata is None:
             metadata = metadata_from_seqnado(seqnado_dir)
 
-        if subset_samples is not None and metadata is not None and isinstance(metadata, pd.DataFrame):
+        if (
+            subset_samples is not None
+            and metadata is not None
+            and isinstance(metadata, pd.DataFrame)
+        ):
             metadata = metadata.groupby("assay").head(subset_samples).reset_index(drop=True)
 
         if sample is not None and metadata is not None and isinstance(metadata, pd.DataFrame):
@@ -413,7 +425,9 @@ class QuantNado:
                     vcf_sample_names = _valid_vcf[_id_col].tolist()
 
             if stranded is None and "stranded" in _meta_df.columns and _id_col:
-                _stranded_rows = _meta_df[_meta_df["stranded"].notna() & (_meta_df["stranded"] != "")]
+                _stranded_rows = _meta_df[
+                    _meta_df["stranded"].notna() & (_meta_df["stranded"] != "")
+                ]
                 if not _stranded_rows.empty:
                     stranded = dict(zip(_stranded_rows[_id_col], _stranded_rows["stranded"]))
 
@@ -517,7 +531,9 @@ class QuantNado:
         if methyldackel_files or cxreport_files or mc_files or hmc_files:
             _bg = methyldackel_sample_names or [Path(f).stem for f in methyldackel_files]
             _cx = cxreport_sample_names or [Path(f).name.split(".")[0] for f in cxreport_files]
-            _mchmc = mc_hmc_sample_names or [Path(f).name.split(".")[0] for f in (mc_files or hmc_files)]
+            _mchmc = mc_hmc_sample_names or [
+                Path(f).name.split(".")[0] for f in (mc_files or hmc_files)
+            ]
             _check_dupes(_bg, "methylation bedGraph sample names")
             _check_dupes(_cx, "methylation CXreport sample names")
             _check_dupes(_mchmc, "methylation mc/hmc sample names")
@@ -531,9 +547,9 @@ class QuantNado:
             _cross_dupes: dict[str, list[str]] = {}
             for _name, _cat, _file in _tagged:
                 if _name in _seen:
-                    _cross_dupes.setdefault(_name, [
-                        f"{_seen[_name][0]}: {Path(_seen[_name][1]).name}"
-                    ]).append(f"{_cat}: {Path(_file).name}")
+                    _cross_dupes.setdefault(
+                        _name, [f"{_seen[_name][0]}: {Path(_seen[_name][1]).name}"]
+                    ).append(f"{_cat}: {Path(_file).name}")
                 else:
                     _seen[_name] = (_cat, _file)
             if _cross_dupes:
@@ -596,15 +612,26 @@ class QuantNado:
             summary_lines.append(f"  {sample:<{col_width}}  [{', '.join(mods)}]")
         logger.info("\n".join(summary_lines))
 
-        # Translate the api-level `stranded` parameter (list of names, or dict of name→library)
-        # into the CoverageType dict that MultiomicsStore.from_files() expects.
-        if stranded is None:
+        # Translate metadata/flags into per-sample CoverageType values.
+        # Priority: assay=='MCC' -> MICRO_CAPTURE_C, then `stranded`, else UNSTRANDED.
+        _bam_names_for_ct = bam_sample_names or [Path(f).stem for f in (bam_files or [])]
+        _stranded_keys = set(stranded.keys() if isinstance(stranded, dict) else (stranded or []))
+        _mcc_keys: set[str] = set()
+        _meta_id_col = sample_column if (_meta_df is not None and sample_column in _meta_df.columns) else None
+        if _meta_df is not None and _meta_id_col and "assay" in _meta_df.columns:
+            _assay_series = _meta_df["assay"].astype(str).str.upper()
+            _mcc_rows = _meta_df.loc[_assay_series == "MCC", _meta_id_col]
+            _mcc_keys = set(_mcc_rows.astype(str))
+
+        if not _bam_names_for_ct:
             coverage_type_arg: CoverageType | dict[str, CoverageType] = CoverageType.UNSTRANDED
         else:
-            _stranded_keys = set(stranded.keys() if isinstance(stranded, dict) else stranded)
-            _bam_names_for_ct = bam_sample_names or [Path(f).stem for f in (bam_files or [])]
             coverage_type_arg = {
-                n: (CoverageType.STRANDED if n in _stranded_keys else CoverageType.UNSTRANDED)
+                n: (
+                    CoverageType.MICRO_CAPTURE_C
+                    if n in _mcc_keys
+                    else (CoverageType.STRANDED if n in _stranded_keys else CoverageType.UNSTRANDED)
+                )
                 for n in _bam_names_for_ct
             }
 
@@ -661,6 +688,24 @@ class QuantNado:
         if self._multiomics:
             return self._multiomics.modalities
         return ["coverage"] if self._bam else []
+
+    def to_datatree(
+        self,
+        chromosomes: list[str] | None = None,
+    ) -> "xr.DataTree":
+        """Return all modalities as a hierarchical :class:`xr.DataTree`.
+
+        Delegates to :meth:`MultiomicsStore.to_datatree`. Raises if this
+        instance wraps a bare ``BamStore`` (open the parent directory instead).
+        """
+        import xarray as xr  # noqa: F401 — ensure available
+
+        if self._multiomics is not None:
+            return self._multiomics.to_datatree(chromosomes=chromosomes)
+        raise RuntimeError(
+            "to_datatree() requires a MultiomicsStore. "
+            "Open the sample directory (not the .zarr path) with qn.open_dataset()."
+        )
 
     # ========== Coverage Properties ==========
 

@@ -2462,6 +2462,7 @@ dependencies = [
     { name = "pybigwig" },
     { name = "pyranges1" },
     { name = "pysam" },
+    { name = "scikit-allel" },
     { name = "seaborn" },
     { name = "sparse" },
     { name = "tqdm" },
@@ -2524,6 +2525,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.0.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.4" },
+    { name = "scikit-allel", specifier = ">=1.3" },
     { name = "scipy", marker = "extra == 'lanceotron'", specifier = ">=1.10" },
     { name = "seaborn", specifier = ">=0.13" },
     { name = "sparse", specifier = ">=0.18" },
@@ -2701,6 +2703,26 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e8/e0/7bc18dcf021fbd156dc631479aa1f3c59345e90f5c32450d9e783215e234/ruranges-0.1.2-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:e6afc050a702a8c94fa88485f42527688c3f3490e1f7aa47a977dc684d9568f8", size = 430401, upload-time = "2026-03-13T15:02:08.234Z" },
     { url = "https://files.pythonhosted.org/packages/cb/6c/f34e956b617fc79c80e5ba607d47e962ee2dd7540d6d89a75007e8403b97/ruranges-0.1.2-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:1c131218c402a8da297749d8161a8713a10afed1d939aa36635405036ad1c697", size = 389158, upload-time = "2026-03-13T15:02:09.427Z" },
     { url = "https://files.pythonhosted.org/packages/a3/7c/7748358dae92aff6d12473b88ce8a9eb6a27eb4a22deb86663d88f5c61c4/ruranges-0.1.2-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:37b624c5e5a66bd4a37f2cdf5a55d748575446cbb3f1b9cb890adaad3320425a", size = 429665, upload-time = "2026-03-13T15:02:10.634Z" },
+]
+
+[[package]]
+name = "scikit-allel"
+version = "1.3.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dask", extra = ["array"] },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/ac/724b3f309013aa9025d13f66c1e2c6d30f006c039e90f397ed46e8962bed/scikit_allel-1.3.13.tar.gz", hash = "sha256:9a38b4cc00d3ba9ad997aaa57d0f03f3331e4771e3889f0d9c584a0d7f533e35", size = 9735211, upload-time = "2024-09-17T10:35:32.242Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/9a/2fea48ef3a67d80ca2e01fe68256a6cf52f0cf1916c877e6691fe2c335a3/scikit_allel-1.3.13-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:39dd20b9cb4dbda5f88967bfa1d35b89e2909ff749594cabc4d778ecd0f55284", size = 1410042, upload-time = "2024-09-17T10:45:47.052Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/21/3ac5485163759cf3c643907c2dd107f2a71c0eaf512d904bc491620ddf64/scikit_allel-1.3.13-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:4dbef40a6a42e28ad14d774d102e0e791e9fe781d65c192af2bd47009900b3dc", size = 1271806, upload-time = "2024-09-17T10:45:49.199Z" },
+    { url = "https://files.pythonhosted.org/packages/62/af/bfa4c379a0f52b6cb0fcea5d0e0852a4e27681180835582992b62d79dfc3/scikit_allel-1.3.13-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:66442c93c813910fb9b36d4da789351da6e4ea7cf8b992332c34d88e524ea4a4", size = 8377569, upload-time = "2024-09-17T10:45:51.679Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/00/64965a79417cf2b730503c80d23b5a66b136a5022af43db0c7e12049f41a/scikit_allel-1.3.13-cp312-cp312-win_amd64.whl", hash = "sha256:1cb9621de79816542a7ccfd293de7ed3ca75940611c8d6e1c64969d9cb6629d5", size = 1175875, upload-time = "2024-09-17T10:45:53.689Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/15/3efd898c985efeddc53b4d4080e2c3e5f7c49bff72880549376e1618df0b/scikit_allel-1.3.13-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:16d917d2d20083378c7defb1195ba0fa0c42ba2604a59f6839eab6728ad95694", size = 1401521, upload-time = "2024-09-17T10:45:55.921Z" },
+    { url = "https://files.pythonhosted.org/packages/33/56/0c3fb5b5498aa93fdb38772c716aa76bcde526b9c7fe619fe72b8bd8fc89/scikit_allel-1.3.13-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:87d68c4e21d75a8c96e698b329dbc0eac5d59e57f4782557a46258ff145568e2", size = 1261577, upload-time = "2024-09-17T10:45:57.896Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/43/a679bf6508e6b89bfc3dc40f298f00067f0504558b9e1fcc9697d93113fd/scikit_allel-1.3.13-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:366bb4cfd510300634195313d1aa4df54fee1df1a707f75f89acd42b181676e2", size = 8357837, upload-time = "2024-09-17T10:45:59.66Z" },
+    { url = "https://files.pythonhosted.org/packages/23/ec/7d151e572fd2cff6d572bcb90f8022d9dc5eadfd9e19f0573c0838e5ec10/scikit_allel-1.3.13-cp313-cp313-win_amd64.whl", hash = "sha256:1e7b1d5139f2c985760976006f3584f2702ef5d2e6350367f4a9411199308388", size = 1183416, upload-time = "2024-09-17T10:46:01.564Z" },
 ]
 
 [[package]]

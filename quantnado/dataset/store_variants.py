@@ -24,11 +24,72 @@ GT_HOM_ALT: np.int8 = np.int8(2)
 CHUNK_LEN = 65536
 
 
+def _callset_to_chrom_dfs(
+    callset: dict[str, np.ndarray] | None,
+    filter_chromosomes: bool = True,
+) -> dict[str, pd.DataFrame]:
+    if callset is None:
+        return {}
+
+    chroms: np.ndarray = callset["variants/CHROM"]
+    pos: np.ndarray = callset["variants/POS"]
+    refs: np.ndarray = callset["variants/REF"]
+    alts: np.ndarray = callset["variants/ALT"]
+    qual: np.ndarray = callset["variants/QUAL"]
+    gt: np.ndarray | None = callset.get("calldata/GT")
+    ad: np.ndarray | None = callset.get("calldata/AD")
+
+    if filter_chromosomes:
+        mask = np.array([c.startswith("chr") and "_" not in c for c in chroms])
+        chroms = chroms[mask]
+        pos = pos[mask]
+        refs = refs[mask]
+        alts = alts[mask]
+        qual = qual[mask]
+        if gt is not None:
+            gt = gt[mask]
+        if ad is not None:
+            ad = ad[mask]
+
+    n = len(pos)
+    if n == 0:
+        return {}
+
+    if gt is not None:
+        gt0 = gt[:, 0, :]
+        missing = np.any(gt0 < 0, axis=1)
+        genotype = np.clip((gt0 > 0).sum(axis=1), 0, 2).astype(np.int8)
+        genotype[missing] = GT_MISSING
+    else:
+        genotype = np.full(n, GT_MISSING, dtype=np.int8)
+
+    if ad is not None:
+        ad0 = ad[:, 0, :]
+        ad_ref = np.where(ad0[:, 0] >= 0, ad0[:, 0], 0).astype(np.int32)
+        ad_alt = np.where(ad0[:, 1] >= 0, ad0[:, 1], 0).astype(np.int32)
+    else:
+        ad_ref = np.zeros(n, dtype=np.int32)
+        ad_alt = np.zeros(n, dtype=np.int32)
+
+    df = pd.DataFrame({
+        "chrom": chroms,
+        "pos": pos.astype(np.int64),
+        "ref": refs,
+        "alt": alts[:, 0],
+        "qual": qual.astype(np.float32),
+        "genotype": genotype,
+        "ad_ref": ad_ref,
+        "ad_alt": ad_alt,
+    })
+    return {chrom: grp.reset_index(drop=True) for chrom, grp in df.groupby("chrom")}
+
+
 def _read_vcf(
     path: Path | str,
     filter_chromosomes: bool = True,
+    max_workers: int = 1,
 ) -> dict[str, pd.DataFrame]:
-    """Read variants from a single-sample VCF/VCF.gz file.
+    """Read variants from a single-sample VCF/VCF.gz file using scikit-allel.
 
     Returns dict mapping chromosome -> DataFrame with columns:
         pos (int64, 1-based), ref (str), alt (str), qual (float32),
@@ -36,55 +97,15 @@ def _read_vcf(
         ad_ref (int32), ad_alt (int32)
     """
     try:
-        import pysam
+        import allel
     except ImportError as e:
-        raise ImportError("pysam is required to read VCF files: pip install pysam") from e
+        raise ImportError("scikit-allel is required to read VCF files: pip install scikit-allel") from e
 
     path = Path(path)
-    records: list[dict] = []
-
-    with pysam.VariantFile(str(path)) as vcf:
-        samples = list(vcf.header.samples)
-        if not samples:
-            raise ValueError(f"VCF has no samples: {path}")
-        sample_name = samples[0]
-
-        for rec in vcf.fetch():
-            chrom = rec.chrom
-            if filter_chromosomes:
-                if not chrom.startswith("chr") or "_" in chrom:
-                    continue
-
-            alts = rec.alts or (".",)
-            alt = alts[0]
-
-            samp = rec.samples[sample_name]
-            gt = samp.get("GT", (None, None))
-            if gt is None or None in gt:
-                gt_int = GT_MISSING
-            else:
-                n_alt = sum(1 for a in gt if a is not None and a > 0)
-                gt_int = np.int8(min(n_alt, 2))
-
-            ad = samp.get("AD", None)
-            ad_ref = int(ad[0]) if ad and len(ad) > 0 else 0
-            ad_alt = int(ad[1]) if ad and len(ad) > 1 else 0
-
-            records.append({
-                "chrom": chrom,
-                "pos": np.int64(rec.pos),  # 1-based
-                "ref": str(rec.ref),
-                "alt": str(alt),
-                "qual": np.float32(rec.qual) if rec.qual is not None else np.float32(np.nan),
-                "genotype": gt_int,
-                "ad_ref": np.int32(ad_ref),
-                "ad_alt": np.int32(ad_alt),
-            })
-
-    if not records:
-        return {}
-    df = pd.DataFrame(records)
-    return {chrom: grp.reset_index(drop=True) for chrom, grp in df.groupby("chrom")}
+    fields = ["CHROM", "POS", "REF", "ALT", "QUAL", "calldata/GT", "calldata/AD"]
+    numbers = {"ALT": 1, "AD": 2}
+    callset = allel.read_vcf(str(path), fields=fields, numbers=numbers)
+    return _callset_to_chrom_dfs(callset, filter_chromosomes=filter_chromosomes)
 
 
 class VariantStore(BaseStore):
@@ -344,6 +365,7 @@ class VariantStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
+        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -361,7 +383,9 @@ class VariantStore(BaseStore):
         all_file_data: list[dict[str, pd.DataFrame]] = []
         for path in vcf_files:
             logger.info(f"  {path.name}")
-            all_file_data.append(_read_vcf(path, filter_chromosomes=filter_chromosomes))
+            all_file_data.append(
+                _read_vcf(path, filter_chromosomes=filter_chromosomes, max_workers=max_workers)
+            )
 
         store._write_flat_store(all_file_data)
 

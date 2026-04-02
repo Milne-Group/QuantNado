@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import shutil
 from pathlib import Path
 
@@ -24,38 +23,61 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
         chrom, start, end, methylation_pct, n_unmethylated, n_methylated
     """
     path = Path(path)
-    with open(path) as _fh:
-        _data = "".join(
-            line for line in _fh
-            if not (line.startswith(("track ", "browser ")) or "type=" in line)
-        )
-    df = pd.read_csv(io.StringIO(_data), sep="\t", header=None, dtype=str)
-    df = df.reset_index(drop=True)
 
-    n_cols = df.shape[1]
+    # Count track/browser header lines at the top — typically 0 or 1.
+    # Break on the first data line so we never iterate the whole file.
+    skip = 0
+    with open(path) as _fh:
+        for line in _fh:
+            if line.startswith(("track ", "browser ")) or "type=" in line:
+                skip += 1
+            else:
+                break
+
+    # Sniff column count from the first data line to decide dtypes.
+    with open(path) as _fh:
+        for i, line in enumerate(_fh):
+            if i >= skip:
+                n_cols = len(line.rstrip("\n").split("\t"))
+                break
+        else:
+            n_cols = 0
+
     if n_cols < 4:
         raise ValueError(f"bedGraph file {path.name} has only {n_cols} columns; expected at least 4")
 
-    df = df.iloc[:, :6]
-    df.columns = range(df.shape[1])
+    # Read directly with native dtypes — avoids building a 50M-char StringIO
+    # and the per-column pd.to_numeric pass over every row.
+    usecols = list(range(min(n_cols, 6)))
+    dtypes: dict = {0: str, 1: np.int64, 2: np.int64, 3: np.float32}
+    if n_cols >= 5:
+        dtypes[4] = np.float32   # coverage or n_unmethylated — cast later
+    if n_cols >= 6:
+        dtypes[5] = np.float32   # n_methylated — cast later
+
+    df = pd.read_csv(
+        path, sep="\t", header=None, skiprows=skip,
+        usecols=usecols, dtype=dtypes, engine="c",
+        na_values=[".", "NA", "nan"],
+    )
 
     result = pd.DataFrame()
-    result["chrom"] = df[0].astype(str)
-    result["start"] = pd.to_numeric(df[1]).astype(np.int64)
-    result["end"] = pd.to_numeric(df[2]).astype(np.int64)
-    result["methylation_pct"] = pd.to_numeric(df[3], errors="coerce").astype(np.float32)
+    result["chrom"] = df[0]
+    result["start"] = df[1]
+    result["end"]   = df[2]
+    result["methylation_pct"] = df[3]
 
     if n_cols >= 6:
-        result["n_unmethylated"] = pd.to_numeric(df[4], errors="coerce").fillna(0).astype(np.uint16)
-        result["n_methylated"] = pd.to_numeric(df[5], errors="coerce").fillna(0).astype(np.uint16)
+        result["n_unmethylated"] = df[4].fillna(0).astype(np.uint16)
+        result["n_methylated"]   = df[5].fillna(0).astype(np.uint16)
     elif n_cols == 5:
-        coverage = pd.to_numeric(df[4], errors="coerce").fillna(0)
+        coverage = df[4].fillna(0)
         pct = result["methylation_pct"].fillna(0) / 100.0
-        result["n_methylated"] = (pct * coverage).round().astype(np.uint16)
+        result["n_methylated"]   = (pct * coverage).round().astype(np.uint16)
         result["n_unmethylated"] = ((1 - pct) * coverage).round().astype(np.uint16)
     else:
         result["n_unmethylated"] = np.uint16(0)
-        result["n_methylated"] = np.uint16(0)
+        result["n_methylated"]   = np.uint16(0)
 
     if filter_chromosomes:
         result = result[result["chrom"].str.startswith("chr") & ~result["chrom"].str.contains("_")]
@@ -63,7 +85,11 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
     return {chrom: grp.reset_index(drop=True) for chrom, grp in result.groupby("chrom")}
 
 
-def _read_cxreport(path: Path | str, filter_chromosomes: bool = True) -> dict[str, pd.DataFrame]:
+def _read_cxreport(
+    path: Path | str,
+    filter_chromosomes: bool = True,
+    max_workers: int = 1,
+) -> dict[str, pd.DataFrame]:
     """Read a biomodal evoC CXreport file.
 
     Returns dict mapping chromosome -> DataFrame with columns:
@@ -83,16 +109,23 @@ def _read_cxreport(path: Path | str, filter_chromosomes: bool = True) -> dict[st
     df["is_mc"] = df["mod_level"].str.lower().isin(["c", "mc", "5mc", "5mc_5hmc"])
     df["is_hmc"] = df["mod_level"].str.lower().isin(["hmc", "5hmc", "5mc_5hmc"])
 
-    agg = (
-        df.groupby(["chrom", "canonical_pos"], sort=True)
-        .apply(lambda g: pd.Series({
-            "n_mc": int(g.loc[g["is_mc"], "n_mod"].sum()),
-            "n_hmc": int(g.loc[g["is_hmc"], "n_mod"].sum()),
-            "total": int(g["n_mod"].sum() + g["n_not_mod"].sum()),
-        }))
-        .reset_index()
-        .rename(columns={"canonical_pos": "start"})
-    )
+    def _agg_one_chrom(chrom_df: pd.DataFrame) -> pd.DataFrame:
+        chrom = str(chrom_df["chrom"].iloc[0])
+        out = (
+            chrom_df.groupby("canonical_pos", sort=True)
+            .apply(lambda g: pd.Series({
+                "n_mc": int(g.loc[g["is_mc"], "n_mod"].sum()),
+                "n_hmc": int(g.loc[g["is_hmc"], "n_mod"].sum()),
+                "total": int(g["n_mod"].sum() + g["n_not_mod"].sum()),
+            }))
+            .reset_index()
+            .rename(columns={"canonical_pos": "start"})
+        )
+        out.insert(0, "chrom", chrom)
+        return out
+
+    by_chrom = [grp for _, grp in df.groupby("chrom", sort=True)]
+    agg = pd.concat([_agg_one_chrom(grp) for grp in by_chrom], ignore_index=True)
     agg["start"] = agg["start"].astype(np.int64)
     agg["n_c"] = (agg["total"] - agg["n_mc"] - agg["n_hmc"]).clip(lower=0).astype(np.int32)
 
@@ -112,6 +145,7 @@ def _read_split_cxreport(
     mc_path: Path | str | None,
     hmc_path: Path | str | None,
     filter_chromosomes: bool = True,
+    max_workers: int = 1,
 ) -> dict[str, pd.DataFrame]:
     """Read one or both 7-column split CXreport files and merge into per-CpG DataFrames."""
     if mc_path is None and hmc_path is None:
@@ -155,12 +189,20 @@ def _read_split_cxreport(
         df = df[df["chrom"].str.startswith("chr") & ~df["chrom"].str.contains("_")]
 
     df["canonical_pos"] = np.where(df["strand"] == "+", df["pos"], df["pos"] - 1)
-    agg = (
-        df.groupby(["chrom", "canonical_pos"], sort=True)[["n_mc", "n_hmc", "n_c", "total"]]
-        .sum()
-        .reset_index()
-        .rename(columns={"canonical_pos": "start"})
-    )
+    by_chrom = [grp for _, grp in df.groupby("chrom", sort=True)]
+
+    def _sum_one_chrom(chrom_df: pd.DataFrame) -> pd.DataFrame:
+        chrom = str(chrom_df["chrom"].iloc[0])
+        out = (
+            chrom_df.groupby("canonical_pos", sort=True)[["n_mc", "n_hmc", "n_c", "total"]]
+            .sum()
+            .reset_index()
+            .rename(columns={"canonical_pos": "start"})
+        )
+        out.insert(0, "chrom", chrom)
+        return out
+
+    agg = pd.concat([_sum_one_chrom(grp) for grp in by_chrom], ignore_index=True)
     agg["start"] = agg["start"].astype(np.int64)
 
     total = agg["total"].to_numpy(dtype=np.float32)
@@ -470,6 +512,7 @@ class MethylStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
+        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -507,6 +550,7 @@ class MethylStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
+        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -524,7 +568,13 @@ class MethylStore(BaseStore):
         all_file_data: list[dict[str, pd.DataFrame]] = []
         for path in cxreport_files:
             logger.info(f"  {path.name}")
-            all_file_data.append(_read_cxreport(path, filter_chromosomes=filter_chromosomes))
+            all_file_data.append(
+                _read_cxreport(
+                    path,
+                    filter_chromosomes=filter_chromosomes,
+                    max_workers=max_workers,
+                )
+            )
 
         store._write_flat_store(all_file_data, mc_hmc_split=True)
 
@@ -545,6 +595,7 @@ class MethylStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
+        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -573,7 +624,14 @@ class MethylStore(BaseStore):
         for mc_path, hmc_path in zip(mc_iter, hmc_iter):
             label = " + ".join(p.name for p in [mc_path, hmc_path] if p is not None)
             logger.info(f"  {label}")
-            all_file_data.append(_read_split_cxreport(mc_path, hmc_path, filter_chromosomes=filter_chromosomes))
+            all_file_data.append(
+                _read_split_cxreport(
+                    mc_path,
+                    hmc_path,
+                    filter_chromosomes=filter_chromosomes,
+                    max_workers=max_workers,
+                )
+            )
 
         store._write_flat_store(all_file_data, mc_hmc_split=True)
 
@@ -596,6 +654,7 @@ class MethylStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
+        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -646,7 +705,14 @@ class MethylStore(BaseStore):
         for mc_path, hmc_path in zip(mc_iter, hmc_iter):
             label = " + ".join(p.name for p in [mc_path, hmc_path] if p is not None)
             logger.info(f"  {label}")
-            cx_data.append(_read_split_cxreport(mc_path, hmc_path, filter_chromosomes=filter_chromosomes))
+            cx_data.append(
+                _read_split_cxreport(
+                    mc_path,
+                    hmc_path,
+                    filter_chromosomes=filter_chromosomes,
+                    max_workers=max_workers,
+                )
+            )
 
         store._write_flat_store(bg_data + cx_data, mc_hmc_split=True)
 

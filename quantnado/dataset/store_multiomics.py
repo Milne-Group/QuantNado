@@ -2,13 +2,44 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import dask.array as da
+import xarray as xr
 from loguru import logger
 
 from .store_bam import BamStore, CoverageType
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
-from .constants import DEFAULT_CHUNK_LEN
+
+
+def _coverage_group_nodes(
+    group,
+    sample_names: list[str],
+    chromsizes: dict[str, int],
+    prefix: str,
+    chromosomes: list[str],
+) -> dict[str, xr.Dataset]:
+    """Build DataTree nodes for a coverage zarr group (coverage/fwd/rev).
+
+    Returns ``{"{prefix}/{chrom}": xr.Dataset}`` for each chromosome.
+    Each Dataset holds a single ``coverage`` DataArray with dims ``(position, sample)``.
+    """
+    nodes: dict[str, xr.Dataset] = {}
+    for chrom in chromosomes:
+        if chrom not in group:
+            continue
+        arr = xr.DataArray(
+            da.from_zarr(group[chrom]),  # already (position, sample) on disk
+            dims=("position", "sample"),
+            coords={
+                "position": np.arange(chromsizes[chrom]),
+                "sample": sample_names,
+            },
+            name="coverage",
+        )
+        nodes[f"{prefix}/{chrom}"] = xr.Dataset({"coverage": arr})
+    return nodes
 
 
 class MultiomicsStore:
@@ -91,7 +122,7 @@ class MultiomicsStore:
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
-        chunk_len: int = DEFAULT_CHUNK_LEN,
+        chunk_len: int | None = None,
         construction_compression: str = "default",
         local_staging: bool = False,
         staging_dir: "Path | str | None" = None,
@@ -139,8 +170,9 @@ class MultiomicsStore:
             Resume processing an existing sub-store, skipping completed samples.
         sample_column : str, default "sample_id"
             Column in ``metadata`` matching sample names.
-        chunk_len : int, default 65536
+        chunk_len : int or None, default None
             Zarr chunk size for the position dimension (coverage store only).
+            If None, auto-estimated based on genome size, n_samples, and filesystem type.
         construction_compression : {"default", "fast", "none"}, default "default"
             Build-time compression profile for the coverage store.
         local_staging : bool, default False
@@ -219,6 +251,7 @@ class MultiomicsStore:
                 mc_hmc_sample_names=mc_hmc_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
+                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -231,6 +264,7 @@ class MultiomicsStore:
                 sample_names=methyldackel_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
+                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -243,6 +277,7 @@ class MultiomicsStore:
                 sample_names=cxreport_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
+                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -259,6 +294,7 @@ class MultiomicsStore:
                 sample_names=mc_hmc_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
+                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -272,6 +308,7 @@ class MultiomicsStore:
                 sample_names=vcf_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
+                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -410,6 +447,134 @@ class MultiomicsStore:
             lambda s: ", ".join(sample_modalities.get(str(s), []))
         )
         return combined
+
+    # ---- DataTree ----
+
+    def to_datatree(
+        self,
+        chromosomes: list[str] | None = None,
+    ) -> xr.DataTree:
+        """Return all modalities as a hierarchical :class:`xr.DataTree`.
+
+        Each chromosome is a child node under its modality group so that the
+        ``position`` dimension is always chromosome-local (no size conflicts).
+        Methylation and variants are stored flat (all sites concatenated) with
+        a ``contig`` coordinate mirroring the on-disk layout.
+
+        Parameters
+        ----------
+        chromosomes : list[str], optional
+            Chromosomes to include. Defaults to all chromosomes.
+
+        Returns
+        -------
+        xr.DataTree
+            Tree structure::
+
+                /
+                ├── coverage/
+                │   ├── chr1    coverage (position, sample) uint32
+                │   └── ...
+                ├── coverage_fwd/   (stranded only)
+                │   └── chr1    coverage (position, sample) uint32
+                ├── coverage_rev/   (stranded only)
+                │   └── chr1    coverage (position, sample) uint32
+                ├── methylation/    methylation_pct, n_methylated, n_total (site, sample)
+                │                  + contig, position coords on site dim
+                └── metadata/       sample_names, assay, completed, ...
+        """
+        attrs: dict = {"sample_names": self.all_sample_names}
+        if self.coverage is not None:
+            attrs["chromsizes"] = self.coverage.chromsizes
+
+        nodes: dict[str, xr.Dataset] = {"/": xr.Dataset(attrs=attrs)}
+
+        # ---- coverage ----
+        if self.coverage is not None:
+            chroms = chromosomes if chromosomes is not None else self.coverage.chromosomes
+            nodes.update(
+                _coverage_group_nodes(
+                    self.coverage.root["coverage"],
+                    self.coverage.sample_names,
+                    self.coverage.chromsizes,
+                    prefix="coverage",
+                    chromosomes=chroms,
+                )
+            )
+            for suffix in ("coverage_fwd", "coverage_rev"):
+                if suffix in self.coverage.root:
+                    nodes.update(
+                        _coverage_group_nodes(
+                            self.coverage.root[suffix],
+                            self.coverage.sample_names,
+                            self.coverage.chromsizes,
+                            prefix=suffix,
+                            chromosomes=chroms,
+                        )
+                    )
+
+        # ---- methylation (flat: all sites concatenated) ----
+        _meth_has_data = (
+            self.methylation is not None
+            and "position" in self.methylation.root
+            and int(self.methylation.root.attrs.get("n_sites", 0)) > 0
+        )
+        if _meth_has_data:
+            meth = self.methylation
+            contig_list: list[str] = meth.root.attrs.get("contig_list", meth.chromosomes)
+
+            # filter to requested chromosomes and compute flat row slice
+            if chromosomes is not None:
+                row_slices = [meth._contig_row_range(c) for c in chromosomes if c in contig_list]
+                if row_slices:
+                    row_start = row_slices[0][0]
+                    row_end   = row_slices[-1][1]
+                else:
+                    row_start, row_end = 0, 0
+            else:
+                row_start, row_end = 0, int(meth.root.attrs.get("n_sites", meth.root["position"].shape[0]))
+
+            site_slice = slice(row_start, row_end)
+
+            # contig labels: decode uint8 index → chromosome name
+            contig_idx = da.from_zarr(meth.root["contig"])[site_slice]
+            contig_names = np.array(contig_list)
+            positions    = da.from_zarr(meth.root["position"])[site_slice]
+
+            if meth.has_mc_hmc_split:
+                meth_vars = ["methylation_pct", "n_mc", "n_hmc", "n_c"]
+            else:
+                meth_vars = ["methylation_pct", "n_methylated", "n_total"]
+
+            data_vars: dict[str, xr.DataArray] = {}
+            for var in meth_vars:
+                data_vars[var] = xr.DataArray(
+                    da.from_zarr(meth.root[var])[site_slice, :],
+                    dims=("site", "sample"),
+                    coords={"sample": meth.sample_names},
+                )
+
+            nodes["methylation"] = xr.Dataset(
+                data_vars,
+                coords={
+                    "contig":    ("site", contig_idx),
+                    "position":  ("site", positions),
+                    "sample":    meth.sample_names,
+                },
+            )
+
+        # ---- metadata ----
+        if self.coverage is not None or self.methylation is not None:
+            ref = self.coverage or self.methylation
+            meta_df = ref.get_metadata()
+            meta_vars: dict[str, xr.DataArray] = {
+                col: xr.DataArray(meta_df[col].values, dims=("sample",), coords={"sample": ref.sample_names})
+                for col in meta_df.columns
+                if col != "sample_id"
+            }
+            nodes["metadata"] = xr.Dataset(meta_vars)
+
+        return xr.DataTree.from_dict(nodes)
 
     # ---- Summary ----
 

@@ -815,8 +815,10 @@ class TestMCCUnit:
             lambda path: chromsizes or {"chr1": 10},
         )
         monkeypatch.setattr(
-            BamStore, "_process_chromosome",
-            lambda *a, **kw: (0.0, np.zeros(a[3]), None),
+            "quantnado.dataset.store_bam._process_chromosome_mcc",
+            lambda bam_file, contig, contig_size, viewpoints, viewpoint_tag, base_filter, use_fragment=False: {
+                vp: np.zeros(contig_size, dtype=np.uint32) for vp in viewpoints
+            },
         )
 
     def test_sample_names_expanded_per_viewpoint(self, tmp_path, monkeypatch):
@@ -879,6 +881,12 @@ class TestMCCUnit:
             lambda path: ["VP_A", "VP_B"],
         )
         monkeypatch.setattr(BamStore, "_process_chromosome", lambda *a, **kw: (0.0, np.zeros(a[3]), None))
+        monkeypatch.setattr(
+            "quantnado.dataset.store_bam._process_chromosome_mcc",
+            lambda bam_file, contig, contig_size, viewpoints, viewpoint_tag, base_filter, use_fragment=False: {
+                vp: np.zeros(contig_size, dtype=np.uint32) for vp in viewpoints
+            },
+        )
 
         bam_mcc = tmp_path / "mcc.bam"
         bam_reg = tmp_path / "reg.bam"
@@ -899,13 +907,13 @@ class TestMCCUnit:
 
     def test_process_samples_uses_sample_bam_map(self, tmp_path, monkeypatch):
         """process_samples() with no bam_files arg routes via sample_bam_map."""
-        routed_bam_files = []
+        calls = []
 
-        def fake_chrom(self, bam_file, contig, contig_size, is_stranded, use_fragment=False, read_filter=None):
-            routed_bam_files.append(bam_file)
-            return 0.0, np.zeros(contig_size), None
+        def fake_chrom_mcc(bam_file, contig, contig_size, viewpoints, viewpoint_tag, base_filter, use_fragment=False):
+            calls.append((bam_file, contig, set(viewpoints)))
+            return {vp: np.zeros(contig_size, dtype=np.uint32) for vp in viewpoints}
 
-        monkeypatch.setattr(BamStore, "_process_chromosome", fake_chrom)
+        monkeypatch.setattr("quantnado.dataset.store_bam._process_chromosome_mcc", fake_chrom_mcc)
 
         store = BamStore(
             tmp_path / "ds",
@@ -918,7 +926,9 @@ class TestMCCUnit:
         store.process_samples()
 
         assert store.completed_mask.all()
-        assert routed_bam_files == ["source.bam", "source.bam"]
+        # One call per chromosome per BAM file, with all viewpoints together
+        assert len(calls) == 1
+        assert calls[0] == ("source.bam", "chr1", {"VP_A", "VP_B"})
 
 
 # ---------------------------------------------------------------------------
