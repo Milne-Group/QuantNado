@@ -13,7 +13,7 @@ from zarr.codecs import BloscCodec
 from zarr.storage import LocalStore
 
 from .core import BaseStore
-from ._bam_utils import _compute_sample_hash
+from .utils import _compute_sample_hash
 from quantnado.utils import estimate_chunk_len, is_network_fs
 
 
@@ -89,7 +89,6 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
 def _read_cxreport(
     path: Path | str,
     filter_chromosomes: bool = True,
-    max_workers: int = 1,
 ) -> dict[str, pd.DataFrame]:
     """Read a biomodal evoC CXreport file.
 
@@ -146,7 +145,6 @@ def _read_split_cxreport(
     mc_path: Path | str | None,
     hmc_path: Path | str | None,
     filter_chromosomes: bool = True,
-    max_workers: int = 1,
 ) -> dict[str, pd.DataFrame]:
     """Read one or both 7-column split CXreport files and merge into per-CpG DataFrames."""
     if mc_path is None and hmc_path is None:
@@ -325,7 +323,6 @@ class MethylStore(BaseStore):
             read_only=read_only,
         )
 
-    @staticmethod
     def _init_store(self) -> None:
         store = LocalStore(str(self.store_path))
         self.root = zarr.group(store=store, overwrite=True, zarr_format=3)
@@ -369,25 +366,34 @@ class MethylStore(BaseStore):
         mc_hmc_split : bool
             If True, create n_mc/n_hmc/n_c arrays instead of n_methylated/n_unmethylated.
         """
+        n_samples = len(all_file_data)
+        single_sample = n_samples == 1
+
         # Collect all chromosomes across all samples (sorted)
         all_chroms: list[str] = sorted(
             {chrom for fd in all_file_data for chrom in fd.keys()}
         )
 
-        # Build union of positions per chromosome, then concatenate into flat arrays
+        # Build union of positions per chromosome.
+        # Single-sample fast path: bedGraph/CXreport is already sorted by position,
+        # so np.unique reduces to a no-op sort — just take the values directly.
         contig_list: list[str] = []
         contig_offsets: dict[str, list[int]] = {}
         all_contig_idx: list[np.ndarray] = []
         all_positions: list[np.ndarray] = []
 
         for chrom_idx, chrom in enumerate(all_chroms):
-            chrom_positions = np.unique(
-                np.concatenate([
-                    fd[chrom]["start"].values
-                    for fd in all_file_data
-                    if chrom in fd
-                ])
-            ).astype(np.uint32)
+            if single_sample:
+                fd0 = all_file_data[0]
+                chrom_positions = fd0[chrom]["start"].values.astype(np.uint32) if chrom in fd0 else np.array([], dtype=np.uint32)
+            else:
+                chrom_positions = np.unique(
+                    np.concatenate([
+                        fd[chrom]["start"].values
+                        for fd in all_file_data
+                        if chrom in fd
+                    ])
+                ).astype(np.uint32)
 
             start_row = sum(len(a) for a in all_positions)
             end_row = start_row + len(chrom_positions)
@@ -424,20 +430,20 @@ class MethylStore(BaseStore):
 
         # Create data arrays
         if mc_hmc_split:
-            data_arrays = [
-                ("methylation_pct", np.float32, np.nan),
+            data_array_specs = [
+                ("methylation_pct", np.float16, np.float16("nan")),
                 ("n_mc", np.uint16, 0),
                 ("n_hmc", np.uint16, 0),
                 ("n_c", np.uint16, 0),
             ]
         else:
-            data_arrays = [
-                ("methylation_pct", np.float32, np.nan),
+            data_array_specs = [
+                ("methylation_pct", np.float16, np.float16("nan")),
                 ("n_methylated", np.uint16, 0),
                 ("n_total", np.uint16, 0),
             ]
 
-        for name, dtype, fill in data_arrays:
+        for name, dtype, fill in data_array_specs:
             self.root.create_array(
                 name,
                 shape=(n_sites, self.n_samples),
@@ -448,31 +454,57 @@ class MethylStore(BaseStore):
                 overwrite=True,
             )
 
-        # Fill in per-sample data
+        # Fill in per-sample data.
+        # Build each sample's full column in memory, then write it in one contiguous
+        # slice per array. This avoids zarr scatter-write read-modify-write cycles
+        # which dominate write time when using fancy indexing.
         for sample_idx, fd in enumerate(all_file_data):
+            meth_col = np.full(n_sites, np.float16("nan"), dtype=np.float16)
+
+            if mc_hmc_split:
+                mc_col   = np.zeros(n_sites, dtype=np.uint16)
+                hmc_col  = np.zeros(n_sites, dtype=np.uint16)
+                c_col    = np.zeros(n_sites, dtype=np.uint16)
+            else:
+                nmeth_col = np.zeros(n_sites, dtype=np.uint16)
+                ntot_col  = np.zeros(n_sites, dtype=np.uint16)
+
             for chrom in all_chroms:
                 if chrom not in fd:
                     continue
                 df = fd[chrom]
                 row_start, row_end = contig_offsets[chrom]
-                # positions for this chrom in the flat array (sorted, from np.unique)
-                chrom_positions = position_arr[row_start:row_end]
-                flat_indices = row_start + np.searchsorted(
-                    chrom_positions, df["start"].values.astype(np.uint32)
-                )
 
-                self.root["methylation_pct"][flat_indices, sample_idx] = df["methylation_pct"].values
+                if single_sample:
+                    # Positions match exactly — write directly into the slice.
+                    indices = slice(row_start, row_end)
+                else:
+                    chrom_positions = position_arr[row_start:row_end]
+                    idx = np.searchsorted(chrom_positions, df["start"].values.astype(np.uint32))
+                    indices = row_start + idx
+
+                meth_col[indices] = df["methylation_pct"].values
 
                 if mc_hmc_split:
-                    self.root["n_mc"][flat_indices, sample_idx] = df["n_mc"].values
-                    self.root["n_hmc"][flat_indices, sample_idx] = df["n_hmc"].values
-                    self.root["n_c"][flat_indices, sample_idx] = df["n_c"].values
+                    mc_col[indices]  = df["n_mc"].values
+                    hmc_col[indices] = df["n_hmc"].values
+                    c_col[indices]   = df["n_c"].values
                 else:
-                    self.root["n_methylated"][flat_indices, sample_idx] = df["n_methylated"].values
-                    # n_total = n_methylated + n_unmethylated
-                    n_total = (df["n_methylated"].values.astype(np.uint32) +
-                               df["n_unmethylated"].values.astype(np.uint32)).clip(0, 65535).astype(np.uint16)
-                    self.root["n_total"][flat_indices, sample_idx] = n_total
+                    nmeth_col[indices] = df["n_methylated"].values
+                    ntot_col[indices]  = (
+                        df["n_methylated"].values.astype(np.uint32) +
+                        df["n_unmethylated"].values.astype(np.uint32)
+                    ).clip(0, 65535).astype(np.uint16)
+
+            # One contiguous write per array — no RMW cycles.
+            self.root["methylation_pct"][:, sample_idx] = meth_col
+            if mc_hmc_split:
+                self.root["n_mc"][:, sample_idx]  = mc_col
+                self.root["n_hmc"][:, sample_idx] = hmc_col
+                self.root["n_c"][:, sample_idx]   = c_col
+            else:
+                self.root["n_methylated"][:, sample_idx] = nmeth_col
+                self.root["n_total"][:, sample_idx]      = ntot_col
 
         # Store coordinate metadata
         self.root.attrs.update({
@@ -496,7 +528,6 @@ class MethylStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
-        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -534,7 +565,6 @@ class MethylStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
-        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -556,7 +586,6 @@ class MethylStore(BaseStore):
                 _read_cxreport(
                     path,
                     filter_chromosomes=filter_chromosomes,
-                    max_workers=max_workers,
                 )
             )
 
@@ -579,7 +608,6 @@ class MethylStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
-        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -613,7 +641,6 @@ class MethylStore(BaseStore):
                     mc_path,
                     hmc_path,
                     filter_chromosomes=filter_chromosomes,
-                    max_workers=max_workers,
                 )
             )
 
@@ -638,7 +665,6 @@ class MethylStore(BaseStore):
         metadata: pd.DataFrame | Path | str | None = None,
         *,
         filter_chromosomes: bool = True,
-        max_workers: int = 1,
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
@@ -694,7 +720,6 @@ class MethylStore(BaseStore):
                     mc_path,
                     hmc_path,
                     filter_chromosomes=filter_chromosomes,
-                    max_workers=max_workers,
                 )
             )
 
@@ -720,6 +745,7 @@ class MethylStore(BaseStore):
         self,
         chromosomes: list[str] | None = None,
         variable: str = "methylation_pct",
+        sparse: bool = False,
     ) -> dict[str, xr.DataArray]:
         """Extract data as per-chromosome lazy Xarray DataArrays.
 
@@ -729,6 +755,9 @@ class MethylStore(BaseStore):
             Chromosomes to extract. Defaults to all.
         variable : str, default "methylation_pct"
             Which array to extract.
+        sparse : bool, default False
+            If True, each dask chunk is backed by ``sparse.COO``. Useful for
+            multi-sample datasets where samples cover different CpG subsets.
 
         Returns
         -------
@@ -747,7 +776,7 @@ class MethylStore(BaseStore):
         if invalid:
             raise ValueError(f"Chromosomes not in store: {invalid}")
 
-        metadata_df = self.get_metadata()
+        metadata_df = self.metadata
         result: dict[str, xr.DataArray] = {}
         for chrom in chroms:
             start_row, end_row = self._contig_row_range(chrom)
@@ -757,6 +786,9 @@ class MethylStore(BaseStore):
             dask_arr = da.from_zarr(zarr_arr)[start_row:end_row, :]
             # Transpose to (sample, position)
             dask_arr = dask_arr.T
+            if sparse:
+                import sparse as sp
+                dask_arr = dask_arr.map_blocks(sp.COO, dtype=dask_arr.dtype)
 
             coords: dict = {"sample": self.sample_names, "position": positions}
             for col in metadata_df.columns:
@@ -819,15 +851,12 @@ class MethylStore(BaseStore):
         row_start, row_end = self._contig_row_range(chrom)
         positions = self.root["position"][row_start:row_end]
 
-        # Filter to requested position range
+        # Filter to requested position range using binary search (positions are sorted).
         if start is not None or end is not None:
-            mask = np.ones(len(positions), dtype=bool)
-            if start is not None:
-                mask &= positions >= start
-            if end is not None:
-                mask &= positions < end
-            indices = np.where(mask)[0]
-            positions = positions[indices]
+            lo = int(np.searchsorted(positions, start, side="left")) if start is not None else 0
+            hi = int(np.searchsorted(positions, end, side="left")) if end is not None else len(positions)
+            indices = np.arange(lo, hi)
+            positions = positions[lo:hi]
             flat_indices = row_start + indices
         else:
             flat_indices = np.arange(row_start, row_end)

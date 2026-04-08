@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from loguru import logger
 
-from quantnado.dataset.store_bam import BamStore, CoverageType
+from quantnado.dataset.store_coverage import BamStore, CoverageType
 
 # Ensure the project root is on sys.path so imports work when running locally.
 ROOT = Path(__file__).resolve().parents[1]

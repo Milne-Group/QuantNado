@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 import zarr
 
-from quantnado.dataset.metadata import extract_metadata
+from quantnado.dataset.core import extract_metadata
 
 
 # ---------------------------------------------------------------------------

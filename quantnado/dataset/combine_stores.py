@@ -29,7 +29,7 @@ import zarr
 from loguru import logger
 from zarr.storage import LocalStore
 
-from quantnado.analysis.core import QuantNadoDataset
+from quantnado.dataset.core import QuantNadoDataset
 from quantnado.utils import estimate_chunk_len, is_network_fs
 
 
@@ -168,63 +168,59 @@ def combine_bam_stores(
     out_root.attrs.update(src_attrs)
 
     # --- Write chromosome arrays ---
-    if _new_layout:
-        # New layout: chromosomes live in coverage/ (and coverage_fwd/, coverage_rev/) groups.
-        # Array shape is (chrom_len, n_samples); concatenate along axis=1.
-        cov_groups = sorted(
-            {gkey for ds in datasets for gkey in ds.root.keys()
-             if gkey != "metadata" and isinstance(ds.root[gkey], zarr.Group)}
-        )
-        for gkey in cov_groups:
-            out_cov_group = out_root.require_group(gkey)
-            all_chroms_in_group = sorted(
-                {chrom for ds in datasets if gkey in ds.root for chrom in ds.root[gkey].keys()}
+    # Use direct numpy writes rather than dask.store to avoid:
+    #   1. dask concatenate3 overhead (graph construction + scheduler)
+    #   2. Zarr's per-chunk array_equal empty-check (19s in profiling) by setting
+    #      write_empty_chunks=True — we're writing real data so always write.
+    with zarr.config.set({"array.write_empty_chunks": True}):
+        if _new_layout:
+            cov_groups = sorted(
+                {gkey for ds in datasets for gkey in ds.root.keys()
+                 if gkey != "metadata" and isinstance(ds.root[gkey], zarr.Group)}
             )
-            for chrom in all_chroms_in_group:
-                logger.info(f"Writing {gkey}/{chrom}")
-                chrom_len = all_chromsizes[chrom]
-                arrays = []
-                for ds in datasets:
-                    n = len(ds.sample_names)
-                    if gkey not in ds.root or chrom not in ds.root[gkey]:
-                        arrays.append(da.zeros((chrom_len, n), dtype=np.uint32, chunks=(out_chunk_len, n)))
-                    else:
-                        arrays.append(da.from_array(ds.root[gkey][chrom], chunks=(out_chunk_len, n)))
-                combined = da.concatenate(arrays, axis=1).rechunk((out_chunk_len, n_total))
-                out_arr = out_cov_group.create_array(
-                    name=chrom,
-                    shape=(chrom_len, n_total),
-                    chunks=(out_chunk_len, n_total),
+            for gkey in cov_groups:
+                out_cov_group = out_root.require_group(gkey)
+                all_chroms_in_group = sorted(
+                    {chrom for ds in datasets if gkey in ds.root for chrom in ds.root[gkey].keys()}
+                )
+                for chrom in all_chroms_in_group:
+                    logger.info(f"Writing {gkey}/{chrom}")
+                    chrom_len = all_chromsizes[chrom]
+                    out_arr = out_cov_group.create_array(
+                        name=chrom,
+                        shape=(chrom_len, n_total),
+                        chunks=(out_chunk_len, n_total),
+                        dtype=np.uint32,
+                        fill_value=0,
+                        overwrite=True,
+                    )
+                    col = 0
+                    for ds in datasets:
+                        n = len(ds.sample_names)
+                        if gkey in ds.root and chrom in ds.root[gkey]:
+                            out_arr[:, col:col + n] = ds.root[gkey][chrom][:]
+                        col += n
+        else:
+            akeys = sorted(
+                {k for ds in datasets for k in ds.root.keys() if k != "metadata"}
+            )
+            for akey in akeys:
+                logger.info(f"Writing {akey}")
+                chrom_len = next(ds.root[akey].shape[1] for ds in datasets if akey in ds.root)
+                out_arr = out_root.create_array(
+                    name=akey,
+                    shape=(n_total, chrom_len),
+                    chunks=(n_total, out_chunk_len),
                     dtype=np.uint32,
                     fill_value=0,
                     overwrite=True,
                 )
-                da.store(combined, out_arr)
-    else:
-        # Old layout: chromosomes at root, shape (n_samples, chrom_len); concatenate along axis=0.
-        akeys = sorted(
-            {k for ds in datasets for k in ds.root.keys() if k != "metadata"}
-        )
-        for akey in akeys:
-            logger.info(f"Writing {akey}")
-            chrom_len = next(ds.root[akey].shape[1] for ds in datasets if akey in ds.root)
-            arrays = []
-            for ds in datasets:
-                n = len(ds.sample_names)
-                if akey not in ds.root:
-                    arrays.append(da.zeros((n, chrom_len), dtype=np.uint32, chunks=(n, out_chunk_len)))
-                else:
-                    arrays.append(da.from_array(ds.root[akey], chunks=(n, out_chunk_len)))
-            combined = da.concatenate(arrays, axis=0).rechunk((n_total, out_chunk_len))
-            out_arr = out_root.create_array(
-                name=akey,
-                shape=(n_total, chrom_len),
-                chunks=(n_total, out_chunk_len),
-                dtype=np.uint32,
-                fill_value=0,
-                overwrite=True,
-            )
-            da.store(combined, out_arr)
+                row = 0
+                for ds in datasets:
+                    n = len(ds.sample_names)
+                    if akey in ds.root:
+                        out_arr[row:row + n, :] = ds.root[akey][:]
+                    row += n
 
     # --- Write metadata group ---
     meta_group = out_root.require_group("metadata")

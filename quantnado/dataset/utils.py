@@ -1,5 +1,7 @@
-"""Enums for QuantNado feature types and reduction methods."""
+"""Shared enums and utility functions for QuantNado."""
+from __future__ import annotations
 
+import hashlib
 from enum import StrEnum
 
 
@@ -28,3 +30,8 @@ class AnchorPoint(StrEnum):
     MIDPOINT = "midpoint"
     START = "start"
     END = "end"
+
+
+def _compute_sample_hash(sample_names: list[str]) -> str:
+    canonical = "|".join(sample_names)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]

@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from quantnado.cli import app, combine_metadata_main, make_zarr_main
-from quantnado.dataset.store_bam import BamStore, CoverageType
+from quantnado.dataset.store_coverage import BamStore, CoverageType
 from quantnado.dataset.store_multiomics import MultiomicsStore
 
 
@@ -508,7 +508,7 @@ def test_combine_metadata_main_merges_csvs(tmp_path):
 
     # combine_metadata_main() creates a new app internally; invoke it directly
     # by calling BamStore._combine_metadata_files (the underlying logic is tested here)
-    from quantnado.dataset.store_bam import BamStore
+    from quantnado.dataset.store_coverage import BamStore
     combined = BamStore._combine_metadata_files([str(f1), str(f2)])
     combined.to_csv(out, index=False)
 

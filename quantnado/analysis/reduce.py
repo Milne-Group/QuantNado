@@ -10,7 +10,7 @@ import pyranges1 as pr
 from typing import TYPE_CHECKING, Iterable
 from loguru import logger
 
-from ..dataset.enums import ReductionMethod, FeatureType, AnchorPoint
+from ..dataset.utils import ReductionMethod, FeatureType, AnchorPoint
 from .features import (
 	extract_feature_ranges,
 	extract_promoters,
@@ -299,6 +299,126 @@ def _select_samples(
 	sample_labels = [all_labels[i] for i in sample_indices]
 
 	return sample_indices, sample_labels, root
+
+
+def _group_ranges_into_islands(
+	starts: np.ndarray, ends: np.ndarray, max_gap: int
+) -> list[np.ndarray]:
+	"""Group ranges into islands where consecutive gaps <= max_gap.
+
+	Returns a list of index arrays (original positions), one per island.
+	Using max_gap = store chunk_len ensures no Zarr chunk is read twice.
+	"""
+	order = np.argsort(starts, kind="stable")
+	s, e = starts[order], ends[order]
+	breaks = np.where(s[1:] - e[:-1] > max_gap)[0] + 1
+	return [order[idx] for idx in np.split(np.arange(len(order)), breaks)]
+
+
+def _reduce_byranges_prefix_np(
+	starts: np.ndarray,
+	ends: np.ndarray,
+	arr: np.ndarray,
+	*,
+	min_count: int = 1,
+) -> dict[str, np.ndarray]:
+	"""Prefix-sum reduction on an in-memory numpy array (no dask overhead).
+
+	Parameters
+	----------
+	starts, ends : np.ndarray
+		0-based, end-exclusive range coordinates (relative to arr row 0).
+	arr : np.ndarray
+		2D array (positions x samples), any numeric dtype.
+	min_count : int
+		Ranges with fewer positions than this yield NaN mean.
+
+	Returns
+	-------
+	dict with keys 'sum', 'count', 'mean' — all float32 numpy arrays of
+	shape (n_ranges, n_samples).
+	"""
+	a = arr.astype(np.float32, copy=False)
+	n_pos, n_samp = a.shape
+	s = np.asarray(starts, dtype=np.int64)
+	e = np.asarray(ends, dtype=np.int64)
+	counts = (e - s).astype(np.int64)
+
+	# For large spans the prefix array (n_pos+1, n_samp) float32 is expensive
+	# to allocate and fill. Use reduceat when the span is large relative to the
+	# number of ranges — it avoids materialising the full prefix array.
+	n_ranges = len(s)
+	if n_ranges == 0:
+		empty = np.empty((0, n_samp), dtype=np.float32)
+		return {"sum": empty, "count": empty, "mean": empty}
+
+	# Prefix-sum path: O(n_pos) allocation but O(1) per range lookup.
+	# Always correct; the array is bounded by the island span, not the whole chrom.
+	sum_pref = np.zeros((n_pos + 1, n_samp), dtype=np.float32)
+	np.cumsum(a, axis=0, out=sum_pref[1:])
+	sums = sum_pref[e] - sum_pref[s]
+
+	means = np.where(counts[:, None] >= min_count, sums / np.maximum(counts[:, None], 1), np.nan)
+	return {
+		"sum": sums,
+		"count": counts[:, None].repeat(n_samp, axis=1).astype(np.float32),
+		"mean": means.astype(np.float32),
+	}
+
+
+def _reduce_ranges_vectorized_np(
+	arr: np.ndarray,
+	starts: np.ndarray,
+	ends: np.ndarray,
+	reduction: str,
+) -> np.ndarray:
+	"""Gather-and-reduce per range on an in-memory numpy array.
+
+	Parameters
+	----------
+	arr : np.ndarray
+		2D array (positions x samples).
+	starts, ends : np.ndarray
+		0-based, end-exclusive range coordinates.
+	reduction : str
+		One of 'max', 'min', 'median', 'sum'.
+
+	Returns
+	-------
+	np.ndarray of shape (n_ranges, n_samples), float32.
+	"""
+	starts = np.asarray(starts, dtype=np.int64)
+	ends = np.asarray(ends, dtype=np.int64)
+	lengths = ends - starts
+	if lengths.size == 0:
+		return np.empty((0, arr.shape[1]), dtype=np.float32)
+	max_len = int(lengths.max())
+	n_samp = arr.shape[1]
+
+	# Pad right to avoid out-of-bounds gather
+	arr_len = arr.shape[0]
+	pad_right = max(0, int(starts.max() + max_len) - arr_len)
+	if pad_right:
+		arr = np.pad(arr.astype(np.float32), ((0, pad_right), (0, 0)), constant_values=np.nan)
+	else:
+		arr = arr.astype(np.float32, copy=False)
+
+	offsets = np.arange(max_len, dtype=np.int64)
+	indices = (starts[:, None] + offsets[None, :]).reshape(-1)
+	gathered = arr[indices].reshape(len(starts), max_len, n_samp)
+
+	mask = offsets[None, :] < lengths[:, None]
+	gathered[~mask] = np.nan
+
+	if reduction == "max":
+		return np.nanmax(gathered, axis=1)
+	if reduction == "min":
+		return np.nanmin(gathered, axis=1)
+	if reduction == "median":
+		return np.nanpercentile(gathered, 50, axis=1)
+	if reduction == "sum":
+		return np.nansum(gathered, axis=1)
+	raise ValueError(f"Unknown reduction: {reduction}")
 
 
 def _reduce_byranges_prefix(
@@ -815,7 +935,6 @@ def extract_byranges_signal(
 	sample_indices: np.ndarray | None = None,
 	strand_aware: bool = False,
 	force_strand: str | None = None,
-	max_workers: int = 1,
 ) -> xr.DataArray:
 	"""
 	Extract raw per-position signal over genomic ranges.
@@ -874,10 +993,6 @@ def extract_byranges_signal(
 		(``"-"`` → ``{chrom}_rev``) strand array regardless of their strand annotation.
 		Takes precedence over ``strand_aware``.  Falls back to total coverage when
 		stranded arrays are absent.
-	max_workers : int, default 1
-		Number of chromosome groups to extract in parallel. Useful when ranges span
-		multiple contigs stored as separate arrays.
-
 	Returns
 	-------
 	xr.DataArray
@@ -1394,24 +1509,57 @@ def reduce_byranges_signal(
 			if starts.size == 0:
 				continue
 
-			# Load only the span of positions touched by these ranges.
-			# Array is (position, sample) — slice directly, no transpose needed.
-			span_start = int(starts.min())
-			span_end = int(ends.max())
-			region_np = root[akey][span_start:span_end, sample_indices.tolist()]
-			arr = da.from_array(region_np, chunks=("auto", len(sample_indices)))
+			# Batch ranges into islands separated by >= chunk_len bp so each Zarr
+			# chunk is read at most once and inter-range deserts are skipped.
+			_zarr_arr = root[akey]
+			chunk_len = int(_zarr_arr.chunks[0]) if hasattr(_zarr_arr, "chunks") else int(_zarr_arr.shape[0])
+			islands = _group_ranges_into_islands(starts, ends, max_gap=chunk_len)
 
-			# Rebase range coordinates to be relative to span_start
-			adj_starts = starts - span_start
-			adj_ends = ends - span_start
+			island_sums: list[np.ndarray] = []
+			island_counts: list[np.ndarray] = []
+			island_means: list[np.ndarray] = []
+			island_red: list[np.ndarray] = []
+			island_order: list[np.ndarray] = []
 
-			# Reduce using appropriate method
-			# Always compute sum/count/mean via prefix sums (fast + consistent API)
-			reduced = _reduce_byranges_prefix(adj_starts, adj_ends, arr, min_count=min_count)
-			if reduction_str == "mean":
-				reduction_data = reduced["mean"]
-			else:
-				reduction_data = _reduce_ranges_vectorized(arr, adj_starts, adj_ends, reduction_str)
+			for island_idx in islands:
+				i_starts = starts[island_idx]
+				i_ends = ends[island_idx]
+				span_start = int(i_starts.min())
+				span_end = int(i_ends.max())
+				# Use basic slicing (rows then columns) rather than fancy indexing.
+				# Passing a list as the column index triggers np.ix_ inside Zarr,
+				# adding ~0.17s of overhead per island. Reading all columns then
+				# selecting in numpy avoids this when n_samples is small.
+				_raw = _zarr_arr[span_start:span_end, :]
+				region_np = _raw[:, sample_indices] if sample_indices.size < _raw.shape[1] else _raw
+				adj_starts = i_starts - span_start
+				adj_ends = i_ends - span_start
+				r_i = _reduce_byranges_prefix_np(adj_starts, adj_ends, region_np, min_count=min_count)
+				if reduction_str == "mean":
+					red_np_i = r_i["mean"]
+				else:
+					red_np_i = _reduce_ranges_vectorized_np(region_np, adj_starts, adj_ends, reduction_str)
+				island_sums.append(r_i["sum"])
+				island_counts.append(r_i["count"])
+				island_means.append(r_i["mean"])
+				island_red.append(red_np_i)
+				island_order.append(island_idx)
+
+			# Restore original range order within this contig group
+			contig_order = np.concatenate(island_order)
+			restore = np.empty_like(contig_order)
+			restore[contig_order] = np.arange(contig_order.size)
+
+			r = {
+				"sum": np.concatenate(island_sums)[restore],
+				"count": np.concatenate(island_counts)[restore],
+				"mean": np.concatenate(island_means)[restore],
+			}
+			red_np = np.concatenate(island_red)[restore]
+
+			# Wrap as zero-copy dask for downstream xr.Dataset assembly
+			reduced = {k: da.from_array(v, chunks=v.shape) for k, v in r.items()}
+			reduction_data = da.from_array(red_np, chunks=red_np.shape)
 
 			outputs.append(
 				{

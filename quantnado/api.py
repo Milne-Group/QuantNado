@@ -48,8 +48,8 @@ from quantnado.analysis.normalise import normalise as _normalise
 from quantnado.analysis.pca import run_pca as _run_pca
 from quantnado.analysis.plot import correlate, heatmap, locus_plot, metaplot, tornadoplot
 from quantnado.analysis.reduce import extract_byranges_signal, reduce_byranges_signal
-from quantnado.dataset.enums import AnchorPoint, FeatureType, ReductionMethod
-from quantnado.dataset.store_bam import BamStore, CoverageType
+from quantnado.dataset.utils import AnchorPoint, FeatureType, ReductionMethod
+from quantnado.dataset.store_coverage import BamStore, CoverageType
 from quantnado.dataset.store_methyl import MethylStore
 from quantnado.dataset.store_multiomics import MultiomicsStore
 from quantnado.dataset.store_variants import VariantStore
@@ -232,40 +232,6 @@ class QuantNado:
     open = open_dataset
 
     @classmethod
-    def from_bam_files(
-        cls,
-        bam_files: list[str],
-        store_path: "str | Path",
-        chromsizes: "str | Path | dict[str, int] | None" = None,
-        **kwargs,
-    ) -> "QuantNado":
-        """
-        Create a QuantNado dataset from BAM files.
-
-        Parameters
-        ----------
-        bam_files : list of str
-            BAM file paths.
-        store_path : str or Path
-            Output Zarr store path.
-        chromsizes : str, Path, dict, or None
-            Chromosome sizes. Extracted from first BAM if not provided.
-        **kwargs
-            Passed through to ``BamStore.from_bam_files``.
-
-        Returns
-        -------
-        QuantNado
-        """
-        store = BamStore.from_bam_files(
-            bam_files=bam_files,
-            store_path=store_path,
-            chromsizes=chromsizes,
-            **kwargs,
-        )
-        return cls(store)
-
-    @classmethod
     def create_dataset(
         cls,
         store_dir: str | Path,
@@ -291,7 +257,6 @@ class QuantNado:
         # Process control
         overwrite: bool = True,
         resume: bool = False,
-        max_workers: int = 1,
         # Store format
         chunk_len: int | None = None,
         construction_compression: str = "default",
@@ -359,9 +324,6 @@ class QuantNado:
             Overwrite existing sub-stores.
         resume : bool, default False
             Resume processing an existing sub-store.
-        max_workers : int, default 1
-            Parallel threads for processing chromosomes within each sample.
-            Samples are processed sequentially to optimize memory usage.
         chunk_len : int, default 65536
             Zarr chunk size for the position dimension (coverage store).
         construction_compression : {"default", "fast", "none"}, default "default"
@@ -659,7 +621,6 @@ class QuantNado:
             local_staging=local_staging,
             staging_dir=staging_dir,
             log_file=log_file,
-            max_workers=max_workers,
             test=test,
             coverage_type=coverage_type_arg,
         )
@@ -695,17 +656,12 @@ class QuantNado:
     ) -> "xr.DataTree":
         """Return all modalities as a hierarchical :class:`xr.DataTree`.
 
-        Delegates to :meth:`MultiomicsStore.to_datatree`. Raises if this
-        instance wraps a bare ``BamStore`` (open the parent directory instead).
+        For multi-modal stores delegates to :meth:`MultiomicsStore.to_datatree`.
+        For single-modality (bare BamStore) delegates to :meth:`BaseStore.to_datatree`.
         """
-        import xarray as xr  # noqa: F401 — ensure available
-
         if self._multiomics is not None:
             return self._multiomics.to_datatree(chromosomes=chromosomes)
-        raise RuntimeError(
-            "to_datatree() requires a MultiomicsStore. "
-            "Open the sample directory (not the .zarr path) with qn.open_dataset()."
-        )
+        return self._require_coverage().to_datatree(chromosomes=chromosomes)
 
     # ========== Coverage Properties ==========
 
@@ -714,23 +670,13 @@ class QuantNado:
             raise RuntimeError("No coverage store available in this QuantNado instance.")
         return self._bam
 
-    @property
-    def store(self) -> BamStore:
-        """The underlying coverage BamStore (raises if not present)."""
-        return self._require_coverage()
-
-    @property
-    def store_path(self) -> Path:
-        """Path to the coverage Zarr store."""
-        return self._require_coverage().store_path
-
     def subset(self, samples: list[str]) -> "QuantNado":
         """
         Return a view of this dataset restricted to the given samples.
 
         The underlying store is shared (no data is copied). All subsequent
         calls to ``extract()``, ``reduce()``, ``count_features()``, and
-        ``get_metadata()`` will only operate on the selected samples.
+        ``.metadata`` will only include the selected samples.
 
         Parameters
         ----------
@@ -749,7 +695,7 @@ class QuantNado:
         return QuantNado(store, _sample_subset=list(samples))
 
     @property
-    def samples(self) -> list[str]:
+    def sample_names(self) -> list[str]:
         """Sample names in the coverage store (respects any active subset)."""
         if self._sample_subset is not None:
             return self._sample_subset
@@ -767,22 +713,16 @@ class QuantNado:
 
     @property
     def metadata(self) -> pd.DataFrame:
-        """Metadata DataFrame. Combined across all modalities if multiomics."""
-        return self.get_metadata()
-
-    def get_metadata(self) -> pd.DataFrame:
         """
-        Return metadata as a DataFrame.
+        Metadata DataFrame. Combined across all modalities if multiomics.
 
-        If this is a multiomics store, returns combined metadata across all
-        modalities with a ``modalities`` column. Otherwise returns coverage
-        store metadata. Rows are filtered to the active sample subset if one
-        is set via :meth:`subset`.
+        Rows are filtered to the active sample subset if one is set via
+        :meth:`subset`.
         """
         if self._multiomics is not None:
-            df = self._multiomics.get_metadata()
+            df = self._multiomics.metadata
         else:
-            df = self._require_coverage().get_metadata()
+            df = self._require_coverage().metadata
         if self._sample_subset is not None:
             df = df[df.index.isin(self._sample_subset)]
         return df
@@ -938,7 +878,6 @@ class QuantNado:
         samples: list[str] | None = None,
         strand_aware: bool = False,
         strand: str | None = None,
-        max_workers: int = 1,
     ) -> xr.DataArray:
         """
         Extract signal over genomic ranges.
@@ -986,9 +925,6 @@ class QuantNado:
             annotation.  Use this to obtain separate fwd/rev DataArrays for
             :py:meth:`metaplot` ``data_rev`` or :py:meth:`tornadoplot` ``data_rev``.
             Coverage only; ignored for methylation.
-        max_workers : int, default 1
-            Number of chromosome groups to extract in parallel for coverage data.
-
         Returns
         -------
         DataArray
@@ -1034,7 +970,6 @@ class QuantNado:
             sample_indices=_sample_indices,
             strand_aware=strand_aware,
             force_strand=strand,
-            max_workers=max_workers,
         )
 
     def count_features(

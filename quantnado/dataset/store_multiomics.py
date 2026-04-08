@@ -8,7 +8,7 @@ import dask.array as da
 import xarray as xr
 from loguru import logger
 
-from .store_bam import BamStore, CoverageType
+from .store_coverage import BamStore, CoverageType
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
 
@@ -127,7 +127,6 @@ class MultiomicsStore:
         local_staging: bool = False,
         staging_dir: "Path | str | None" = None,
         log_file: "Path | None" = None,
-        max_workers: int = 1,
         test: bool = False,
         coverage_type: CoverageType | list[CoverageType] | dict[str, CoverageType] = CoverageType.UNSTRANDED,
         count_fragments: bool = False,
@@ -181,9 +180,6 @@ class MultiomicsStore:
             Scratch directory for local staging. Defaults to system temp dir.
         log_file : Path, optional
             Path to write BAM processing logs.
-        max_workers : int, default 1
-            The number of threads used to process chromosomes in parallel.
-            Samples are processed sequentially to keep memory usage low.
         test : bool, default False
             Restrict coverage to chr21/chr22/chrY (for testing).
         coverage_type : CoverageType or list or dict, default CoverageType.UNSTRANDED
@@ -229,7 +225,6 @@ class MultiomicsStore:
                 local_staging=local_staging,
                 staging_dir=staging_dir,
                 log_file=log_file,
-                max_workers=max_workers,
                 test=test,
                 coverage_type=coverage_type,
                 count_fragments=count_fragments,
@@ -251,7 +246,6 @@ class MultiomicsStore:
                 mc_hmc_sample_names=mc_hmc_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -264,7 +258,6 @@ class MultiomicsStore:
                 sample_names=methyldackel_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -277,7 +270,6 @@ class MultiomicsStore:
                 sample_names=cxreport_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -294,7 +286,6 @@ class MultiomicsStore:
                 sample_names=mc_hmc_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -308,7 +299,6 @@ class MultiomicsStore:
                 sample_names=vcf_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                max_workers=max_workers,
                 overwrite=overwrite,
                 resume=resume,
                 sample_column=sample_column,
@@ -399,7 +389,8 @@ class MultiomicsStore:
             except Exception as e:
                 logger.warning(f"Could not set metadata on {type(store).__name__}: {e}")
 
-    def get_metadata(self) -> pd.DataFrame:
+    @property
+    def metadata(self) -> pd.DataFrame:
         """
         Combined metadata across all modalities.
 
@@ -415,7 +406,7 @@ class MultiomicsStore:
         ]:
             if store is None:
                 continue
-            df = store.get_metadata().copy()
+            df = store.metadata.copy()
             df["modality"] = modality
             frames[modality] = df
 
@@ -565,7 +556,7 @@ class MultiomicsStore:
         # ---- metadata ----
         if self.coverage is not None or self.methylation is not None:
             ref = self.coverage or self.methylation
-            meta_df = ref.get_metadata()
+            meta_df = ref.metadata
             meta_vars: dict[str, xr.DataArray] = {
                 col: xr.DataArray(meta_df[col].values, dims=("sample",), coords={"sample": ref.sample_names})
                 for col in meta_df.columns

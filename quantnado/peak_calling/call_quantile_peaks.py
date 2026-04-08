@@ -119,7 +119,7 @@ def call_peaks_from_zarr(
     Reads per-base coverage from zarr, computes mean depth in sliding windows,
     applies RPKM normalisation (mean_depth × 1e9 / library_size), then log1p.
     """
-    from ..dataset.store_bam import BamStore
+    from ..dataset.store_coverage import BamStore
     from ..analysis.normalise import get_library_sizes
 
     zarr_path = Path(zarr_path)

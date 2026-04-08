@@ -10,7 +10,7 @@ import pytest
 
 import bamnado
 
-from quantnado.dataset.store_bam import BamStore, CoverageType
+from quantnado.dataset.store_coverage import BamStore, CoverageType
 
 pytestmark = pytest.mark.integration
 

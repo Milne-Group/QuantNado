@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantnado.dataset.enums import AnchorPoint, ReductionMethod
+from quantnado.dataset.utils import AnchorPoint, ReductionMethod
 from quantnado.analysis.reduce import extract_byranges_signal, reduce_byranges_signal
 
 

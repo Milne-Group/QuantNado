@@ -28,3 +28,6 @@ local/
 test_dataset.ipynb
 test_dataset/
 CLAUDE.md
+profiling.ipynb
+dataset_extraction.ipynb
+profiling_output/

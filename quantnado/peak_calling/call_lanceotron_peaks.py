@@ -762,7 +762,7 @@ def call_lanceotron_peaks_from_zarr(
     list[str]
         Paths of output BED files written.
     """
-    from ..analysis.core import QuantNadoDataset
+    from ..dataset.core import QuantNadoDataset
     from ..analysis.normalise import get_library_sizes
 
     zarr_path = Path(zarr_path)

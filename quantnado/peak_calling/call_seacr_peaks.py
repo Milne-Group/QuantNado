@@ -760,7 +760,7 @@ def call_seacr_peaks_from_zarr(
     n_workers:
         Number of parallel processes for chromosome-level island computation (default: 1).
     """
-    from ..dataset.store_bam import BamStore
+    from ..dataset.store_coverage import BamStore
     from ._device import get_device as _get_device
 
     zarr_path = Path(zarr_path)

@@ -1,40 +1,351 @@
 """BamStore — Zarr-backed per-base coverage store constructed from BAM files."""
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import tempfile
+import uuid
+import warnings
+from enum import StrEnum
 from pathlib import Path
+from typing import Iterable, Any
 
 import bamnado
 import numpy as np
 import pandas as pd
+import pysam
 import zarr
-from zarr.storage import LocalStore, ZipStore
 from loguru import logger
+from zarr.codecs import BloscCodec
+from zarr.storage import LocalStore, ZipStore
 
+from quantnado.utils import estimate_chunk_len, is_network_fs
 from .core import BaseStore
-from ._bam_utils import (
-    _copy_read_filter,
-    _collect_bam_stats,
-    _compute_sample_hash,
-    _get_chromsizes_from_bam,
-    _parse_chromsizes,
-)
-from ._bam_zarr import (
-    BIN_SIZE,
-    CONSTRUCTION_ARRAY_DTYPE,
-    DEFAULT_CONSTRUCTION_COMPRESSION,
-    CoverageType,
-    Strandedness,
-    _build_staging_store_path,
-    _delete_store_path,
-    _publish_staged_store,
-    _resolve_chunk_len,
-    _resolve_construction_compressors,
-)
-from ._bam_mcc import _get_viewpoints_from_mcc_bam, _process_chromosome_mcc
+from .utils import _compute_sample_hash
 
+warnings.filterwarnings("ignore", category=UserWarning, module="zarr")
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+BIN_SIZE = 1
+CONSTRUCTION_ARRAY_DTYPE = np.uint32
+DEFAULT_CONSTRUCTION_COMPRESSION = "default"
+
+
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
+
+class Strandedness(StrEnum):
+    UNSTRANDED = "U"
+    REVERSE = "R"
+    FORWARD = "F"
+
+
+class CoverageType(StrEnum):
+    UNSTRANDED = "unstranded"
+    STRANDED = "stranded"
+    MICRO_CAPTURE_C = "mcc"
+
+
+# ---------------------------------------------------------------------------
+# Compression helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_construction_compression(profile: str | None) -> str:
+    normalized = (profile or DEFAULT_CONSTRUCTION_COMPRESSION).strip().lower()
+    aliases = {"uncompressed": "none", "off": "none"}
+    normalized = aliases.get(normalized, normalized)
+    valid_profiles = {"default", "fast", "none"}
+    if normalized not in valid_profiles:
+        raise ValueError(
+            f"construction_compression must be one of {sorted(valid_profiles)}, got {profile!r}"
+        )
+    return normalized
+
+
+def _resolve_construction_compressors(
+    profile: str | None,
+) -> tuple[str, list[BloscCodec]]:
+    normalized = _normalize_construction_compression(profile)
+    if normalized == "none":
+        return normalized, []
+    if normalized == "fast":
+        return normalized, [BloscCodec(cname="zstd", clevel=1, shuffle="shuffle")]
+    return normalized, [BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")]
+
+
+# ---------------------------------------------------------------------------
+# Chunk-length resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_chunk_len(
+    chromsizes: dict[str, int],
+    store_path: Path,
+    chunk_len: int | None,
+) -> int:
+    if chunk_len is not None:
+        resolved = int(chunk_len)
+        if resolved <= 0:
+            raise ValueError("chunk_len must be a positive integer")
+        return resolved
+
+    fs_probe_path = store_path if store_path.exists() else store_path.parent
+    fs_is_network = is_network_fs(fs_probe_path)
+    estimate = estimate_chunk_len(
+        contig_lengths=chromsizes,
+        dtype_bytes=np.dtype(CONSTRUCTION_ARRAY_DTYPE).itemsize,
+        n_samples=1,
+        fs_is_network=fs_is_network,
+    )
+    resolved = int(estimate["chunk_len"])
+    fs_label = "network" if fs_is_network else "local"
+    logger.info(
+        "Resolved chunk_len={} for {} filesystem at {} ({} estimated chunks)",
+        resolved,
+        fs_label,
+        fs_probe_path,
+        estimate["num_chunks"],
+    )
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# Staging helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_staging_root(staging_dir: Path | str | None) -> Path:
+    if staging_dir is not None:
+        return Path(staging_dir)
+    return Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
+
+
+def _build_staging_store_path(
+    final_store_path: Path,
+    staging_dir: Path | str | None,
+) -> Path:
+    staging_root = _resolve_staging_root(staging_dir)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    return staging_root / f".{final_store_path.stem}.staging-{uuid.uuid4().hex}.zarr"
+
+
+def _delete_store_path(store_path: Path) -> None:
+    if not store_path.exists():
+        return
+    if store_path.is_dir():
+        shutil.rmtree(store_path)
+    else:
+        store_path.unlink()
+
+
+def _publish_staged_store(staged_store_path: Path, final_store_path: Path) -> None:
+    final_store_path.parent.mkdir(parents=True, exist_ok=True)
+    publish_tmp_path = final_store_path.parent / (
+        f".{final_store_path.name}.publishing-{uuid.uuid4().hex}"
+    )
+    try:
+        shutil.copytree(staged_store_path, publish_tmp_path)
+        _delete_store_path(final_store_path)
+        publish_tmp_path.rename(final_store_path)
+    except Exception:
+        _delete_store_path(publish_tmp_path)
+        raise
+    finally:
+        _delete_store_path(staged_store_path)
+
+
+# ---------------------------------------------------------------------------
+# BAM utility functions
+# ---------------------------------------------------------------------------
+
+def _copy_read_filter(rf: "bamnado.ReadFilter") -> "bamnado.ReadFilter":
+    if hasattr(rf, "copy"):
+        return rf.copy()
+    new_rf = bamnado.ReadFilter()
+    for attr in (
+        "min_mapq",
+        "proper_pair",
+        "min_length",
+        "max_length",
+        "strand",
+        "min_fragment_length",
+        "max_fragment_length",
+        "blacklist_bed",
+        "whitelisted_barcodes",
+        "read_group",
+        "filter_tag",
+        "filter_tag_value",
+    ):
+        setattr(new_rf, attr, getattr(rf, attr))
+    return new_rf
+
+
+def _to_str_list(items: Iterable[Any]) -> list[str]:
+    return [str(i) if not pd.isna(i) else "" for i in items]
+
+
+def _compute_bam_hash(bam_path: Path | str) -> str:
+    h = hashlib.md5()
+    try:
+        with open(bam_path, "rb") as f:
+            h.update(f.read(16384))
+    except (FileNotFoundError, PermissionError) as e:
+        logger.warning(f"Could not compute hash for {bam_path}: {e}")
+        return ""
+    return h.hexdigest()
+
+
+def _collect_bam_stats(bam_file: str) -> tuple[str, int, float]:
+    """Return (bam_hash, total_reads, mean_read_length) for a BAM file."""
+    bam_hash = _compute_bam_hash(bam_file)
+    total_reads = 0
+    mean_read_length = float("nan")
+    try:
+        with pysam.AlignmentFile(bam_file, "rb") as bam:
+            total_reads = bam.mapped
+            lengths = []
+            for read in bam.fetch():
+                if not read.is_unmapped and read.query_length:
+                    lengths.append(read.query_length)
+                    if len(lengths) >= 10_000:
+                        break
+            if lengths:
+                mean_read_length = float(np.mean(lengths))
+    except Exception as e:
+        logger.warning(f"Could not compute BAM stats for {bam_file}: {e}")
+    return bam_hash, total_reads, mean_read_length
+
+
+def _get_chromsizes_from_bam(bam_path: Path | str) -> dict[str, int]:
+    with pysam.AlignmentFile(str(bam_path), "rb") as sam:
+        return {ref: length for ref, length in zip(sam.references, sam.lengths)}
+
+
+def _parse_chromsizes(
+    chromsizes: str | Path | dict[str, int],
+    *,
+    filter_chromosomes: bool = True,
+    test: bool = False,
+) -> dict[str, int]:
+    if isinstance(chromsizes, dict):
+        chromsizes_dict = chromsizes
+    else:
+        path = Path(chromsizes)
+        if not path.exists():
+            raise FileNotFoundError(f"Chromsizes file not found: {path}")
+        df = pd.read_csv(path, sep="\t", header=None, names=["chrom", "size"])
+        chromsizes_dict = df.set_index("chrom")["size"].to_dict()
+
+    if filter_chromosomes:
+        chromsizes_dict = {
+            k: v for k, v in chromsizes_dict.items() if k.startswith("chr") and "_" not in k
+        }
+
+    if test:
+        desired = ["chr21", "chr22", "chrY"]
+        chromsizes_dict = {k: v for k, v in chromsizes_dict.items() if k in desired}
+        logger.info(f"Test mode enabled: keeping chromosomes {list(chromsizes_dict.keys())}")
+
+    return chromsizes_dict
+
+
+# ---------------------------------------------------------------------------
+# MCC (Micro-Capture C) helpers
+# ---------------------------------------------------------------------------
+
+def _process_chromosome_mcc(
+    bam_file: str,
+    contig: str,
+    contig_size: int,
+    viewpoints: list[str],
+    viewpoint_tag: str,
+    base_filter: "bamnado.ReadFilter",
+    use_fragment: bool = False,
+) -> dict[str, np.ndarray]:
+    """Per-viewpoint bamnado calls for a single chromosome.
+
+    Each viewpoint is fetched via bamnado's C-level ``get_signal_for_chromosome``
+    with a per-VP tag filter.
+
+    Returns a dict mapping each viewpoint name to a uint32 coverage array of
+    length ``contig_size``.
+    """
+    def _get_vp(vp: str) -> tuple[str, np.ndarray]:
+        rf = _copy_read_filter(base_filter)
+        rf.filter_tag = viewpoint_tag
+        rf.filter_tag_value = vp
+        signal = bamnado.get_signal_for_chromosome(
+            bam_path=bam_file,
+            chromosome_name=contig,
+            bin_size=BIN_SIZE,
+            scale_factor=1.0,
+            use_fragment=use_fragment,
+            ignore_scaffold_chromosomes=False,
+            read_filter=rf,
+        )
+        if signal.shape[0] != contig_size:
+            signal = (
+                signal[:contig_size]
+                if signal.shape[0] > contig_size
+                else np.pad(signal, (0, contig_size - signal.shape[0]))
+            )
+        return vp, signal.astype(np.uint32)
+
+    return dict(_get_vp(vp) for vp in viewpoints)
+
+
+def _get_viewpoints_from_mcc_bam(
+    bam_path: Path | str,
+    viewpoint_tag: str = "VP",
+    scan_limit: int = 500_000,
+) -> list[str]:
+    """Return sorted list of unique viewpoint tag values found in the BAM.
+
+    Checks the BAM header first (``@CO QuantNado:viewpoints=vp1,vp2,...``),
+    which is written when the store was built by QuantNado. Falls back to
+    scanning the first ``scan_limit`` reads — enough to discover all viewpoints
+    in typical MCC libraries without reading the whole file.
+    """
+    viewpoints: set[str] = set()
+    bam_path = str(bam_path)
+    try:
+        with pysam.AlignmentFile(bam_path, "rb") as bam:
+            # Fast path: header comment written by QuantNado
+            for comment in bam.header.get("CO", []):
+                prefix = "QuantNado:viewpoints="
+                if comment.startswith(prefix):
+                    return sorted(comment[len(prefix):].split(","))
+
+            # Fallback: scan first scan_limit reads
+            for i, read in enumerate(bam.fetch(until_eof=True)):
+                if i >= scan_limit:
+                    break
+                if read.has_tag(viewpoint_tag):
+                    viewpoints.add(read.get_tag(viewpoint_tag))
+    except Exception as e:
+        if viewpoints:
+            logger.debug(
+                f"Encountered an error while scanning MCC viewpoint tags for {bam_path}, "
+                f"but recovered {len(viewpoints)} viewpoint(s): {e}"
+            )
+        else:
+            logger.warning(f"Could not extract MCC viewpoint tags from {bam_path}: {e}")
+    if not viewpoints:
+        raise ValueError(
+            f"No MCC viewpoint tags ('{viewpoint_tag}') found in {bam_path} "
+            f"(scanned first {scan_limit:,} reads)"
+        )
+    return sorted(viewpoints)
+
+
+# ---------------------------------------------------------------------------
+# BamStore
+# ---------------------------------------------------------------------------
 
 class BamStore(BaseStore):
     """
@@ -511,7 +822,6 @@ class BamStore(BaseStore):
         bam_file: str,
         sample_name: str,
         tmp_path: Path,
-        max_workers: int = 1,
     ) -> None:
         """Process a single BAM and write coverage to a 1D per-sample temp store."""
         logger.info(f"Processing sample: {sample_name}")
@@ -610,14 +920,12 @@ class BamStore(BaseStore):
         ``pending`` is a list of ``(sample_idx, bam_file, sample_name)`` tuples
         for the viewpoints that still need processing (incomplete samples).
         """
-        # Build viewpoint → sample_idx mapping for the pending set only.
         assert self.viewpoint_map is not None
         vp_to_idx: dict[str, int] = {
             self.viewpoint_map[sn]: idx for idx, _, sn in pending
         }
         viewpoints = list(vp_to_idx.keys())
         base_filter = next(iter(self.bam_filter_map.values()))
-        # Strip any existing VP tag filter — we split by VP ourselves.
         base_filter = _copy_read_filter(base_filter)
         base_filter.filter_tag = None
         base_filter.filter_tag_value = None
@@ -625,23 +933,35 @@ class BamStore(BaseStore):
         logger.info(f"Processing {len(viewpoints)} MCC viewpoint(s) from {bam_file} in single-pass mode")
 
         sparsity_per_vp: dict[str, list[float]] = {vp: [] for vp in viewpoints}
-        n_chroms = len(self.chromsizes)
+        contigs = list(self.chromsizes.keys())
+        n_chroms = len(contigs)
 
-        for i, (contig, size) in enumerate(self.chromsizes.items(), 1):
-            logger.debug(f"MCC single-pass: {contig} ({i}/{n_chroms})")
-            vp_arrays = _process_chromosome_mcc(
+        def _do_chrom(contig: str) -> tuple[str, dict[str, np.ndarray]]:
+            return contig, _process_chromosome_mcc(
                 bam_file=bam_file,
                 contig=contig,
-                contig_size=size,
+                contig_size=self.chromsizes[contig],
                 viewpoints=viewpoints,
                 viewpoint_tag=self.viewpoint_tag,
                 base_filter=base_filter,
                 use_fragment=self.count_fragments,
             )
+
+        def _write_result(contig: str, vp_arrays: dict[str, np.ndarray]) -> None:
+            size = self.chromsizes[contig]
             for vp, arr in vp_arrays.items():
                 sample_idx = vp_to_idx[vp]
-                self.root["coverage"][contig][:size, sample_idx] = arr
-                sparsity_per_vp[vp].append(float((np.sum(arr == 0) / arr.size) * 100))
+                sparsity = float((np.sum(arr == 0) / arr.size) * 100)
+                sparsity_per_vp[vp].append(sparsity)
+                if arr.any():
+                    self.root["coverage"][contig][:size, sample_idx] = arr
+
+        # Chromosomes are processed sequentially to keep peak RAM bounded to
+        # chrom_len × 4 B instead of n_viewpoints × chrom_len × 4 B.
+        for i, contig in enumerate(contigs, 1):
+            logger.debug(f"MCC {contig} ({i}/{n_chroms})")
+            _, vp_arrays = _do_chrom(contig)
+            _write_result(contig, vp_arrays)
 
         bam_hash, total_reads, mean_read_length = _collect_bam_stats(bam_file)
         for vp, sparsity_vals in sparsity_per_vp.items():
@@ -683,13 +1003,8 @@ class BamStore(BaseStore):
     def process_samples(
         self,
         bam_files: list[str] | None = None,
-        max_workers: int = 1,
     ) -> None:
-        """Process BAM files and write signal data to the zarr store.
-
-        Each sample is written to a temporary 1D store, then combined into the
-        final (position, n_samples) arrays. Incomplete samples are skipped.
-        """
+        """Process BAM files and write signal data to the zarr store."""
         if self.sample_bam_map is not None:
             resolved_bam_files = [self.sample_bam_map[s] for s in self.sample_names]
         elif bam_files is not None:
@@ -711,12 +1026,9 @@ class BamStore(BaseStore):
             pending.append((sample_idx, bam_file, sample_name))
 
         if self.n_samples == 1 and pending:
-            # Single-sample store: write directly into the final arrays, no temp store needed.
             sample_idx, bam_file, sample_name = pending[0]
             self._write_sample_direct(sample_idx, bam_file, sample_name)
         elif self.sample_bam_map is not None and pending:
-            # MCC: all virtual samples share the same BAM file(s). Group pending
-            # samples by BAM path and process each BAM once in a single pass.
             pending_by_bam: dict[str, list[tuple[int, str, str]]] = {}
             for idx, bf, sn in pending:
                 pending_by_bam.setdefault(bf, []).append((idx, bf, sn))
@@ -729,12 +1041,7 @@ class BamStore(BaseStore):
                     (idx, bf, sn, tmp_dir / f"sample_{idx}.zarr") for idx, bf, sn in pending
                 ]
                 for sample_idx, bam_file, sample_name, tmp_path in pending_with_paths:
-                    self._write_sample_store(
-                        bam_file,
-                        sample_name,
-                        tmp_path,
-                        max_workers=1,
-                    )
+                    self._write_sample_store(bam_file, sample_name, tmp_path)
                     tmp_root = zarr.open_group(str(tmp_path), mode="r")
                     self._write_sample_to_final(sample_idx, tmp_root)
 
@@ -764,13 +1071,11 @@ class BamStore(BaseStore):
         construction_compression: str = DEFAULT_CONSTRUCTION_COMPRESSION,
         local_staging: bool = False,
         staging_dir: Path | str | None = None,
-        max_workers: int = 1,
         log_file: Path | None = None,
         test: bool = False,
     ) -> "BamStore":
         if log_file is not None:
             from quantnado.utils import setup_logging
-
             setup_logging(Path(log_file), verbose=False)
 
         if chromsizes is None:
@@ -852,9 +1157,7 @@ class BamStore(BaseStore):
             if staging_enabled
             else final_store_path
         )
-        resolved_chunk_len = _resolve_chunk_len(
-            chromsizes_dict, final_store_path, chunk_len
-        )
+        resolved_chunk_len = _resolve_chunk_len(chromsizes_dict, final_store_path, chunk_len)
 
         if staging_enabled:
             logger.info(f"Building under staging path {build_store_path}")
@@ -876,9 +1179,9 @@ class BamStore(BaseStore):
                 viewpoint_map=viewpoint_map,
             )
             if sample_bam_map is not None:
-                store.process_samples(max_workers=max_workers)
+                store.process_samples()
             else:
-                store.process_samples(bam_files, max_workers=max_workers)
+                store.process_samples(bam_files)
 
             if metadata is not None:
                 if isinstance(metadata, list):

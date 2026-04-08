@@ -8,7 +8,70 @@ import xarray as xr
 import dask.array as da
 from loguru import logger
 
-from .metadata import extract_metadata
+def extract_metadata(ds) -> pd.DataFrame:
+    """Extract sample-level metadata from the Zarr-based layout."""
+
+    attrs = getattr(ds, "attrs", {})
+    sample_labels = None
+
+    if "sample_names" in attrs:
+        sample_labels = attrs.get("sample_names")
+    elif hasattr(ds, "meta") and "sample_names" in ds.meta:
+        stored = ds.meta["sample_names"][:]
+        sample_labels = [s.decode() if isinstance(s, (bytes, bytearray)) else str(s) for s in stored]
+
+    if sample_labels is None:
+        if hasattr(ds, "sample"):
+            sample_labels = getattr(ds, "sample").values.astype(str)
+        else:
+            root = getattr(ds, "root", None)
+            if root is not None:
+                sample_labels = root.attrs.get("sample_names")
+
+    if sample_labels is None:
+        raise ValueError("Unable to determine sample labels from dataset")
+
+    metadata_df = pd.DataFrame({"sample_id": sample_labels})
+
+    metadata_cols = {
+        k.replace("metadata_", ""): v
+        for k, v in attrs.items()
+        if k.startswith("metadata_") and hasattr(v, "__len__") and len(v) == len(sample_labels)
+    }
+
+    for col, values in metadata_cols.items():
+        cleaned_values = [v if v != "" else pd.NA for v in values]
+        metadata_df[col] = cleaned_values
+
+    meta_group = None
+    if hasattr(ds, "get"):
+        maybe_meta = ds.get("metadata")
+        if isinstance(maybe_meta, zarr.Group):
+            meta_group = maybe_meta
+
+        if meta_group is not None:
+            if "sample_hashes" in meta_group:
+                arr = meta_group["sample_hashes"][:]
+                hashes = []
+                for row in arr:
+                    if (row == 0).all():
+                        hashes.append(pd.NA)
+                    else:
+                        hashes.append("".join(f"{int(b):02x}" for b in row))
+                metadata_df["sample_hash"] = hashes
+            if "completed" in meta_group:
+                metadata_df["completed"] = meta_group["completed"][:].astype(bool)
+            if "sparsity" in meta_group:
+                metadata_df["sparsity"] = meta_group["sparsity"][:]
+
+    front_cols = ["sample_id"]
+    if "assay" in metadata_df.columns:
+        front_cols.append("assay")
+
+    remaining = [c for c in metadata_df.columns if c not in front_cols]
+    metadata_df = metadata_df[front_cols + remaining]
+
+    return metadata_df.set_index("sample_id")
 
 
 class BaseStore:
@@ -96,11 +159,8 @@ class BaseStore:
             self._metadata_cache = extract_metadata(self.root)
         return self._metadata_cache
 
-    def clear_metadata_cache(self) -> None:
+    def _clear_metadata_cache(self) -> None:
         self._metadata_cache = None
-
-    def get_metadata(self) -> pd.DataFrame:
-        return self.metadata
 
     def list_metadata_columns(self) -> list[str]:
         return [
@@ -153,7 +213,7 @@ class BaseStore:
             key = f"metadata_{col}"
             if key in self.root.attrs:
                 del self.root.attrs[key]
-        self.clear_metadata_cache()
+        self._clear_metadata_cache()
 
     def set_metadata(
         self,
@@ -205,7 +265,7 @@ class BaseStore:
 
             self.root.attrs[key] = values
 
-        self.clear_metadata_cache()
+        self._clear_metadata_cache()
 
     def update_metadata(self, updates: dict[str, list[Any] | dict[str, Any]]) -> None:
         self._check_writable()
@@ -228,16 +288,16 @@ class BaseStore:
             else:
                 raise TypeError(f"Values for {col} must be list or dict")
             self.root.attrs[key] = self._to_str_list(final_values)
-        self.clear_metadata_cache()
+        self._clear_metadata_cache()
 
     def _to_str_list(self, items: Iterable[Any]) -> list[str]:
         return [str(i) if not pd.isna(i) else "" for i in items]
 
     def metadata_to_csv(self, path: Path | str) -> None:
-        self.get_metadata().to_csv(path)
+        self.metadata.to_csv(path)
 
     def metadata_to_json(self, path: Path | str) -> None:
-        self.get_metadata().reset_index().to_json(path, orient="records", indent=2)
+        self.metadata.reset_index().to_json(path, orient="records", indent=2)
 
     @property
     def completed_mask(self) -> np.ndarray:
@@ -256,11 +316,28 @@ class BaseStore:
         self,
         chromosomes: list[str] | None = None,
         chunks: str | dict | None = None,
+        sparse: bool = False,
+        strand: str | None = None,
     ) -> dict[str, xr.DataArray]:
         """Extract the dataset as a dict of per-chromosome lazy Xarray DataArrays.
 
         Each DataArray has dimensions ``(sample, position)``.
+
+        Parameters
+        ----------
+        sparse:
+            If True, each dask chunk is backed by a ``sparse.COO`` array instead of a
+            dense NumPy array.  Useful for RNA-seq / ChIP-seq data where most positions
+            have zero coverage, significantly reducing memory usage for whole-genome
+            access.  Requires the ``sparse`` package (already a project dependency).
+        strand:
+            ``'+'`` or ``'-'`` to select the forward or reverse strand arrays
+            (``coverage_fwd`` / ``coverage_rev``).  Only valid for stranded stores
+            (e.g. RNA-seq).  ``None`` uses the unstranded coverage array.
         """
+        if strand is not None and strand not in ("+", "-"):
+            raise ValueError(f"strand must be '+', '-', or None, got {strand!r}")
+
         if not self.completed_mask.all():
             incomplete_indices = np.where(~self.completed_mask)[0]
             incomplete_names = [self.sample_names[i] for i in incomplete_indices]
@@ -286,7 +363,16 @@ class BaseStore:
         result = {}
         for chrom in chroms_to_extract:
             chrom_size = self.chromsizes[chrom]
-            zarr_array = self.get_chrom(chrom)
+            if strand is not None:
+                suffix = "coverage_fwd" if strand == "+" else "coverage_rev"
+                if suffix not in self.root or chrom not in self.root[suffix]:
+                    raise RuntimeError(
+                        f"Strand-specific array '{suffix}/{chrom}' not found. "
+                        "Store may not be stranded."
+                    )
+                zarr_array = self.root[suffix][chrom]
+            else:
+                zarr_array = self.get_chrom(chrom)
             dask_arr = da.from_zarr(zarr_array, chunks=chunks)
             if chunks == "auto":
                 dask_arr = dask_arr.rechunk("auto")
@@ -300,6 +386,10 @@ class BaseStore:
 
             # Array is (position, sample); transpose to (sample, position) for xarray
             dask_arr = dask_arr.T
+
+            if sparse:
+                import sparse as sp
+                dask_arr = dask_arr.map_blocks(sp.COO, dtype=dask_arr.dtype)
 
             coords: dict = {
                 "sample": self.sample_names,
@@ -320,6 +410,78 @@ class BaseStore:
             result[chrom] = da_xr
 
         return result
+
+    def to_datatree(
+        self,
+        chromosomes: list[str] | None = None,
+    ) -> xr.DataTree:
+        """Return coverage data as a hierarchical :class:`xr.DataTree`.
+
+        Each chromosome is a child node under its coverage group, keeping the
+        ``position`` dimension chromosome-local (no size conflicts between contigs).
+
+        Tree structure::
+
+            /
+            ├── coverage/
+            │   ├── chr1    coverage (position, sample) uint32
+            │   └── ...
+            ├── coverage_fwd/   (stranded stores only)
+            ├── coverage_rev/   (stranded stores only)
+            └── metadata/       per-sample metadata variables
+
+        Parameters
+        ----------
+        chromosomes : list[str], optional
+            Chromosomes to include. Defaults to all chromosomes.
+        """
+        chroms = chromosomes if chromosomes is not None else self.chromosomes
+
+        nodes: dict[str, xr.Dataset] = {
+            "/": xr.Dataset(attrs={"sample_names": self.sample_names, "chromsizes": self.chromsizes})
+        }
+
+        def _add_group(group, prefix: str) -> None:
+            for chrom in chroms:
+                if chrom not in group:
+                    continue
+                zarr_arr = group[chrom]
+                chrom_size = self.chromsizes.get(chrom, zarr_arr.shape[0])
+                arr = xr.DataArray(
+                    da.from_zarr(zarr_arr),
+                    dims=("position", "sample"),
+                    coords={
+                        "position": np.arange(chrom_size),
+                        "sample": self.sample_names,
+                    },
+                    name="coverage",
+                )
+                nodes[f"{prefix}/{chrom}"] = xr.Dataset({"coverage": arr})
+
+        if "coverage" in self.root:
+            _add_group(self.root["coverage"], "coverage")
+        else:
+            # Old layout: arrays at root
+            _add_group(self.root, "coverage")
+
+        for suffix in ("coverage_fwd", "coverage_rev"):
+            if suffix in self.root:
+                _add_group(self.root[suffix], suffix)
+
+        meta_df = self.metadata
+        meta_vars = {
+            col: xr.DataArray(
+                meta_df[col].values,
+                dims=("sample",),
+                coords={"sample": self.sample_names},
+            )
+            for col in meta_df.columns
+            if col != "sample_id"
+        }
+        if meta_vars:
+            nodes["metadata"] = xr.Dataset(meta_vars)
+
+        return xr.DataTree.from_dict(nodes)
 
     def extract_region(
         self,

@@ -15,7 +15,7 @@ import traceback
 import pandas as pd
 from pathlib import Path
 
-from quantnado.dataset.store_bam import BamStore, CoverageType
+from quantnado.dataset.store_coverage import BamStore, CoverageType
 from quantnado.utils import classify_methylation_files, setup_logging
 from quantnado._version import __version__
 
@@ -25,9 +25,17 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+dataset_app = typer.Typer(help="Create and manage datasets.", no_args_is_help=True)
+analyse_app = typer.Typer(help="Analyse coverage signal.", no_args_is_help=True)
+peaks_app = typer.Typer(help="Call peaks from coverage data.", no_args_is_help=True)
+
+app.add_typer(dataset_app, name="dataset")
+app.add_typer(analyse_app, name="analyse")
+app.add_typer(peaks_app, name="peaks")
+
 
 @app.callback(invoke_without_command=True)
-def _version_callback(
+def _root(
     ctx: typer.Context,
     version: bool = typer.Option(None, "--version", help="Show version and exit"),
 ):
@@ -51,7 +59,11 @@ def _setup_cli_logging(log_file: Path, verbose: bool):
     setup_logging(log_file, verbose)
 
 
-@app.command()
+# ======================================================================
+# quantnado peaks call
+# ======================================================================
+
+@peaks_app.command("call")
 def call_peaks(
     zarr: Path = typer.Option(..., "--zarr", help="Path to a QuantNado zarr coverage store"),
     method: str = typer.Option("quantile", "--method", help="Peak calling method: quantile, seacr, or lanceotron"),
@@ -138,7 +150,11 @@ def call_peaks(
         raise typer.Exit(code=1)
 
 
-@app.command()
+# ======================================================================
+# quantnado dataset create
+# ======================================================================
+
+@dataset_app.command("create")
 def create_dataset(
     output: Path = typer.Option(..., "--output", "-o", help="Output directory for the multiomics store."),
     # SeqNado convenience shortcut
@@ -237,7 +253,6 @@ def create_dataset(
     # Process control
     overwrite: bool = typer.Option(False, "--overwrite/--no-overwrite", help="Overwrite existing sub-stores."),
     resume: bool = typer.Option(False, "--resume", help="Resume processing an existing store, skipping completed samples."),
-    max_workers: int = typer.Option(1, "--max-workers", help="Number of parallel threads for chromosome-level processing within each sample."),
     # Store format
     chunk_len: int | None = typer.Option(
         None,
@@ -307,7 +322,6 @@ def create_dataset(
                 filter_chromosomes=filter_chromosomes,
                 overwrite=overwrite,
                 resume=resume,
-                max_workers=max_workers,
                 chunk_len=chunk_len,
                 construction_compression=construction_compression,
                 local_staging=local_staging,
@@ -323,17 +337,9 @@ def create_dataset(
         return
 
     def _parse_coverage_type(raw: str | None) -> CoverageType | list[CoverageType] | dict[str, CoverageType]:
-        """Convert the --coverage-type CLI string into the form BamStore expects.
-
-        Accepted formats:
-            single:  "stranded"
-            list:    "stranded,unstranded"
-            dict:    "sample1:stranded,sample2:mcc"
-        """
         if raw is None:
             return CoverageType.UNSTRANDED
         parts = [p.strip() for p in raw.split(",") if p.strip()]
-        # Single bare value
         if len(parts) == 1 and ":" not in parts[0]:
             try:
                 return CoverageType(parts[0].lower())
@@ -343,7 +349,6 @@ def create_dataset(
                     f"Valid values: {[e.value for e in CoverageType]}"
                 )
                 raise typer.Exit(code=1)
-        # Detect dict form (any part contains ":")
         if any(":" in p for p in parts):
             result: dict[str, CoverageType] = {}
             for part in parts:
@@ -353,9 +358,9 @@ def create_dataset(
                         "use 'sample:type' pairs, e.g. 'sample1:stranded,sample2:mcc'"
                     )
                     raise typer.Exit(code=1)
-                sample, _, type_str = part.partition(":")
+                sname, _, type_str = part.partition(":")
                 try:
-                    result[sample.strip()] = CoverageType(type_str.strip().lower())
+                    result[sname.strip()] = CoverageType(type_str.strip().lower())
                 except ValueError:
                     logger.error(
                         f"--coverage-type: '{type_str.strip()}' is not a valid coverage type. "
@@ -363,7 +368,6 @@ def create_dataset(
                     )
                     raise typer.Exit(code=1)
             return result
-        # List form
         try:
             return [CoverageType(p.lower()) for p in parts]
         except ValueError as exc:
@@ -384,8 +388,6 @@ def create_dataset(
 
     methyldackel_files, cxreport_files, mc_files, hmc_files = classify_methylation_files(all_meth_files)
 
-    # Slice sample names to match each classified group in order:
-    # [bedgraph names][cxreport names][mc/hmc names (one per sample pair)]
     n_bg = len(methyldackel_files)
     n_cx = len(cxreport_files)
     n_mchmc = max(len(mc_files), len(hmc_files))
@@ -393,10 +395,6 @@ def create_dataset(
     cxreport_names = all_meth_names[n_bg:n_bg + n_cx] if all_meth_names else []
     mc_hmc_names = all_meth_names[n_bg + n_cx:n_bg + n_cx + n_mchmc] if all_meth_names else []
 
-    # Load and merge metadata CSV(s). Multiple paths (comma-separated) are supported so that
-    # per-assay SeqNado design files can be passed together, e.g.:
-    #   --metadata metadata_atac.csv,metadata_chip.csv,metadata_rna.csv
-    # r1/r2 fastq path columns are stripped; all other columns (assay, scaling_group, etc.) are kept.
     metadata_paths = [Path(p) for p in _split(metadata)]
     if not metadata_paths:
         base_metadata_df: pd.DataFrame | Path | None = None
@@ -409,11 +407,7 @@ def create_dataset(
         logger.error("Provide at least one of --bam, --methylation, or --vcf.")
         raise typer.Exit(code=1)
 
-    # Build optional assay metadata DataFrame.
-    # Per-modality assay lists are resolved by broadcasting a single value
-    # or validating that a multi-value list matches the file count.
     def _resolve_assays(raw: str | None, sample_names: list[str], label: str) -> list[tuple[str, str]]:
-        """Return [(sample_name, assay), ...] or [] if no assays specified."""
         if raw is None:
             return []
         parts = [v.strip() for v in raw.split(",") if v.strip()]
@@ -427,7 +421,6 @@ def create_dataset(
             raise typer.Exit(code=1)
         return list(zip(sample_names, parts))
 
-    # Resolve effective sample names for each modality (mirrors what MultiomicsStore will use).
     effective_bam_names = bam_names if bam_names else [Path(f).stem for f in bam_files]
     effective_meth_names = (
         bedgraph_names + cxreport_names + mc_hmc_names
@@ -442,8 +435,6 @@ def create_dataset(
         + _resolve_assays(vcf_assays, effective_vcf_names, "vcf")
     )
 
-    # Merge assay labels from --bam-assays/--methylation-assays/--vcf-assays into metadata.
-    # When SeqNado design CSVs supply an 'assay' column these flags are not needed.
     if assay_pairs:
         assay_df = pd.DataFrame(assay_pairs, columns=[sample_column, "assay"])
         if base_metadata_df is not None:
@@ -455,6 +446,7 @@ def create_dataset(
             metadata_to_pass = assay_df
     else:
         metadata_to_pass = base_metadata_df
+
     modality_counts = [
         f"{len(bam_files)} BAM" if bam_files else None,
         f"{len(methyldackel_files)} bedGraph" if methyldackel_files else None,
@@ -491,7 +483,6 @@ def create_dataset(
             log_file=log_file,
             overwrite=overwrite,
             resume=resume,
-            max_workers=max_workers,
             test=test,
             coverage_type=coverage_type_parsed,
             count_fragments=count_fragments,
@@ -503,7 +494,11 @@ def create_dataset(
         raise typer.Exit(code=1)
 
 
-@app.command()
+# ======================================================================
+# quantnado dataset combine
+# ======================================================================
+
+@dataset_app.command("combine")
 def combine_stores(
     inputs: list[Path] = typer.Option(..., "--input", "-i", help="Per-sample Zarr store paths (repeat flag or pass multiple)"),
     output: Path = typer.Option(..., "--output", "-o", help="Path for the combined output Zarr store"),
@@ -518,17 +513,121 @@ def combine_stores(
 
     Example::
 
-        quantnado combine-stores -i s1.zarr -i s2.zarr -i s3.zarr -o combined.zarr
+        quantnado dataset combine -i s1.zarr -i s2.zarr -i s3.zarr -o combined.zarr
     """
     _setup_cli_logging(log_file, verbose)
     from quantnado.dataset.combine_stores import combine_bam_stores
     try:
         combine_bam_stores(inputs, output, overwrite=overwrite)
     except Exception as e:
-        logger.error(f"combine-stores failed: {e}")
+        logger.error(f"combine failed: {e}")
         logger.debug(traceback.format_exc())
         raise typer.Exit(code=1)
 
+
+# ======================================================================
+# quantnado analyse reduce
+# ======================================================================
+
+@analyse_app.command("reduce")
+def analyse_reduce(
+    store: Path = typer.Option(..., "--store", help="Path to a QuantNado zarr store or multiomics directory."),
+    bed: Path | None = typer.Option(None, "--bed", help="BED file of genomic intervals."),
+    gtf: Path | None = typer.Option(None, "--gtf", help="GTF file (alternative to --bed)."),
+    output: Path = typer.Option(..., "--output", "-o", help="Output TSV file path."),
+    reduction: str = typer.Option("mean", "--reduction", help="Aggregation method: mean, sum, max, min, median."),
+    samples: str | None = typer.Option(None, "--samples", help="Comma-separated sample names to include."),
+    log_file: Path = typer.Option("quantnado_analyse.log", "--log-file", help="Path to the log file."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
+):
+    """Reduce per-sample coverage signal over genomic intervals."""
+    _setup_cli_logging(log_file, verbose)
+    try:
+        from quantnado.api import QuantNado
+        ds = QuantNado.open_dataset(store)
+        _samples = [s.strip() for s in samples.split(",") if s.strip()] if samples else None
+        result = ds.reduce(
+            intervals_path=bed or gtf,
+            reduction=reduction,
+            samples=_samples,
+        )
+        result.to_dataframe().to_csv(output, sep="\t")
+        logger.success(f"Reduction written to {output}")
+    except Exception as e:
+        logger.error(f"analyse reduce failed: {e}")
+        logger.debug(traceback.format_exc())
+        raise typer.Exit(code=1)
+
+
+# ======================================================================
+# quantnado analyse counts
+# ======================================================================
+
+@analyse_app.command("counts")
+def analyse_counts(
+    store: Path = typer.Option(..., "--store", help="Path to a QuantNado zarr store or multiomics directory."),
+    gtf: Path | None = typer.Option(None, "--gtf", help="GTF file for feature counting."),
+    bed: Path | None = typer.Option(None, "--bed", help="BED file (alternative to --gtf)."),
+    output: Path = typer.Option(..., "--output", "-o", help="Output TSV file path."),
+    feature_type: str = typer.Option("gene", "--feature-type", help="GTF feature type to count (e.g. gene, exon)."),
+    samples: str | None = typer.Option(None, "--samples", help="Comma-separated sample names to include."),
+    log_file: Path = typer.Option("quantnado_analyse.log", "--log-file", help="Path to the log file."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
+):
+    """Generate a feature count matrix (DESeq2-compatible)."""
+    _setup_cli_logging(log_file, verbose)
+    try:
+        from quantnado.api import QuantNado
+        ds = QuantNado.open_dataset(store)
+        _samples = [s.strip() for s in samples.split(",") if s.strip()] if samples else None
+        counts, _ = ds.count_features(
+            gtf_file=gtf,
+            bed_file=bed,
+            feature_type=feature_type,
+            samples=_samples,
+        )
+        counts.to_csv(output, sep="\t")
+        logger.success(f"Counts written to {output}")
+    except Exception as e:
+        logger.error(f"analyse counts failed: {e}")
+        logger.debug(traceback.format_exc())
+        raise typer.Exit(code=1)
+
+
+# ======================================================================
+# quantnado analyse pca
+# ======================================================================
+
+@analyse_app.command("pca")
+def analyse_pca(
+    store: Path = typer.Option(..., "--store", help="Path to a QuantNado zarr store or multiomics directory."),
+    bed: Path | None = typer.Option(None, "--bed", help="BED file of genomic intervals for signal reduction."),
+    output: Path = typer.Option(..., "--output", "-o", help="Output TSV file path."),
+    n_components: int = typer.Option(10, "--n-components", help="Number of principal components."),
+    reduction: str = typer.Option("mean", "--reduction", help="Aggregation method for signal reduction."),
+    samples: str | None = typer.Option(None, "--samples", help="Comma-separated sample names to include."),
+    log_file: Path = typer.Option("quantnado_analyse.log", "--log-file", help="Path to the log file."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
+):
+    """Run PCA on reduced genomic signal."""
+    _setup_cli_logging(log_file, verbose)
+    try:
+        from quantnado.api import QuantNado
+        ds = QuantNado.open_dataset(store)
+        _samples = [s.strip() for s in samples.split(",") if s.strip()] if samples else None
+        reduced = ds.reduce(intervals_path=bed, reduction=reduction, samples=_samples)
+        _, transformed = ds.pca(reduced["mean"], n_components=n_components)
+        transformed.to_dataframe().to_csv(output, sep="\t")
+        logger.success(f"PCA written to {output}")
+    except Exception as e:
+        logger.error(f"analyse pca failed: {e}")
+        logger.debug(traceback.format_exc())
+        raise typer.Exit(code=1)
+
+
+# ======================================================================
+# Entry points
+# ======================================================================
 
 def make_zarr_main():
     """Alias entry point for quantnado-make-zarr."""
