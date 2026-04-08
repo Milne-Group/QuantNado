@@ -8,6 +8,7 @@ import xarray as xr
 import dask.array as da
 from loguru import logger
 
+
 def extract_metadata(ds) -> pd.DataFrame:
     """Extract sample-level metadata from the Zarr-based layout."""
 
@@ -18,7 +19,9 @@ def extract_metadata(ds) -> pd.DataFrame:
         sample_labels = attrs.get("sample_names")
     elif hasattr(ds, "meta") and "sample_names" in ds.meta:
         stored = ds.meta["sample_names"][:]
-        sample_labels = [s.decode() if isinstance(s, (bytes, bytearray)) else str(s) for s in stored]
+        sample_labels = [
+            s.decode() if isinstance(s, (bytes, bytearray)) else str(s) for s in stored
+        ]
 
     if sample_labels is None:
         if hasattr(ds, "sample"):
@@ -106,7 +109,9 @@ class BaseStore:
         if stored_names is None:
             raise ValueError("missing sample_names in metadata or attributes")
 
-        self.sample_names = [s.decode() if isinstance(s, (bytes, bytearray)) else str(s) for s in stored_names]
+        self.sample_names = [
+            s.decode() if isinstance(s, (bytes, bytearray)) else str(s) for s in stored_names
+        ]
 
         if sample_names is not None:
             provided = [str(s) for s in sample_names]
@@ -131,11 +136,17 @@ class BaseStore:
     def chromosomes(self) -> list[str]:
         """List of chromosome names (from coverage/ group)."""
         if self._chromosomes is None:
-            if "coverage" in self.root:
+            if "coverage" in self.root and isinstance(self.root["coverage"], zarr.Group):
                 self._chromosomes = sorted(self.root["coverage"].keys())
             else:
                 # Fallback: old layout or methyl/variant stores (keys excluding metadata)
-                self._chromosomes = sorted([k for k in self.root.keys() if k not in ("metadata", "coverage_fwd", "coverage_rev")])
+                self._chromosomes = sorted(
+                    [
+                        k
+                        for k in self.root.keys()
+                        if k not in ("metadata", "coverage_fwd", "coverage_rev")
+                    ]
+                )
         return self._chromosomes
 
     @property
@@ -144,7 +155,7 @@ class BaseStore:
             stored = self.root.attrs.get("chromsizes")
             if stored is not None:
                 self._chromsizes = {str(k): int(v) for k, v in stored.items()}
-            elif "coverage" in self.root:
+            elif "coverage" in self.root and isinstance(self.root["coverage"], zarr.Group):
                 self._chromsizes = {c: self.root["coverage"][c].shape[0] for c in self.chromosomes}
             else:
                 self._chromsizes = {c: self.root[c].shape[0] for c in self.chromosomes}
@@ -164,9 +175,7 @@ class BaseStore:
 
     def list_metadata_columns(self) -> list[str]:
         return [
-            k.replace("metadata_", "")
-            for k in self.root.attrs.keys()
-            if k.startswith("metadata_")
+            k.replace("metadata_", "") for k in self.root.attrs.keys() if k.startswith("metadata_")
         ]
 
     def _check_writable(self):
@@ -185,6 +194,7 @@ class BaseStore:
     def _load_existing(self) -> None:
         from zarr.storage import LocalStore
         import zarr as _zarr
+
         store = LocalStore(str(self.store_path))
         self.root = _zarr.open_group(store=store, mode="a")
         self.meta = self.root.get("metadata")
@@ -195,9 +205,7 @@ class BaseStore:
         if stored is None:
             raise ValueError("Existing store missing sample_names attribute; cannot validate")
         if [str(s) for s in stored] != self.sample_names:
-            raise ValueError(
-                "sample_names mismatch; refusing to resume to prevent corruption"
-            )
+            raise ValueError("sample_names mismatch; refusing to resume to prevent corruption")
 
     def _contig_row_range(self, chrom: str) -> "tuple[int, int]":
         """Return (start_row, end_row) for a chromosome in the flat arrays."""
@@ -223,9 +231,7 @@ class BaseStore:
     ) -> None:
         self._check_writable()
         if sample_column not in metadata.columns:
-            raise ValueError(
-                f"Sample column '{sample_column}' not found in metadata DataFrame"
-            )
+            raise ValueError(f"Sample column '{sample_column}' not found in metadata DataFrame")
 
         meta_subset = metadata.copy()
         meta_subset[sample_column] = meta_subset[sample_column].astype(str)
@@ -244,9 +250,7 @@ class BaseStore:
                 if inc and sto and inc != sto:
                     mismatches.append(f"{self.sample_names[i]}: meta={inc}, store={sto}")
             if mismatches:
-                raise ValueError(
-                    f"Sample hash mismatch for: {', '.join(mismatches)}."
-                )
+                raise ValueError(f"Sample hash mismatch for: {', '.join(mismatches)}.")
 
         for col in meta_subset.columns:
             target_col = str(col)
@@ -389,6 +393,7 @@ class BaseStore:
 
             if sparse:
                 import sparse as sp
+
                 dask_arr = dask_arr.map_blocks(sp.COO, dtype=dask_arr.dtype)
 
             coords: dict = {
@@ -404,7 +409,9 @@ class BaseStore:
                 dims=("sample", "position"),
                 coords=coords,
                 attrs={
-                    "sample_hashes": metadata_df["sample_hash"].values if "sample_hash" in metadata_df.columns else [],
+                    "sample_hashes": metadata_df["sample_hash"].values
+                    if "sample_hash" in metadata_df.columns
+                    else [],
                 },
             )
             result[chrom] = da_xr
@@ -438,7 +445,9 @@ class BaseStore:
         chroms = chromosomes if chromosomes is not None else self.chromosomes
 
         nodes: dict[str, xr.Dataset] = {
-            "/": xr.Dataset(attrs={"sample_names": self.sample_names, "chromsizes": self.chromsizes})
+            "/": xr.Dataset(
+                attrs={"sample_names": self.sample_names, "chromsizes": self.chromsizes}
+            )
         }
 
         def _add_group(group, prefix: str) -> None:
@@ -567,7 +576,9 @@ class BaseStore:
                     raise TypeError(f"Samples must be strings or integers, got {type(s)}")
             sample_indices = np.array(sample_indices)
 
-        incomplete_samples = [sample_names[i] for i, idx in enumerate(sample_indices) if not self.completed_mask[idx]]
+        incomplete_samples = [
+            sample_names[i] for i, idx in enumerate(sample_indices) if not self.completed_mask[idx]
+        ]
         if incomplete_samples:
             raise RuntimeError(
                 f"Cannot extract region: {len(incomplete_samples)} sample(s) incomplete: {incomplete_samples}"
@@ -590,6 +601,7 @@ class BaseStore:
             if normalise is None:
                 return result_np
             from ..analysis.normalise import normalise as _normalise
+
             result_xr = xr.DataArray(
                 result_np,
                 dims=("sample", "position"),
@@ -627,7 +639,9 @@ class BaseStore:
                 "chromosome": chrom,
                 "start": start,
                 "end": end,
-                "sample_hashes": metadata_subset["sample_hash"].values if "sample_hash" in metadata_subset.columns else [],
+                "sample_hashes": metadata_subset["sample_hash"].values
+                if "sample_hash" in metadata_subset.columns
+                else [],
             },
         )
 
@@ -635,6 +649,7 @@ class BaseStore:
             return da_xr
 
         from ..analysis.normalise import normalise as _normalise
+
         return _normalise(da_xr, self, method=normalise, library_sizes=library_sizes)
 
 

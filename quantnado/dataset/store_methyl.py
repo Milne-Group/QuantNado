@@ -45,40 +45,47 @@ def _read_bedgraph(path: Path | str, filter_chromosomes: bool = True) -> dict[st
             n_cols = 0
 
     if n_cols < 4:
-        raise ValueError(f"bedGraph file {path.name} has only {n_cols} columns; expected at least 4")
+        raise ValueError(
+            f"bedGraph file {path.name} has only {n_cols} columns; expected at least 4"
+        )
 
     # Read directly with native dtypes — avoids building a 50M-char StringIO
     # and the per-column pd.to_numeric pass over every row.
     usecols = list(range(min(n_cols, 6)))
     dtypes: dict = {0: str, 1: np.int64, 2: np.int64, 3: np.float32}
     if n_cols >= 5:
-        dtypes[4] = np.float32   # coverage or n_unmethylated — cast later
+        dtypes[4] = np.float32  # coverage or n_unmethylated — cast later
     if n_cols >= 6:
-        dtypes[5] = np.float32   # n_methylated — cast later
+        dtypes[5] = np.float32  # n_methylated — cast later
 
     df = pd.read_csv(
-        path, sep="\t", header=None, skiprows=skip,
-        usecols=usecols, dtype=dtypes, engine="c",
+        path,
+        sep="\t",
+        header=None,
+        skiprows=skip,
+        usecols=usecols,
+        dtype=dtypes,
+        engine="c",
         na_values=[".", "NA", "nan"],
     )
 
     result = pd.DataFrame()
     result["chrom"] = df[0]
     result["start"] = df[1]
-    result["end"]   = df[2]
+    result["end"] = df[2]
     result["methylation_pct"] = df[3]
 
     if n_cols >= 6:
         result["n_unmethylated"] = df[4].fillna(0).astype(np.uint16)
-        result["n_methylated"]   = df[5].fillna(0).astype(np.uint16)
+        result["n_methylated"] = df[5].fillna(0).astype(np.uint16)
     elif n_cols == 5:
         coverage = df[4].fillna(0)
         pct = result["methylation_pct"].fillna(0) / 100.0
-        result["n_methylated"]   = (pct * coverage).round().astype(np.uint16)
+        result["n_methylated"] = (pct * coverage).round().astype(np.uint16)
         result["n_unmethylated"] = ((1 - pct) * coverage).round().astype(np.uint16)
     else:
         result["n_unmethylated"] = np.uint16(0)
-        result["n_methylated"]   = np.uint16(0)
+        result["n_methylated"] = np.uint16(0)
 
     if filter_chromosomes:
         result = result[result["chrom"].str.startswith("chr") & ~result["chrom"].str.contains("_")]
@@ -97,8 +104,13 @@ def _read_cxreport(
     """
     _cols = ["chrom", "pos", "strand", "mod_level", "n_mod", "n_not_mod", "context"]
     _dtypes = {
-        "chrom": str, "pos": np.int64, "strand": str, "mod_level": str,
-        "n_mod": np.int32, "n_not_mod": np.int32, "context": str,
+        "chrom": str,
+        "pos": np.int64,
+        "strand": str,
+        "mod_level": str,
+        "n_mod": np.int32,
+        "n_not_mod": np.int32,
+        "context": str,
     }
     df = pd.read_csv(Path(path), sep="\t", header=None, names=_cols, dtype=_dtypes, comment="#")
 
@@ -113,11 +125,15 @@ def _read_cxreport(
         chrom = str(chrom_df["chrom"].iloc[0])
         out = (
             chrom_df.groupby("canonical_pos", sort=True)
-            .apply(lambda g: pd.Series({
-                "n_mc": int(g.loc[g["is_mc"], "n_mod"].sum()),
-                "n_hmc": int(g.loc[g["is_hmc"], "n_mod"].sum()),
-                "total": int(g["n_mod"].sum() + g["n_not_mod"].sum()),
-            }))
+            .apply(
+                lambda g: pd.Series(
+                    {
+                        "n_mc": int(g.loc[g["is_mc"], "n_mod"].sum()),
+                        "n_hmc": int(g.loc[g["is_hmc"], "n_mod"].sum()),
+                        "total": int(g["n_mod"].sum() + g["n_not_mod"].sum()),
+                    }
+                )
+            )
             .reset_index()
             .rename(columns={"canonical_pos": "start"})
         )
@@ -152,35 +168,52 @@ def _read_split_cxreport(
 
     _cols = ["chrom", "pos", "strand", "n_mod", "n_not_mod", "context", "trinuc"]
     _dtypes = {
-        "chrom": str, "pos": np.int64, "strand": str,
-        "n_mod": np.int32, "n_not_mod": np.int32, "context": str, "trinuc": str,
+        "chrom": str,
+        "pos": np.int64,
+        "strand": str,
+        "n_mod": np.int32,
+        "n_not_mod": np.int32,
+        "context": str,
+        "trinuc": str,
     }
 
     if mc_path is not None and hmc_path is not None:
         mc = pd.read_csv(Path(mc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
         hmc = pd.read_csv(Path(hmc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
-        df = pd.DataFrame({
-            "chrom": mc["chrom"], "pos": mc["pos"], "strand": mc["strand"],
-            "n_mc": mc["n_mod"].astype(np.int32),
-            "n_hmc": hmc["n_mod"].astype(np.int32),
-            "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
-        })
+        df = pd.DataFrame(
+            {
+                "chrom": mc["chrom"],
+                "pos": mc["pos"],
+                "strand": mc["strand"],
+                "n_mc": mc["n_mod"].astype(np.int32),
+                "n_hmc": hmc["n_mod"].astype(np.int32),
+                "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
+            }
+        )
     elif mc_path is not None:
         mc = pd.read_csv(Path(mc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
-        df = pd.DataFrame({
-            "chrom": mc["chrom"], "pos": mc["pos"], "strand": mc["strand"],
-            "n_mc": mc["n_mod"].astype(np.int32),
-            "n_hmc": np.zeros(len(mc), dtype=np.int32),
-            "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
-        })
+        df = pd.DataFrame(
+            {
+                "chrom": mc["chrom"],
+                "pos": mc["pos"],
+                "strand": mc["strand"],
+                "n_mc": mc["n_mod"].astype(np.int32),
+                "n_hmc": np.zeros(len(mc), dtype=np.int32),
+                "total": (mc["n_mod"] + mc["n_not_mod"]).astype(np.int32),
+            }
+        )
     else:
         hmc = pd.read_csv(Path(hmc_path), sep="\t", header=None, names=_cols, dtype=_dtypes)
-        df = pd.DataFrame({
-            "chrom": hmc["chrom"], "pos": hmc["pos"], "strand": hmc["strand"],
-            "n_mc": np.zeros(len(hmc), dtype=np.int32),
-            "n_hmc": hmc["n_mod"].astype(np.int32),
-            "total": (hmc["n_mod"] + hmc["n_not_mod"]).astype(np.int32),
-        })
+        df = pd.DataFrame(
+            {
+                "chrom": hmc["chrom"],
+                "pos": hmc["pos"],
+                "strand": hmc["strand"],
+                "n_mc": np.zeros(len(hmc), dtype=np.int32),
+                "n_hmc": hmc["n_mod"].astype(np.int32),
+                "total": (hmc["n_mod"] + hmc["n_not_mod"]).astype(np.int32),
+            }
+        )
 
     df["n_c"] = (df["total"] - df["n_mc"] - df["n_hmc"]).clip(lower=0).astype(np.int32)
 
@@ -261,9 +294,27 @@ class MethylStore(BaseStore):
         resume: bool = False,
         read_only: bool = False,
         mc_hmc_split: bool = False,
+        _shared_root: "zarr.Group | None" = None,
     ) -> None:
         self.path = Path(store_path)
         self.store_path = self._normalize_path(self.path)
+
+        if _shared_root is not None:
+            self.sample_names = [str(s) for s in sample_names]
+            self._setup_sample_lookup()
+            self.completed_mask_raw = np.zeros(len(self.sample_names), dtype=bool)
+            self._metadata_cache = None
+            self.n_samples = len(self.sample_names)
+            self.sample_hash = _compute_sample_hash(self.sample_names)
+            self.compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
+            self.read_only = read_only
+            self._mc_hmc_split_init = mc_hmc_split
+            if self.n_samples == 0:
+                raise ValueError("sample_names must not be empty")
+            self.root = _shared_root
+            self.meta = self.root.require_group("metadata")
+            self._init_store_in_group()
+            return
 
         if self.store_path.exists() and not overwrite:
             self.root = zarr.open_group(str(self.store_path), mode="r" if read_only else "r+")
@@ -302,7 +353,9 @@ class MethylStore(BaseStore):
                 )
         else:
             if read_only:
-                raise FileNotFoundError(f"Store does not exist at {self.store_path} (read_only=True)")
+                raise FileNotFoundError(
+                    f"Store does not exist at {self.store_path} (read_only=True)"
+                )
             self._init_store()
 
     @classmethod
@@ -327,16 +380,37 @@ class MethylStore(BaseStore):
         store = LocalStore(str(self.store_path))
         self.root = zarr.group(store=store, overwrite=True, zarr_format=3)
         self.meta = self.root.create_group("metadata")
-        self.meta.create_array("completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True)
-        self.root.attrs.update({
-            "sample_names": self.sample_names,
-            "sample_names_hash": self.sample_hash,
-            "n_samples": self.n_samples,
-            "store_type": "methylation",
-            "has_mc_hmc_split": self._mc_hmc_split_init,
-            "metadata_data_type": ["methylation"] * self.n_samples,
-        })
+        self.meta.create_array(
+            "completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True
+        )
+        self.root.attrs.update(
+            {
+                "sample_names": self.sample_names,
+                "sample_names_hash": self.sample_hash,
+                "n_samples": self.n_samples,
+                "store_type": "methylation",
+                "has_mc_hmc_split": self._mc_hmc_split_init,
+                "metadata_data_type": ["methylation"] * self.n_samples,
+            }
+        )
         logger.info(f"Initialized MethylStore at {self.store_path}")
+
+    def _init_store_in_group(self) -> None:
+        """Initialise methylation arrays inside an already-open shared zarr group."""
+        self.meta.create_array(
+            "completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True
+        )
+        self.root.attrs.update(
+            {
+                "sample_names": self.sample_names,
+                "sample_names_hash": self.sample_hash,
+                "n_samples": self.n_samples,
+                "store_type": "methylation",
+                "has_mc_hmc_split": self._mc_hmc_split_init,
+                "metadata_data_type": ["methylation"] * self.n_samples,
+            }
+        )
+        logger.info(f"Initialized MethylStore (shared root) at {self.store_path}")
 
     @property
     def completed_mask(self) -> np.ndarray:
@@ -370,9 +444,7 @@ class MethylStore(BaseStore):
         single_sample = n_samples == 1
 
         # Collect all chromosomes across all samples (sorted)
-        all_chroms: list[str] = sorted(
-            {chrom for fd in all_file_data for chrom in fd.keys()}
-        )
+        all_chroms: list[str] = sorted({chrom for fd in all_file_data for chrom in fd.keys()})
 
         # Build union of positions per chromosome.
         # Single-sample fast path: bedGraph/CXreport is already sorted by position,
@@ -385,14 +457,16 @@ class MethylStore(BaseStore):
         for chrom_idx, chrom in enumerate(all_chroms):
             if single_sample:
                 fd0 = all_file_data[0]
-                chrom_positions = fd0[chrom]["start"].values.astype(np.uint32) if chrom in fd0 else np.array([], dtype=np.uint32)
+                chrom_positions = (
+                    fd0[chrom]["start"].values.astype(np.uint32)
+                    if chrom in fd0
+                    else np.array([], dtype=np.uint32)
+                )
             else:
                 chrom_positions = np.unique(
-                    np.concatenate([
-                        fd[chrom]["start"].values
-                        for fd in all_file_data
-                        if chrom in fd
-                    ])
+                    np.concatenate(
+                        [fd[chrom]["start"].values for fd in all_file_data if chrom in fd]
+                    )
                 ).astype(np.uint32)
 
             start_row = sum(len(a) for a in all_positions)
@@ -418,12 +492,22 @@ class MethylStore(BaseStore):
 
         # Create flat coordinate arrays
         self.root.create_array(
-            "contig", shape=(n_sites,), dtype=np.uint8, fill_value=0, overwrite=True,
-            chunks=(chunk,), compressors=[self.compressor],
+            "contig",
+            shape=(n_sites,),
+            dtype=np.uint8,
+            fill_value=0,
+            overwrite=True,
+            chunks=(chunk,),
+            compressors=[self.compressor],
         )
         self.root.create_array(
-            "position", shape=(n_sites,), dtype=np.uint32, fill_value=0, overwrite=True,
-            chunks=(chunk,), compressors=[self.compressor],
+            "position",
+            shape=(n_sites,),
+            dtype=np.uint32,
+            fill_value=0,
+            overwrite=True,
+            chunks=(chunk,),
+            compressors=[self.compressor],
         )
         self.root["contig"][:] = contig_arr
         self.root["position"][:] = position_arr
@@ -462,12 +546,12 @@ class MethylStore(BaseStore):
             meth_col = np.full(n_sites, np.float16("nan"), dtype=np.float16)
 
             if mc_hmc_split:
-                mc_col   = np.zeros(n_sites, dtype=np.uint16)
-                hmc_col  = np.zeros(n_sites, dtype=np.uint16)
-                c_col    = np.zeros(n_sites, dtype=np.uint16)
+                mc_col = np.zeros(n_sites, dtype=np.uint16)
+                hmc_col = np.zeros(n_sites, dtype=np.uint16)
+                c_col = np.zeros(n_sites, dtype=np.uint16)
             else:
                 nmeth_col = np.zeros(n_sites, dtype=np.uint16)
-                ntot_col  = np.zeros(n_sites, dtype=np.uint16)
+                ntot_col = np.zeros(n_sites, dtype=np.uint16)
 
             for chrom in all_chroms:
                 if chrom not in fd:
@@ -486,34 +570,40 @@ class MethylStore(BaseStore):
                 meth_col[indices] = df["methylation_pct"].values
 
                 if mc_hmc_split:
-                    mc_col[indices]  = df["n_mc"].values
+                    mc_col[indices] = df["n_mc"].values
                     hmc_col[indices] = df["n_hmc"].values
-                    c_col[indices]   = df["n_c"].values
+                    c_col[indices] = df["n_c"].values
                 else:
                     nmeth_col[indices] = df["n_methylated"].values
-                    ntot_col[indices]  = (
-                        df["n_methylated"].values.astype(np.uint32) +
-                        df["n_unmethylated"].values.astype(np.uint32)
-                    ).clip(0, 65535).astype(np.uint16)
+                    ntot_col[indices] = (
+                        (
+                            df["n_methylated"].values.astype(np.uint32)
+                            + df["n_unmethylated"].values.astype(np.uint32)
+                        )
+                        .clip(0, 65535)
+                        .astype(np.uint16)
+                    )
 
             # One contiguous write per array — no RMW cycles.
             self.root["methylation_pct"][:, sample_idx] = meth_col
             if mc_hmc_split:
-                self.root["n_mc"][:, sample_idx]  = mc_col
+                self.root["n_mc"][:, sample_idx] = mc_col
                 self.root["n_hmc"][:, sample_idx] = hmc_col
-                self.root["n_c"][:, sample_idx]   = c_col
+                self.root["n_c"][:, sample_idx] = c_col
             else:
                 self.root["n_methylated"][:, sample_idx] = nmeth_col
-                self.root["n_total"][:, sample_idx]      = ntot_col
+                self.root["n_total"][:, sample_idx] = ntot_col
 
         # Store coordinate metadata
-        self.root.attrs.update({
-            "contig_list": contig_list,
-            "contig_offsets": contig_offsets,
-            "n_sites": n_sites,
-            "has_mc_hmc_split": mc_hmc_split,
-            "chromosomes": contig_list,
-        })
+        self.root.attrs.update(
+            {
+                "contig_list": contig_list,
+                "contig_offsets": contig_offsets,
+                "n_sites": n_sites,
+                "has_mc_hmc_split": mc_hmc_split,
+                "chromosomes": contig_list,
+            }
+        )
         self.meta["completed"][:] = True
         logger.info(f"Wrote {n_sites} sites across {len(contig_list)} chromosomes")
 
@@ -531,6 +621,7 @@ class MethylStore(BaseStore):
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
+        _shared_root=None,
     ) -> "MethylStore":
         """Create a MethylStore from MethylDackel bedGraph files."""
         methyldackel_files = [Path(f) for f in methyldackel_files]
@@ -539,7 +630,10 @@ class MethylStore(BaseStore):
         if len(sample_names) != len(methyldackel_files):
             raise ValueError("sample_names length must match methyldackel_files length")
 
-        store = cls(store_path=store_path, sample_names=sample_names, overwrite=overwrite, resume=resume)
+        store = cls(
+            store_path=store_path, sample_names=sample_names, overwrite=overwrite, resume=resume,
+            _shared_root=_shared_root,
+        )
 
         logger.info("Reading bedGraph files...")
         all_file_data: list[dict[str, pd.DataFrame]] = []
@@ -568,6 +662,7 @@ class MethylStore(BaseStore):
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
+        _shared_root=None,
     ) -> "MethylStore":
         """Create a MethylStore from biomodal evoC CXreport files."""
         cxreport_files = [Path(f) for f in cxreport_files]
@@ -576,7 +671,14 @@ class MethylStore(BaseStore):
         if len(sample_names) != len(cxreport_files):
             raise ValueError("sample_names length must match cxreport_files length")
 
-        store = cls(store_path=store_path, sample_names=sample_names, overwrite=overwrite, resume=resume, mc_hmc_split=True)
+        store = cls(
+            store_path=store_path,
+            sample_names=sample_names,
+            overwrite=overwrite,
+            resume=resume,
+            mc_hmc_split=True,
+            _shared_root=_shared_root,
+        )
 
         logger.info("Reading CXreport files...")
         all_file_data: list[dict[str, pd.DataFrame]] = []
@@ -611,6 +713,7 @@ class MethylStore(BaseStore):
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
+        _shared_root=None,
     ) -> "MethylStore":
         """Create a MethylStore from 7-column split CXreport files (mC/hmC)."""
         mc_files = [Path(f) for f in (mc_files or [])]
@@ -627,7 +730,14 @@ class MethylStore(BaseStore):
         if len(sample_names) != n_samples:
             raise ValueError("sample_names length must match number of samples")
 
-        store = cls(store_path=store_path, sample_names=sample_names, overwrite=overwrite, resume=resume, mc_hmc_split=True)
+        store = cls(
+            store_path=store_path,
+            sample_names=sample_names,
+            overwrite=overwrite,
+            resume=resume,
+            mc_hmc_split=True,
+            _shared_root=_shared_root,
+        )
 
         logger.info("Reading split CXreport files...")
         all_file_data: list[dict[str, pd.DataFrame]] = []
@@ -668,6 +778,7 @@ class MethylStore(BaseStore):
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
+        _shared_root=None,
     ) -> "MethylStore":
         """Create a MethylStore combining bedGraph and split CXreport samples."""
         methyldackel_files = [Path(f) for f in (methyldackel_files or [])]
@@ -689,7 +800,14 @@ class MethylStore(BaseStore):
         if len(set(all_sample_names)) != len(all_sample_names):
             raise ValueError("Duplicate sample names across bedgraph and CXreport files")
 
-        store = cls(store_path=store_path, sample_names=all_sample_names, overwrite=overwrite, resume=resume, mc_hmc_split=True)
+        store = cls(
+            store_path=store_path,
+            sample_names=all_sample_names,
+            overwrite=overwrite,
+            resume=resume,
+            mc_hmc_split=True,
+            _shared_root=_shared_root,
+        )
 
         logger.info("Reading bedGraph files (as undifferentiated modC)...")
         bg_data: list[dict[str, pd.DataFrame]] = []
@@ -698,13 +816,15 @@ class MethylStore(BaseStore):
             raw = _read_bedgraph(path, filter_chromosomes=filter_chromosomes)
             converted: dict[str, pd.DataFrame] = {}
             for chrom, df in raw.items():
-                converted[chrom] = pd.DataFrame({
-                    "start": df["start"],
-                    "n_mc": df["n_methylated"],
-                    "n_hmc": np.zeros(len(df), dtype=np.uint16),
-                    "n_c": df["n_unmethylated"],
-                    "methylation_pct": df["methylation_pct"],
-                })
+                converted[chrom] = pd.DataFrame(
+                    {
+                        "start": df["start"],
+                        "n_mc": df["n_methylated"],
+                        "n_hmc": np.zeros(len(df), dtype=np.uint16),
+                        "n_c": df["n_unmethylated"],
+                        "methylation_pct": df["methylation_pct"],
+                    }
+                )
             bg_data.append(converted)
 
         logger.info("Reading split CXreport files...")
@@ -788,6 +908,7 @@ class MethylStore(BaseStore):
             dask_arr = dask_arr.T
             if sparse:
                 import sparse as sp
+
                 dask_arr = dask_arr.map_blocks(sp.COO, dtype=dask_arr.dtype)
 
             coords: dict = {"sample": self.sample_names, "position": positions}
@@ -854,7 +975,11 @@ class MethylStore(BaseStore):
         # Filter to requested position range using binary search (positions are sorted).
         if start is not None or end is not None:
             lo = int(np.searchsorted(positions, start, side="left")) if start is not None else 0
-            hi = int(np.searchsorted(positions, end, side="left")) if end is not None else len(positions)
+            hi = (
+                int(np.searchsorted(positions, end, side="left"))
+                if end is not None
+                else len(positions)
+            )
             indices = np.arange(lo, hi)
             positions = positions[lo:hi]
             flat_indices = row_start + indices
@@ -865,8 +990,11 @@ class MethylStore(BaseStore):
             empty = np.full((len(sample_indices), 0), np.nan)
             if not as_xarray:
                 return empty
-            return xr.DataArray(empty, dims=("sample", "position"),
-                                coords={"sample": sample_names_out, "position": positions})
+            return xr.DataArray(
+                empty,
+                dims=("sample", "position"),
+                coords={"sample": sample_names_out, "position": positions},
+            )
 
         data = self.root[variable][flat_indices, :][:, sample_indices]  # (n_sites, n_sel)
         data_T = data.T  # (n_sel, n_sites)
@@ -900,15 +1028,18 @@ class MethylStore(BaseStore):
                 raise TypeError("Provide ranges_df, bed_file, or gtf_file")
             gtf_source = load_gtf(gtf_file, feature_types=None)
             ranges_df = pd.DataFrame(extract_feature_ranges(gtf_source, feature_type=feature_type))
-            ranges_df = ranges_df.rename(columns={"Chromosome": "contig", "Start": "start", "End": "end"})
+            ranges_df = ranges_df.rename(
+                columns={"Chromosome": "contig", "Start": "start", "End": "end"}
+            )
             if feature_id_col is None:
                 for candidate in ("gene_id", "transcript_id", "gene_name", "transcript_name"):
                     if candidate in ranges_df.columns:
                         feature_id_col = candidate
                         break
         elif bed_file is not None:
-            ranges_df = pd.read_csv(bed_file, sep="\t", header=None, usecols=[0, 1, 2],
-                                    names=["contig", "start", "end"])
+            ranges_df = pd.read_csv(
+                bed_file, sep="\t", header=None, usecols=[0, 1, 2], names=["contig", "start", "end"]
+            )
 
         ranges_df = ranges_df.reset_index(drop=True)
 
@@ -917,13 +1048,19 @@ class MethylStore(BaseStore):
         if strand is not None and "strand" in ranges_df.columns:
             ranges_df = ranges_df[ranges_df["strand"] == strand].reset_index(drop=True)
 
-        contig_col = next((c for c in ("contig", "Chromosome", "chrom") if c in ranges_df.columns), None)
+        contig_col = next(
+            (c for c in ("contig", "Chromosome", "chrom") if c in ranges_df.columns), None
+        )
         start_col = next((c for c in ("start", "Start") if c in ranges_df.columns), "start")
         end_col = next((c for c in ("end", "End") if c in ranges_df.columns), "end")
 
         results: dict[str, list] = {
-            "n_methylated": [], "n_unmethylated": [], "n_cpg_covered": [],
-            "methylation_ratio": [], "methylation_pct": [], "n_cpg_total": [],
+            "n_methylated": [],
+            "n_unmethylated": [],
+            "n_cpg_covered": [],
+            "methylation_ratio": [],
+            "methylation_pct": [],
+            "n_cpg_total": [],
         }
         feature_meta_rows: list[dict] = []
         feature_ids: list = list(range(len(ranges_df)))
@@ -945,23 +1082,45 @@ class MethylStore(BaseStore):
             if chrom not in self.chromosomes:
                 for key in results:
                     results[key].append([np.nan] * self.n_samples)
-                feature_meta_rows.append({
-                    "contig": chrom, "start": feat_start, "end": feat_end,
-                    "strand": row.get("strand", ".") if "strand" in row.index else ".",
-                    "range_length": feat_end - feat_start, "n_cpg_total": 0,
-                })
+                feature_meta_rows.append(
+                    {
+                        "contig": chrom,
+                        "start": feat_start,
+                        "end": feat_end,
+                        "strand": row.get("strand", ".") if "strand" in row.index else ".",
+                        "range_length": feat_end - feat_start,
+                        "n_cpg_total": 0,
+                    }
+                )
                 continue
 
-            xr_data = self.extract_region(chrom=chrom, start=feat_start, end=feat_end, variable="methylation_pct")
-            xr_nm = self.extract_region(chrom=chrom, start=feat_start, end=feat_end, variable="n_methylated" if not self.has_mc_hmc_split else "n_mc")
-            xr_nu = self.extract_region(chrom=chrom, start=feat_start, end=feat_end, variable="n_total" if not self.has_mc_hmc_split else "n_c")
+            xr_data = self.extract_region(
+                chrom=chrom, start=feat_start, end=feat_end, variable="methylation_pct"
+            )
+            xr_nm = self.extract_region(
+                chrom=chrom,
+                start=feat_start,
+                end=feat_end,
+                variable="n_methylated" if not self.has_mc_hmc_split else "n_mc",
+            )
+            xr_nu = self.extract_region(
+                chrom=chrom,
+                start=feat_start,
+                end=feat_end,
+                variable="n_total" if not self.has_mc_hmc_split else "n_c",
+            )
 
             n_cpg = xr_data.shape[1] if hasattr(xr_data, "shape") else 0
-            feature_meta_rows.append({
-                "contig": chrom, "start": feat_start, "end": feat_end,
-                "strand": row.get("strand", ".") if "strand" in row.index else ".",
-                "range_length": feat_end - feat_start, "n_cpg_total": n_cpg,
-            })
+            feature_meta_rows.append(
+                {
+                    "contig": chrom,
+                    "start": feat_start,
+                    "end": feat_end,
+                    "strand": row.get("strand", ".") if "strand" in row.index else ".",
+                    "range_length": feat_end - feat_start,
+                    "n_cpg_total": n_cpg,
+                }
+            )
 
             if n_cpg == 0:
                 for key in results:
@@ -995,7 +1154,13 @@ class MethylStore(BaseStore):
         n_cpg_total_col = feature_metadata.pop("n_cpg_total")
 
         stats: dict[str, pd.DataFrame] = {}
-        for key in ("n_methylated", "n_unmethylated", "n_cpg_covered", "methylation_ratio", "methylation_pct"):
+        for key in (
+            "n_methylated",
+            "n_unmethylated",
+            "n_cpg_covered",
+            "methylation_ratio",
+            "methylation_pct",
+        ):
             stats[key] = pd.DataFrame(results[key], index=feature_ids, columns=self.sample_names)
         feature_metadata["n_cpg_total"] = n_cpg_total_col
 

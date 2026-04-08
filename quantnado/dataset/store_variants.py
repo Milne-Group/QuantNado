@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -37,6 +38,10 @@ def _callset_to_chrom_dfs(
     qual: np.ndarray = callset["variants/QUAL"]
     gt: np.ndarray | None = callset.get("calldata/GT")
     ad: np.ndarray | None = callset.get("calldata/AD")
+    dp: np.ndarray | None = callset.get("variants/DP")
+    mq: np.ndarray | None = callset.get("variants/MQ")
+    is_indel: np.ndarray | None = callset.get("variants/INDEL")
+    variant_id: np.ndarray | None = callset.get("variants/ID")
 
     if filter_chromosomes:
         mask = np.array([c.startswith("chr") and "_" not in c for c in chroms])
@@ -49,6 +54,14 @@ def _callset_to_chrom_dfs(
             gt = gt[mask]
         if ad is not None:
             ad = ad[mask]
+        if dp is not None:
+            dp = dp[mask]
+        if mq is not None:
+            mq = mq[mask]
+        if is_indel is not None:
+            is_indel = is_indel[mask]
+        if variant_id is not None:
+            variant_id = variant_id[mask]
 
     n = len(pos)
     if n == 0:
@@ -72,16 +85,39 @@ def _callset_to_chrom_dfs(
         ad_ref = np.zeros(n, dtype=np.uint16)
         ad_alt = np.zeros(n, dtype=np.uint16)
 
-    df = pd.DataFrame({
-        "chrom": chroms,
-        "pos": pos.astype(np.int64),
-        "ref": refs,
-        "alt": alts[:, 0] if alts.ndim == 2 else alts,
-        "qual": qual.astype(np.float32),
-        "genotype": genotype,
-        "ad_ref": ad_ref,
-        "ad_alt": ad_alt,
-    })
+    dp_vals = (
+        np.where(dp >= 0, dp, 0).clip(0, 65535).astype(np.uint16)
+        if dp is not None
+        else np.zeros(n, dtype=np.uint16)
+    )
+    mq_vals = (
+        np.where(mq >= 0, mq, 0).clip(0, 255).astype(np.uint8)
+        if mq is not None
+        else np.zeros(n, dtype=np.uint8)
+    )
+    indel_vals = is_indel.astype(bool) if is_indel is not None else np.zeros(n, dtype=bool)
+    id_vals = (
+        np.where(variant_id != "", variant_id, ".")
+        if variant_id is not None
+        else np.full(n, ".", dtype=object)
+    )
+
+    df = pd.DataFrame(
+        {
+            "chrom": chroms,
+            "pos": pos.astype(np.int64),
+            "ref": refs,
+            "alt": alts[:, 0] if alts.ndim == 2 else alts,
+            "qual": qual.astype(np.float32),
+            "genotype": genotype,
+            "ad_ref": ad_ref,
+            "ad_alt": ad_alt,
+            "dp": dp_vals,
+            "mq": mq_vals,
+            "is_indel": indel_vals,
+            "variant_id": id_vals,
+        }
+    )
     return {chrom: grp.reset_index(drop=True) for chrom, grp in df.groupby("chrom")}
 
 
@@ -91,23 +127,42 @@ def _read_vcf(
 ) -> dict[str, pd.DataFrame]:
     """Read variants from a single-sample VCF/VCF.gz file using scikit-allel.
 
+    Requests all known optional fields; allel silently omits any that are
+    absent from the VCF so no header pre-scan is needed.
+
     Returns dict mapping chromosome -> DataFrame with columns:
         pos (int64, 1-based), ref (str), alt (str), qual (float32),
         genotype (int8: -1 missing, 0 hom_ref, 1 het, 2 hom_alt),
-        ad_ref (int32), ad_alt (int32)
+        ad_ref (uint16), ad_alt (uint16),
+        dp (uint16), mq (uint8), is_indel (bool), variant_id (str)
+    Columns for absent fields are filled with their zero/default values.
     """
     try:
         import allel
     except ImportError as e:
-        raise ImportError("scikit-allel is required to read VCF files: pip install scikit-allel") from e
+        raise ImportError(
+            "scikit-allel is required to read VCF files: pip install scikit-allel"
+        ) from e
 
     import warnings
 
     path = Path(path)
-    fields = ["CHROM", "POS", "REF", "ALT", "QUAL", "calldata/GT", "calldata/AD"]
+    fields = [
+        "CHROM",
+        "POS",
+        "REF",
+        "ALT",
+        "QUAL",
+        "ID",
+        "variants/DP",
+        "variants/MQ",
+        "variants/INDEL",
+        "calldata/GT",
+        "calldata/AD",
+    ]
     numbers = {"ALT": 1, "AD": 2}
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="invalid INFO header", category=UserWarning)
+        warnings.filterwarnings("ignore", category=UserWarning)
         callset = allel.read_vcf(str(path), fields=fields, numbers=numbers)
     return _callset_to_chrom_dfs(callset, filter_chromosomes=filter_chromosomes)
 
@@ -157,9 +212,26 @@ class VariantStore(BaseStore):
         overwrite: bool = True,
         resume: bool = False,
         read_only: bool = False,
+        _shared_root: "zarr.Group | None" = None,
     ) -> None:
         self.path = Path(store_path)
         self.store_path = self._normalize_path(self.path)
+
+        if _shared_root is not None:
+            self.sample_names = [str(s) for s in sample_names]
+            self._setup_sample_lookup()
+            self.completed_mask_raw = np.zeros(len(self.sample_names), dtype=bool)
+            self._metadata_cache = None
+            self.n_samples = len(self.sample_names)
+            self.sample_hash = _compute_sample_hash(self.sample_names)
+            self.compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
+            self.read_only = read_only
+            if self.n_samples == 0:
+                raise ValueError("sample_names must not be empty")
+            self.root = _shared_root
+            self.meta = self.root.require_group("metadata")
+            self._init_store_in_group()
+            return
 
         if self.store_path.exists() and not overwrite:
             self.root = zarr.open_group(str(self.store_path), mode="r" if read_only else "r+")
@@ -197,7 +269,9 @@ class VariantStore(BaseStore):
                 )
         else:
             if read_only:
-                raise FileNotFoundError(f"Store does not exist at {self.store_path} (read_only=True)")
+                raise FileNotFoundError(
+                    f"Store does not exist at {self.store_path} (read_only=True)"
+                )
             self._init_store()
 
     @classmethod
@@ -222,15 +296,35 @@ class VariantStore(BaseStore):
         store = LocalStore(str(self.store_path))
         self.root = zarr.group(store=store, overwrite=True, zarr_format=3)
         self.meta = self.root.create_group("metadata")
-        self.meta.create_array("completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True)
-        self.root.attrs.update({
-            "sample_names": self.sample_names,
-            "sample_names_hash": self.sample_hash,
-            "n_samples": self.n_samples,
-            "store_type": "variants",
-            "metadata_data_type": ["variants"] * self.n_samples,
-        })
+        self.meta.create_array(
+            "completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True
+        )
+        self.root.attrs.update(
+            {
+                "sample_names": self.sample_names,
+                "sample_names_hash": self.sample_hash,
+                "n_samples": self.n_samples,
+                "store_type": "variants",
+                "metadata_data_type": ["variants"] * self.n_samples,
+            }
+        )
         logger.info(f"Initialized VariantStore at {self.store_path}")
+
+    def _init_store_in_group(self) -> None:
+        """Initialise variant metadata inside an already-open shared zarr group."""
+        self.meta.create_array(
+            "completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True
+        )
+        self.root.attrs.update(
+            {
+                "sample_names": self.sample_names,
+                "sample_names_hash": self.sample_hash,
+                "n_samples": self.n_samples,
+                "store_type": "variants",
+                "metadata_data_type": ["variants"] * self.n_samples,
+            }
+        )
+        logger.info(f"Initialized VariantStore (shared root) at {self.store_path}")
 
     @property
     def completed_mask(self) -> np.ndarray:
@@ -245,9 +339,7 @@ class VariantStore(BaseStore):
         n_samples = len(all_file_data)
         single_sample = n_samples == 1
 
-        all_chroms: list[str] = sorted(
-            {chrom for fd in all_file_data for chrom in fd.keys()}
-        )
+        all_chroms: list[str] = sorted({chrom for fd in all_file_data for chrom in fd.keys()})
 
         contig_list: list[str] = []
         contig_offsets: dict[str, list[int]] = {}
@@ -255,6 +347,8 @@ class VariantStore(BaseStore):
         all_positions: list[np.ndarray] = []
         all_refs: list = []
         all_alts: list = []
+        all_indels: list = []
+        all_ids: list = []
 
         for chrom_idx, chrom in enumerate(all_chroms):
             if single_sample:
@@ -266,6 +360,8 @@ class VariantStore(BaseStore):
                 # Vectorised: no dict, no itertuples — VCF is sorted by position.
                 all_refs.extend(df0["ref"].tolist())
                 all_alts.extend(df0["alt"].tolist())
+                all_indels.extend(df0["is_indel"].tolist())
+                all_ids.extend(df0["variant_id"].tolist())
             else:
                 chrom_positions = np.unique(
                     np.concatenate([fd[chrom]["pos"].values for fd in all_file_data if chrom in fd])
@@ -273,6 +369,8 @@ class VariantStore(BaseStore):
                 # Build ref/alt lookup from first sample per position using vectorised ops.
                 pos_to_ref: dict[int, str] = {}
                 pos_to_alt: dict[int, str] = {}
+                pos_to_indel: dict[int, bool] = {}
+                pos_to_id: dict[int, str] = {}
                 for fd in all_file_data:
                     if chrom not in fd:
                         continue
@@ -280,13 +378,19 @@ class VariantStore(BaseStore):
                     pos_vals = df["pos"].values
                     ref_vals = df["ref"].values
                     alt_vals = df["alt"].values
+                    indel_vals = df["is_indel"].values
+                    id_vals = df["variant_id"].values
                     for i in range(len(pos_vals)):
                         p = int(pos_vals[i])
                         if p not in pos_to_ref:
                             pos_to_ref[p] = str(ref_vals[i])
                             pos_to_alt[p] = str(alt_vals[i])
+                            pos_to_indel[p] = bool(indel_vals[i])
+                            pos_to_id[p] = str(id_vals[i])
                 all_refs.extend(pos_to_ref[int(p)] for p in chrom_positions)
                 all_alts.extend(pos_to_alt[int(p)] for p in chrom_positions)
+                all_indels.extend(pos_to_indel[int(p)] for p in chrom_positions)
+                all_ids.extend(pos_to_id[int(p)] for p in chrom_positions)
 
             start_row = sum(len(a) for a in all_positions)
             end_row = start_row + len(chrom_positions)
@@ -309,10 +413,24 @@ class VariantStore(BaseStore):
             max(1, n_variants),
         )
 
-        self.root.create_array("contig", shape=(n_variants,), dtype=np.uint8, fill_value=0,
-                               overwrite=True, chunks=(chunk,), compressors=[self.compressor])
-        self.root.create_array("position", shape=(n_variants,), dtype=np.int64, fill_value=0,
-                               overwrite=True, chunks=(chunk,), compressors=[self.compressor])
+        self.root.create_array(
+            "contig",
+            shape=(n_variants,),
+            dtype=np.uint8,
+            fill_value=0,
+            overwrite=True,
+            chunks=(chunk,),
+            compressors=[self.compressor],
+        )
+        self.root.create_array(
+            "position",
+            shape=(n_variants,),
+            dtype=np.int64,
+            fill_value=0,
+            overwrite=True,
+            chunks=(chunk,),
+            compressors=[self.compressor],
+        )
         self.root["contig"][:] = contig_arr
         self.root["position"][:] = position_arr
 
@@ -320,6 +438,8 @@ class VariantStore(BaseStore):
             ("genotype", np.int8, -1),
             ("allele_depth_ref", np.uint16, 0),
             ("allele_depth_alt", np.uint16, 0),
+            ("coverage", np.uint16, 0),
+            ("mapping_quality", np.uint8, 0),
             ("qual", np.float32, np.nan),
         ]:
             self.root.create_array(
@@ -335,9 +455,11 @@ class VariantStore(BaseStore):
         # Fill per-sample data. Build each column in memory then write once —
         # avoids scatter-write RMW cycles that dominate Zarr async overhead.
         for sample_idx, fd in enumerate(all_file_data):
-            gt_col   = np.full(n_variants, -1, dtype=np.int8)
-            adr_col  = np.zeros(n_variants, dtype=np.uint16)
-            ada_col  = np.zeros(n_variants, dtype=np.uint16)
+            gt_col = np.full(n_variants, -1, dtype=np.int8)
+            adr_col = np.zeros(n_variants, dtype=np.uint16)
+            ada_col = np.zeros(n_variants, dtype=np.uint16)
+            dp_col = np.zeros(n_variants, dtype=np.uint16)
+            mq_col = np.zeros(n_variants, dtype=np.uint8)
             qual_col = np.full(n_variants, np.nan, dtype=np.float32)
 
             for chrom in all_chroms:
@@ -354,33 +476,70 @@ class VariantStore(BaseStore):
                         chrom_positions, df["pos"].values.astype(np.int64)
                     )
 
-                gt_col[indices]   = df["genotype"].values.astype(np.int8)
-                adr_col[indices]  = df["ad_ref"].values.clip(0, 65535).astype(np.uint16)
-                ada_col[indices]  = df["ad_alt"].values.clip(0, 65535).astype(np.uint16)
+                gt_col[indices] = df["genotype"].values.astype(np.int8)
+                adr_col[indices] = df["ad_ref"].values.clip(0, 65535).astype(np.uint16)
+                ada_col[indices] = df["ad_alt"].values.clip(0, 65535).astype(np.uint16)
+                dp_col[indices] = df["dp"].values.clip(0, 65535).astype(np.uint16)
+                mq_col[indices] = df["mq"].values.clip(0, 255).astype(np.uint8)
                 qual_col[indices] = df["qual"].values.astype(np.float32)
 
-            self.root["genotype"][:, sample_idx]        = gt_col
+            self.root["genotype"][:, sample_idx] = gt_col
             self.root["allele_depth_ref"][:, sample_idx] = adr_col
             self.root["allele_depth_alt"][:, sample_idx] = ada_col
-            self.root["qual"][:, sample_idx]             = qual_col
+            self.root["coverage"][:, sample_idx] = dp_col
+            self.root["mapping_quality"][:, sample_idx] = mq_col
+            self.root["qual"][:, sample_idx] = qual_col
 
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="NullTerminatedBytes")
+            self.root.create_array(
+                "ref_alleles",
+                shape=(n_variants,),
+                dtype="|S12",
+                fill_value=b"",
+                overwrite=True,
+                chunks=(chunk,),
+                compressors=[self.compressor],
+            )
+            self.root.create_array(
+                "alt_alleles",
+                shape=(n_variants,),
+                dtype="|S12",
+                fill_value=b"",
+                overwrite=True,
+                chunks=(chunk,),
+                compressors=[self.compressor],
+            )
+            self.root.create_array(
+                "variant_id",
+                shape=(n_variants,),
+                dtype="|S24",
+                fill_value=b".",
+                overwrite=True,
+                chunks=(chunk,),
+                compressors=[self.compressor],
+            )
+        self.root["ref_alleles"][:] = np.array(all_refs, dtype="|S12")
+        self.root["alt_alleles"][:] = np.array(all_alts, dtype="|S12")
         self.root.create_array(
-            "ref_alleles", shape=(n_variants,), dtype="str", fill_value="",
-            overwrite=True, chunks=(chunk,),
+            "is_indel",
+            shape=(n_variants,),
+            dtype=bool,
+            fill_value=False,
+            overwrite=True,
+            chunks=(chunk,),
         )
-        self.root.create_array(
-            "alt_alleles", shape=(n_variants,), dtype="str", fill_value="",
-            overwrite=True, chunks=(chunk,),
-        )
-        self.root["ref_alleles"][:] = np.array(all_refs, dtype=object)
-        self.root["alt_alleles"][:] = np.array(all_alts, dtype=object)
+        self.root["is_indel"][:] = np.array(all_indels, dtype=bool)
+        self.root["variant_id"][:] = np.array(all_ids, dtype="|S24")
 
-        self.root.attrs.update({
-            "contig_list": contig_list,
-            "contig_offsets": contig_offsets,
-            "n_variants": n_variants,
-            "chromosomes": contig_list,
-        })
+        self.root.attrs.update(
+            {
+                "contig_list": contig_list,
+                "contig_offsets": contig_offsets,
+                "n_variants": n_variants,
+                "chromosomes": contig_list,
+            }
+        )
         self.meta["completed"][:] = True
         logger.info(f"Wrote {n_variants} variants across {len(contig_list)} chromosomes")
 
@@ -396,6 +555,7 @@ class VariantStore(BaseStore):
         overwrite: bool = True,
         resume: bool = False,
         sample_column: str = "sample_id",
+        _shared_root=None,
     ) -> "VariantStore":
         """Create a VariantStore from per-sample VCF.gz files."""
         vcf_files = [Path(f) for f in vcf_files]
@@ -404,15 +564,16 @@ class VariantStore(BaseStore):
         if len(sample_names) != len(vcf_files):
             raise ValueError("sample_names length must match vcf_files length")
 
-        store = cls(store_path=store_path, sample_names=sample_names, overwrite=overwrite, resume=resume)
+        store = cls(
+            store_path=store_path, sample_names=sample_names, overwrite=overwrite, resume=resume,
+            _shared_root=_shared_root,
+        )
 
         logger.info("Reading VCF files...")
         all_file_data: list[dict[str, pd.DataFrame]] = []
         for path in vcf_files:
             logger.info(f"  {path.name}")
-            all_file_data.append(
-                _read_vcf(path, filter_chromosomes=filter_chromosomes)
-            )
+            all_file_data.append(_read_vcf(path, filter_chromosomes=filter_chromosomes))
 
         store._write_flat_store(all_file_data)
 
@@ -436,8 +597,8 @@ class VariantStore(BaseStore):
         """Return (ref, alt) allele lists for a chromosome, aligned with get_positions."""
         start, end = self._contig_row_range(chrom)
         if "ref_alleles" in self.root:
-            refs = self.root["ref_alleles"][start:end].tolist()
-            alts = self.root["alt_alleles"][start:end].tolist()
+            refs = [v.decode() if isinstance(v, bytes) else v for v in self.root["ref_alleles"][start:end].tolist()]
+            alts = [v.decode() if isinstance(v, bytes) else v for v in self.root["alt_alleles"][start:end].tolist()]
         else:
             # Backwards compatibility: old stores kept alleles in attrs
             refs = self.root.attrs.get("ref_alleles", [])[start:end]
@@ -460,7 +621,7 @@ class VariantStore(BaseStore):
             If True, each dask chunk is backed by ``sparse.COO``. Beneficial for
             rare-variant datasets where most (variant, sample) pairs are hom_ref.
         """
-        valid = {"genotype", "allele_depth_ref", "allele_depth_alt", "qual"}
+        valid = {"genotype", "allele_depth_ref", "allele_depth_alt", "coverage", "mapping_quality", "qual"}
         if variable not in valid:
             raise ValueError(f"variable must be one of {valid}, got {variable!r}")
 
@@ -479,6 +640,7 @@ class VariantStore(BaseStore):
             dask_arr = da.from_zarr(zarr_arr)[start_row:end_row, :].T
             if sparse:
                 import sparse as sp
+
                 dask_arr = dask_arr.map_blocks(sp.COO, dtype=dask_arr.dtype)
 
             coords: dict = {"sample": self.sample_names, "position": positions}
@@ -529,7 +691,11 @@ class VariantStore(BaseStore):
 
         # Binary search on sorted positions array (1-based, end inclusive).
         lo = int(np.searchsorted(positions, start, side="left")) if start is not None else 0
-        hi = int(np.searchsorted(positions, end, side="right")) if end is not None else len(positions)
+        hi = (
+            int(np.searchsorted(positions, end, side="right"))
+            if end is not None
+            else len(positions)
+        )
         pos_indices = np.arange(lo, hi)
         region_positions = positions[lo:hi]
         flat_indices = row_start + pos_indices

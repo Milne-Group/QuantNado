@@ -85,6 +85,7 @@ def combine_bam_stores(
                 output_path.unlink()
             else:
                 import shutil
+
                 shutil.rmtree(output_path)
         else:
             raise FileExistsError(
@@ -105,8 +106,12 @@ def combine_bam_stores(
         _managed_tmp = False
         _write_path = output_path
 
-    logger.info(f"Opening {len(store_paths)} source stores")
-    datasets = [QuantNadoDataset(p) for p in store_paths]
+    existing_paths = [p for p in store_paths if Path(p).exists()]
+    skipped = len(store_paths) - len(existing_paths)
+    if skipped:
+        logger.warning(f"Skipping {skipped} store path(s) that do not exist")
+    logger.info(f"Opening {len(existing_paths)} source stores")
+    datasets = [QuantNadoDataset(p) for p in existing_paths]
 
     # Validate compatibility — stores may have different chromosome subsets
     # (e.g. when created with filter_chromosomes=True), so we only require that
@@ -175,8 +180,12 @@ def combine_bam_stores(
     with zarr.config.set({"array.write_empty_chunks": True}):
         if _new_layout:
             cov_groups = sorted(
-                {gkey for ds in datasets for gkey in ds.root.keys()
-                 if gkey != "metadata" and isinstance(ds.root[gkey], zarr.Group)}
+                {
+                    gkey
+                    for ds in datasets
+                    for gkey in ds.root.keys()
+                    if gkey != "metadata" and isinstance(ds.root[gkey], zarr.Group)
+                }
             )
             for gkey in cov_groups:
                 out_cov_group = out_root.require_group(gkey)
@@ -198,12 +207,10 @@ def combine_bam_stores(
                     for ds in datasets:
                         n = len(ds.sample_names)
                         if gkey in ds.root and chrom in ds.root[gkey]:
-                            out_arr[:, col:col + n] = ds.root[gkey][chrom][:]
+                            out_arr[:, col : col + n] = ds.root[gkey][chrom][:]
                         col += n
         else:
-            akeys = sorted(
-                {k for ds in datasets for k in ds.root.keys() if k != "metadata"}
-            )
+            akeys = sorted({k for ds in datasets for k in ds.root.keys() if k != "metadata"})
             for akey in akeys:
                 logger.info(f"Writing {akey}")
                 chrom_len = next(ds.root[akey].shape[1] for ds in datasets if akey in ds.root)
@@ -219,7 +226,7 @@ def combine_bam_stores(
                 for ds in datasets:
                     n = len(ds.sample_names)
                     if akey in ds.root:
-                        out_arr[row:row + n, :] = ds.root[akey][:]
+                        out_arr[row : row + n, :] = ds.root[akey][:]
                     row += n
 
     # --- Write metadata group ---
@@ -269,6 +276,7 @@ def combine_bam_stores(
             for file in sorted(_write_path.rglob("*")):
                 zf.write(file, file.relative_to(_write_path))
         import shutil as _shutil
+
         _shutil.rmtree(_tmp_dir)
         logger.success(f"Combined store written to {output_path}")
         return QuantNadoDataset(output_path)

@@ -1,4 +1,5 @@
 """Shared enums and utility functions for QuantNado."""
+
 from __future__ import annotations
 
 import hashlib

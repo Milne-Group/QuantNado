@@ -1,4 +1,5 @@
 """BamStore — Zarr-backed per-base coverage store constructed from BAM files."""
+
 from __future__ import annotations
 
 import hashlib
@@ -41,6 +42,7 @@ DEFAULT_CONSTRUCTION_COMPRESSION = "default"
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class Strandedness(StrEnum):
     UNSTRANDED = "U"
     REVERSE = "R"
@@ -56,6 +58,7 @@ class CoverageType(StrEnum):
 # ---------------------------------------------------------------------------
 # Compression helpers
 # ---------------------------------------------------------------------------
+
 
 def _normalize_construction_compression(profile: str | None) -> str:
     normalized = (profile or DEFAULT_CONSTRUCTION_COMPRESSION).strip().lower()
@@ -83,6 +86,7 @@ def _resolve_construction_compressors(
 # ---------------------------------------------------------------------------
 # Chunk-length resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_chunk_len(
     chromsizes: dict[str, int],
@@ -118,6 +122,7 @@ def _resolve_chunk_len(
 # ---------------------------------------------------------------------------
 # Staging helpers
 # ---------------------------------------------------------------------------
+
 
 def _resolve_staging_root(staging_dir: Path | str | None) -> Path:
     if staging_dir is not None:
@@ -162,6 +167,7 @@ def _publish_staged_store(staged_store_path: Path, final_store_path: Path) -> No
 # ---------------------------------------------------------------------------
 # BAM utility functions
 # ---------------------------------------------------------------------------
+
 
 def _copy_read_filter(rf: "bamnado.ReadFilter") -> "bamnado.ReadFilter":
     if hasattr(rf, "copy"):
@@ -258,6 +264,7 @@ def _parse_chromsizes(
 # MCC (Micro-Capture C) helpers
 # ---------------------------------------------------------------------------
 
+
 def _process_chromosome_mcc(
     bam_file: str,
     contig: str,
@@ -275,6 +282,7 @@ def _process_chromosome_mcc(
     Returns a dict mapping each viewpoint name to a uint32 coverage array of
     length ``contig_size``.
     """
+
     def _get_vp(vp: str) -> tuple[str, np.ndarray]:
         rf = _copy_read_filter(base_filter)
         rf.filter_tag = viewpoint_tag
@@ -319,7 +327,7 @@ def _get_viewpoints_from_mcc_bam(
             for comment in bam.header.get("CO", []):
                 prefix = "QuantNado:viewpoints="
                 if comment.startswith(prefix):
-                    return sorted(comment[len(prefix):].split(","))
+                    return sorted(comment[len(prefix) :].split(","))
 
             # Fallback: scan first scan_limit reads
             for i, read in enumerate(bam.fetch(until_eof=True)):
@@ -346,6 +354,7 @@ def _get_viewpoints_from_mcc_bam(
 # ---------------------------------------------------------------------------
 # BamStore
 # ---------------------------------------------------------------------------
+
 
 class BamStore(BaseStore):
     """
@@ -394,6 +403,7 @@ class BamStore(BaseStore):
         viewpoint_tag: str = "VP",
         sample_bam_map: dict[str, str] | None = None,
         viewpoint_map: dict[str, str] | None = None,
+        _shared_root: "zarr.Group | None" = None,
     ) -> None:
         self.path = Path(store_path)
         self.store_path = self._normalize_path(self.path)
@@ -401,6 +411,32 @@ class BamStore(BaseStore):
         self.construction_compression, self.compressors = _resolve_construction_compressors(
             construction_compression
         )
+
+        if _shared_root is not None:
+            # Shared-root mode: the zarr group is managed externally (MultiomicsStore).
+            # Skip all filesystem path checks; write directly into the provided group.
+            self.sample_names = [str(s) for s in sample_names]
+            self._setup_sample_lookup()
+            self._chromsizes = _parse_chromsizes(chromsizes)
+            self._chromosomes = sorted(list(self._chromsizes.keys()))
+            self.completed_mask_raw = np.zeros(len(self.sample_names), dtype=bool)
+            self._metadata_cache = None
+            self.n_samples = len(self.sample_names)
+            self.sample_hash = _compute_sample_hash(self.sample_names)
+            self.coverage_type = coverage_type
+            self.count_fragments = count_fragments
+            self.viewpoints = viewpoints
+            self.viewpoint_tag = viewpoint_tag
+            self.sample_bam_map = sample_bam_map
+            self.viewpoint_map = viewpoint_map
+            self.bam_filter = bam_filter or bamnado.ReadFilter()
+            if self.n_samples == 0:
+                raise ValueError("sample_names must not be empty")
+            self.chunk_len = _resolve_chunk_len(self.chromsizes, self.store_path, chunk_len)
+            self.root = _shared_root
+            self.meta = self.root.require_group("metadata")
+            self._init_store_in_group()
+            return
 
         if self.store_path.exists() and not overwrite:
             if str(self.store_path).endswith(".zarr.zip"):
@@ -443,18 +479,14 @@ class BamStore(BaseStore):
                     shutil.rmtree(self.store_path)
                 else:
                     self.store_path.unlink()
-                self.chunk_len = _resolve_chunk_len(
-                    self.chromsizes, self.store_path, chunk_len
-                )
+                self.chunk_len = _resolve_chunk_len(self.chromsizes, self.store_path, chunk_len)
                 self._init_store()
             elif resume:
                 self._load_existing()
                 self.chunk_len = int(
                     self.root.attrs.get(
                         "chunk_len",
-                        _resolve_chunk_len(
-                            self.chromsizes, self.store_path, chunk_len
-                        ),
+                        _resolve_chunk_len(self.chromsizes, self.store_path, chunk_len),
                     )
                 )
                 self._validate_sample_names()
@@ -467,9 +499,7 @@ class BamStore(BaseStore):
                 raise FileNotFoundError(
                     f"Store does not exist at {self.store_path} (read_only=True)"
                 )
-            self.chunk_len = _resolve_chunk_len(
-                self.chromsizes, self.store_path, chunk_len
-            )
+            self.chunk_len = _resolve_chunk_len(self.chromsizes, self.store_path, chunk_len)
             self._init_store()
 
     @property
@@ -665,6 +695,86 @@ class BamStore(BaseStore):
             }
         )
         logger.info(f"Initialized BamStore at {self.store_path}")
+
+    def _init_store_in_group(self) -> None:
+        """Initialise coverage arrays inside an already-open shared zarr group."""
+        cov_grp = self.root.require_group("coverage")
+        for chrom, size in self.chromsizes.items():
+            cov_grp.create_array(
+                name=chrom,
+                shape=(size, self.n_samples),
+                chunks=(self.chunk_len, self.n_samples),
+                dtype=CONSTRUCTION_ARRAY_DTYPE,
+                compressors=self.compressors,
+                fill_value=0,
+                overwrite=True,
+            )
+
+        has_stranded = any(bt == CoverageType.STRANDED for bt in self.coverage_type_map.values())
+        if has_stranded:
+            for suffix in ("coverage_fwd", "coverage_rev"):
+                grp = self.root.require_group(suffix)
+                for chrom, size in self.chromsizes.items():
+                    grp.create_array(
+                        name=chrom,
+                        shape=(size, self.n_samples),
+                        chunks=(self.chunk_len, self.n_samples),
+                        dtype=np.uint32,
+                        compressors=self.compressors,
+                        fill_value=0,
+                        overwrite=True,
+                    )
+
+        self.meta.create_array(
+            "completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True
+        )
+        self.meta.create_array(
+            "sparsity", shape=(self.n_samples,), dtype=np.float32, fill_value=np.nan, overwrite=True
+        )
+        self.meta.create_array(
+            "sample_hashes",
+            shape=(self.n_samples, 16),
+            dtype=np.uint8,
+            fill_value=0,
+            overwrite=True,
+        )
+        self.meta.create_array(
+            "total_reads", shape=(self.n_samples,), dtype=np.int64, fill_value=0, overwrite=True
+        )
+        self.meta.create_array(
+            "mean_read_length",
+            shape=(self.n_samples,),
+            dtype=np.float32,
+            fill_value=np.nan,
+            overwrite=True,
+        )
+        strandedness_for_attrs = {
+            s: (bt.value if bt == CoverageType.STRANDED else "")
+            for s, bt in self.coverage_type_map.items()
+        }
+        _data_type_map = {
+            CoverageType.STRANDED: "stranded_coverage",
+            CoverageType.MICRO_CAPTURE_C: "mcc",
+        }
+        data_type_list = [
+            _data_type_map.get(self.coverage_type_map[s], "coverage") for s in self.sample_names
+        ]
+        self.root.attrs.update(
+            {
+                "chromosomes": self.chromosomes,
+                "chromsizes": self.chromsizes,
+                "n_samples": self.n_samples,
+                "chunk_len": self.chunk_len,
+                "construction_compression": self.construction_compression,
+                "structure": "coverage groups (position x sample)",
+                "bin_size": BIN_SIZE,
+                "sample_names": self.sample_names,
+                "sample_names_hash": self.sample_hash,
+                "stranded": strandedness_for_attrs,
+                "metadata_data_type": data_type_list,
+            }
+        )
+        logger.info(f"Initialized BamStore (shared root) at {self.store_path}")
 
     def _init_sample_store_at(self, path: Path, is_stranded: bool) -> zarr.Group:
         """Create a 1D per-sample temp store (no sample dimension)."""
@@ -901,12 +1011,16 @@ class BamStore(BaseStore):
             sparsity_values.append(sparsity)
 
         bam_hash, total_reads, mean_read_length = _collect_bam_stats(bam_file)
-        self.meta["sparsity"][sample_idx] = float(np.mean(sparsity_values)) if sparsity_values else float("nan")
+        self.meta["sparsity"][sample_idx] = (
+            float(np.mean(sparsity_values)) if sparsity_values else float("nan")
+        )
         self.meta["total_reads"][sample_idx] = total_reads
         self.meta["mean_read_length"][sample_idx] = mean_read_length
         if bam_hash:
             hash_bytes = bytes.fromhex(bam_hash)
-            self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(hash_bytes, dtype=np.uint8)
+            self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(
+                hash_bytes, dtype=np.uint8
+            )
         self.meta["completed"][sample_idx] = True
         logger.info(f"Completed {sample_name}: {total_reads:,} mapped reads")
 
@@ -921,16 +1035,16 @@ class BamStore(BaseStore):
         for the viewpoints that still need processing (incomplete samples).
         """
         assert self.viewpoint_map is not None
-        vp_to_idx: dict[str, int] = {
-            self.viewpoint_map[sn]: idx for idx, _, sn in pending
-        }
+        vp_to_idx: dict[str, int] = {self.viewpoint_map[sn]: idx for idx, _, sn in pending}
         viewpoints = list(vp_to_idx.keys())
         base_filter = next(iter(self.bam_filter_map.values()))
         base_filter = _copy_read_filter(base_filter)
         base_filter.filter_tag = None
         base_filter.filter_tag_value = None
 
-        logger.info(f"Processing {len(viewpoints)} MCC viewpoint(s) from {bam_file} in single-pass mode")
+        logger.info(
+            f"Processing {len(viewpoints)} MCC viewpoint(s) from {bam_file} in single-pass mode"
+        )
 
         sparsity_per_vp: dict[str, list[float]] = {vp: [] for vp in viewpoints}
         contigs = list(self.chromsizes.keys())
@@ -966,12 +1080,16 @@ class BamStore(BaseStore):
         bam_hash, total_reads, mean_read_length = _collect_bam_stats(bam_file)
         for vp, sparsity_vals in sparsity_per_vp.items():
             sample_idx = vp_to_idx[vp]
-            self.meta["sparsity"][sample_idx] = float(np.mean(sparsity_vals)) if sparsity_vals else float("nan")
+            self.meta["sparsity"][sample_idx] = (
+                float(np.mean(sparsity_vals)) if sparsity_vals else float("nan")
+            )
             self.meta["total_reads"][sample_idx] = total_reads
             self.meta["mean_read_length"][sample_idx] = mean_read_length
             if bam_hash:
                 hash_bytes = bytes.fromhex(bam_hash)
-                self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(hash_bytes, dtype=np.uint8)
+                self.meta["sample_hashes"][sample_idx, : len(hash_bytes)] = np.frombuffer(
+                    hash_bytes, dtype=np.uint8
+                )
             self.meta["completed"][sample_idx] = True
 
     def _write_sample_to_final(self, sample_idx: int, tmp_root: zarr.Group) -> None:
@@ -1073,9 +1191,11 @@ class BamStore(BaseStore):
         staging_dir: Path | str | None = None,
         log_file: Path | None = None,
         test: bool = False,
+        _shared_root=None,
     ) -> "BamStore":
         if log_file is not None:
             from quantnado.utils import setup_logging
+
             setup_logging(Path(log_file), verbose=False)
 
         if chromsizes is None:
@@ -1177,6 +1297,7 @@ class BamStore(BaseStore):
                 viewpoints=viewpoints,
                 sample_bam_map=sample_bam_map,
                 viewpoint_map=viewpoint_map,
+                _shared_root=_shared_root if not staging_enabled else None,
             )
             if sample_bam_map is not None:
                 store.process_samples()

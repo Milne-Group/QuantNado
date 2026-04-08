@@ -141,6 +141,10 @@ def metadata_from_seqnado(
     metadata["variant_path"] = metadata["sample_id"].apply(
         lambda s: next((v for v in snp_files if s in v), None)
     )
+    # SNP samples store depth via INFO/DP in the VCF — no per-base coverage zarr needed.
+    # Only suppress the BAM when a VCF is actually present for that sample.
+    snp_with_vcf = (metadata["assay"].str.upper() == "SNP") & metadata["variant_path"].notna()
+    metadata.loc[snp_with_vcf, "bam_path"] = None
     metadata.reset_index(drop=True, inplace=True)
     if output_dir is not None:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -216,16 +220,17 @@ class QuantNado:
         QuantNado
         """
         path = Path(path)
+        # Zip archives are always pure BamStore (combined output from combine_bam_stores)
         if str(path).endswith(".zarr.zip"):
             return cls(BamStore.open(path, read_only=read_only))
-        if str(path).endswith(".zarr"):
-            return cls(BamStore.open(path, read_only=read_only))
+        # Unified-layout zarr stores (single root, modalities probed from zarr content)
+        if str(path).endswith(".zarr") or (path / "zarr.json").exists():
+            return cls(MultiomicsStore.open(path))
+        # Try appending .zarr suffix (e.g. user passes "my_sample" not "my_sample.zarr")
         zarr_path = path.with_suffix(".zarr")
         if zarr_path.exists():
-            return cls(BamStore.open(zarr_path, read_only=read_only))
-        # Detect a plain zarr store directory (zarr v3 has zarr.json at root)
-        if (path / "zarr.json").exists() or (path / ".zattrs").exists():
-            return cls(BamStore.open(path, read_only=read_only))
+            return cls(MultiomicsStore.open(zarr_path))
+        # Legacy multi-zarr directory layout
         return cls(MultiomicsStore.open(path))
 
     # Alias for backward compatibility (optional, but requested rename)

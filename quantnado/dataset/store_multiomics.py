@@ -49,14 +49,21 @@ class MultiomicsStore:
 
     On-disk layout::
 
-        <store_dir>/
-            coverage.zarr/      (present if BAM files were provided)
-            methylation.zarr/   (present if bedGraph files were provided)
-            variants.zarr/      (present if VCF files were provided)
-
-    Each sub-store is a self-contained Zarr archive; access them individually
-    via :attr:`coverage`, :attr:`methylation`, and :attr:`variants`, or use the
-    high-level helpers on this class.
+        <store_dir>.zarr/
+            coverage/           (zarr Group, present if BAM files were provided)
+                {chrom}         (position, n_samples) uint32
+            coverage_fwd/       (stranded only)
+            coverage_rev/       (stranded only)
+            methylation_pct     (flat array, present if methylation files were provided)
+            n_methylated        (flat array)
+            n_total             (flat array)
+            position            (flat array, shared site index)
+            contig              (flat array)
+            genotype            (flat array, present if VCF files were provided)
+            allele_depth_ref
+            allele_depth_alt
+            ...
+            metadata/
 
     Example
     -------
@@ -81,16 +88,30 @@ class MultiomicsStore:
         self.methylation: MethylStore | None = None
         self.variants: VariantStore | None = None
 
+        # Legacy layout: separate sub-zarr directories (backwards compat)
         cov_path = self.store_dir / "coverage.zarr"
         meth_path = self.store_dir / "methylation.zarr"
         var_path = self.store_dir / "variants.zarr"
+        legacy = cov_path.exists() or meth_path.exists() or var_path.exists()
 
-        if cov_path.exists():
-            self.coverage = BamStore.open(cov_path)
-        if meth_path.exists():
-            self.methylation = MethylStore.open(meth_path)
-        if var_path.exists():
-            self.variants = VariantStore.open(var_path)
+        if legacy:
+            if cov_path.exists():
+                self.coverage = BamStore.open(cov_path)
+            if meth_path.exists():
+                self.methylation = MethylStore.open(meth_path)
+            if var_path.exists():
+                self.variants = VariantStore.open(var_path)
+        else:
+            # Unified layout: single zarr root at store_dir
+            import zarr as _zarr
+            if self.store_dir.exists():
+                root = _zarr.open_group(str(self.store_dir), mode="r")
+                if "coverage" in root and isinstance(root["coverage"], _zarr.Group):
+                    self.coverage = BamStore.open(self.store_dir)
+                if "methylation_pct" in root or "n_methylated" in root:
+                    self.methylation = MethylStore.open(self.store_dir)
+                if "genotype" in root or "allele_depth_ref" in root:
+                    self.variants = VariantStore.open(self.store_dir)
 
         if not self.modalities:
             logger.warning(
@@ -128,7 +149,9 @@ class MultiomicsStore:
         staging_dir: "Path | str | None" = None,
         log_file: "Path | None" = None,
         test: bool = False,
-        coverage_type: CoverageType | list[CoverageType] | dict[str, CoverageType] = CoverageType.UNSTRANDED,
+        coverage_type: CoverageType
+        | list[CoverageType]
+        | dict[str, CoverageType] = CoverageType.UNSTRANDED,
         count_fragments: bool = False,
     ) -> "MultiomicsStore":
         """
@@ -208,16 +231,26 @@ class MultiomicsStore:
         store_dir = Path(store_dir)
         store_dir.mkdir(parents=True, exist_ok=True)
 
+        # Create (or reuse) a single zarr root for the entire sample store.
+        import zarr as _zarr
+        from zarr.storage import LocalStore as _LocalStore
+        if overwrite and store_dir.exists() and any(store_dir.iterdir()):
+            import shutil as _shutil
+            _shutil.rmtree(store_dir)
+            store_dir.mkdir(parents=True, exist_ok=True)
+        _ls = _LocalStore(str(store_dir))
+        shared_root = _zarr.group(store=_ls, overwrite=False, zarr_format=3)
+
         if bam_files:
             logger.info(f"Building coverage store from {len(bam_files)} BAM file(s)...")
             BamStore.from_bam_files(
                 bam_files=[str(f) for f in bam_files],
-                store_path=store_dir / "coverage.zarr",
+                store_path=store_dir,
                 bam_sample_names=bam_sample_names,
                 chromsizes=chromsizes,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                overwrite=overwrite,
+                overwrite=False,
                 resume=resume,
                 sample_column=sample_column,
                 chunk_len=chunk_len,
@@ -228,6 +261,7 @@ class MultiomicsStore:
                 test=test,
                 coverage_type=coverage_type,
                 count_fragments=count_fragments,
+                _shared_root=shared_root,
             )
 
         # Route methylation: mixed (bedgraph + cx), bedgraph-only, cxreport, or split cx
@@ -241,67 +275,74 @@ class MultiomicsStore:
                 methyldackel_files=[str(f) for f in methyldackel_files],
                 mc_files=[str(f) for f in mc_files] if mc_files else None,
                 hmc_files=[str(f) for f in hmc_files] if hmc_files else None,
-                store_path=store_dir / "methylation.zarr",
+                store_path=store_dir,
                 methyldackel_sample_names=methyldackel_sample_names,
                 mc_hmc_sample_names=mc_hmc_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                overwrite=overwrite,
+                overwrite=False,
                 resume=resume,
                 sample_column=sample_column,
+                _shared_root=shared_root,
             )
         elif methyldackel_files:
-            logger.info(f"Building methylation store from {len(methyldackel_files)} bedGraph file(s)...")
+            logger.info(
+                f"Building methylation store from {len(methyldackel_files)} bedGraph file(s)..."
+            )
             MethylStore.from_bedgraph_files(
                 methyldackel_files=[str(f) for f in methyldackel_files],
-                store_path=store_dir / "methylation.zarr",
+                store_path=store_dir,
                 sample_names=methyldackel_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                overwrite=overwrite,
+                overwrite=False,
                 resume=resume,
                 sample_column=sample_column,
+                _shared_root=shared_root,
             )
         elif cxreport_files:
-            logger.info(f"Building methylation store from {len(cxreport_files)} CXreport file(s)...")
+            logger.info(
+                f"Building methylation store from {len(cxreport_files)} CXreport file(s)..."
+            )
             MethylStore.from_cxreport_files(
                 cxreport_files=[str(f) for f in cxreport_files],
-                store_path=store_dir / "methylation.zarr",
+                store_path=store_dir,
                 sample_names=cxreport_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                overwrite=overwrite,
+                overwrite=False,
                 resume=resume,
                 sample_column=sample_column,
+                _shared_root=shared_root,
             )
         elif mc_files or hmc_files:
             n_cx = len(mc_files or hmc_files)
-            logger.info(
-                f"Building methylation store from {n_cx} split CXreport sample(s)..."
-            )
+            logger.info(f"Building methylation store from {n_cx} split CXreport sample(s)...")
             MethylStore.from_split_cxreport_files(
                 mc_files=[str(f) for f in mc_files] if mc_files else None,
                 hmc_files=[str(f) for f in hmc_files] if hmc_files else None,
-                store_path=store_dir / "methylation.zarr",
+                store_path=store_dir,
                 sample_names=mc_hmc_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                overwrite=overwrite,
+                overwrite=False,
                 resume=resume,
                 sample_column=sample_column,
+                _shared_root=shared_root,
             )
 
         if vcf_files:
             logger.info(f"Building variants store from {len(vcf_files)} VCF file(s)...")
             VariantStore.from_vcf_files(
                 vcf_files=[str(f) for f in vcf_files],
-                store_path=store_dir / "variants.zarr",
+                store_path=store_dir,
                 sample_names=vcf_sample_names,
                 metadata=metadata,
                 filter_chromosomes=filter_chromosomes,
-                overwrite=overwrite,
+                overwrite=False,
                 resume=resume,
                 sample_column=sample_column,
+                _shared_root=shared_root,
             )
 
         return cls(store_dir)
@@ -519,17 +560,20 @@ class MultiomicsStore:
                 row_slices = [meth._contig_row_range(c) for c in chromosomes if c in contig_list]
                 if row_slices:
                     row_start = row_slices[0][0]
-                    row_end   = row_slices[-1][1]
+                    row_end = row_slices[-1][1]
                 else:
                     row_start, row_end = 0, 0
             else:
-                row_start, row_end = 0, int(meth.root.attrs.get("n_sites", meth.root["position"].shape[0]))
+                row_start, row_end = (
+                    0,
+                    int(meth.root.attrs.get("n_sites", meth.root["position"].shape[0])),
+                )
 
             site_slice = slice(row_start, row_end)
 
             # contig labels: decode uint8 index → chromosome name
             contig_idx = da.from_zarr(meth.root["contig"])[site_slice]
-            positions    = da.from_zarr(meth.root["position"])[site_slice]
+            positions = da.from_zarr(meth.root["position"])[site_slice]
 
             if meth.has_mc_hmc_split:
                 meth_vars = ["methylation_pct", "n_mc", "n_hmc", "n_c"]
@@ -547,9 +591,9 @@ class MultiomicsStore:
             nodes["methylation"] = xr.Dataset(
                 data_vars,
                 coords={
-                    "contig":    ("site", contig_idx),
-                    "position":  ("site", positions),
-                    "sample":    meth.sample_names,
+                    "contig": ("site", contig_idx),
+                    "position": ("site", positions),
+                    "sample": meth.sample_names,
                 },
             )
 
@@ -558,7 +602,9 @@ class MultiomicsStore:
             ref = self.coverage or self.methylation
             meta_df = ref.metadata
             meta_vars: dict[str, xr.DataArray] = {
-                col: xr.DataArray(meta_df[col].values, dims=("sample",), coords={"sample": ref.sample_names})
+                col: xr.DataArray(
+                    meta_df[col].values, dims=("sample",), coords={"sample": ref.sample_names}
+                )
                 for col in meta_df.columns
                 if col != "sample_id"
             }
