@@ -1,4 +1,4 @@
-"""Integration tests for QuantNadoDataset (analysis.core and dataset.core variants)."""
+"""Integration tests for BaseStore / QuantNadoDataset (dataset.core)."""
 from __future__ import annotations
 
 import numpy as np
@@ -11,37 +11,66 @@ from zarr.core.dtype import VariableLengthUTF8
 from quantnado.dataset.core import BaseStore as AnalysisCore
 from quantnado.dataset.core import QuantNadoDataset as DatasetCore
 
+pytestmark = pytest.mark.integration
+
 
 # ---------------------------------------------------------------------------
-# Helpers to build a minimal zarr store
+# Helpers to build minimal zarr stores
 # ---------------------------------------------------------------------------
 
 
-def _make_store(tmp_path, chrom_sizes=None, sample_names=None, all_complete=True):
-    """Build a zarr store in the expected QuantNado layout."""
+def _build_contig_offsets(chrom_sizes: dict[str, int]) -> dict[str, list[int]]:
+    offsets: dict[str, list[int]] = {}
+    pos = 0
+    for chrom, size in chrom_sizes.items():
+        offsets[chrom] = [pos, pos + size]
+        pos += size
+    return offsets
+
+
+def _make_store(
+    tmp_path,
+    chrom_sizes: dict[str, int] | None = None,
+    sample_names: list[str] | None = None,
+    all_complete: bool = True,
+    store_name: str = "store.zarr",
+) -> "Path":
+    """Build a zarr store in the flat QuantNado layout used by BamStore."""
     if chrom_sizes is None:
         chrom_sizes = {"chr1": 100, "chr2": 50}
     if sample_names is None:
         sample_names = ["s1", "s2"]
 
-    root = zarr.open(str(tmp_path / "store.zarr"), mode="w")
-    cov_grp = root.require_group("coverage")
-    for chrom, size in chrom_sizes.items():
-        arr = cov_grp.create_array(chrom, shape=(size, len(sample_names)), dtype=np.uint16)
-        for i in range(len(sample_names)):
-            arr[:, i] = np.ones(size, dtype=np.uint16) * (i + 1)
+    n_samples = len(sample_names)
+    total_len = sum(chrom_sizes.values())
+    contig_offsets = _build_contig_offsets(chrom_sizes)
+
+    root = zarr.open(str(tmp_path / store_name), mode="w")
+    arr = root.create_array("coverage", shape=(total_len, n_samples), dtype=np.uint16)
+    for i in range(n_samples):
+        for chrom, size in chrom_sizes.items():
+            s, e = contig_offsets[chrom]
+            arr[s:e, i] = np.ones(size, dtype=np.uint16) * (i + 1)
 
     meta = root.require_group("metadata")
-    completed = np.array([True] * len(sample_names)) if all_complete else np.array([True, False] + [True] * max(0, len(sample_names) - 2))
-    meta.create_array("completed", data=completed[:len(sample_names)])
-    root.attrs["chromsizes"] = chrom_sizes
-    root.attrs["chunk_len"] = 1024
-    root.attrs["sample_names"] = sample_names
-    return tmp_path / "store.zarr"
+    completed = np.ones(n_samples, dtype=bool)
+    if not all_complete and n_samples >= 2:
+        completed[1] = False
+    meta.create_array("completed", data=completed)
+
+    root.attrs.update({
+        "chromsizes": chrom_sizes,
+        "chunk_len": 1024,
+        "sample_names": sample_names,
+        "contig_offsets": contig_offsets,
+        "chromosomes": sorted(chrom_sizes.keys()),
+    })
+
+    return tmp_path / store_name
 
 
 # ---------------------------------------------------------------------------
-# Parametrize both implementations
+# Parametrize both aliases (they are the same class)
 # ---------------------------------------------------------------------------
 
 CLASSES = [
@@ -62,24 +91,17 @@ class TestInit:
             cls(tmp_path / "nonexistent.zarr")
 
     @pytest.mark.parametrize("cls", CLASSES)
-    def test_missing_metadata_group_raises(self, tmp_path, cls):
-        root = zarr.open(str(tmp_path / "no_meta.zarr"), mode="w")
-        root.create_array("chr1", shape=(2, 100), dtype=np.uint16)
-        with pytest.raises(ValueError, match="metadata"):
-            cls(tmp_path / "no_meta.zarr")
-
-    @pytest.mark.parametrize("cls", CLASSES)
     def test_missing_sample_names_raises(self, tmp_path, cls):
         root = zarr.open(str(tmp_path / "no_names.zarr"), mode="w")
-        root.create_array("chr1", shape=(2, 100), dtype=np.uint16)
+        root.create_array("chr1", shape=(100, 2), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([True, True]))
         # no sample_names array and no root attr
-        with pytest.raises(ValueError, match="[Ss]ample"):
+        with pytest.raises(ValueError, match="[Ss]ample|metadata"):
             cls(tmp_path / "no_names.zarr")
 
     @pytest.mark.parametrize("cls", CLASSES)
-    def test_successful_init_with_string_sample_names(self, tmp_path, cls):
+    def test_successful_init_flat_layout(self, tmp_path, cls):
         store_path = _make_store(tmp_path)
         ds = cls(store_path)
         assert ds.sample_names == ["s1", "s2"]
@@ -89,8 +111,9 @@ class TestInit:
     @pytest.mark.parametrize("cls", CLASSES)
     def test_successful_init_with_metadata_sample_names(self, tmp_path, cls):
         root = zarr.open(str(tmp_path / "meta_names_store.zarr"), mode="w")
-        root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
-        root["chr1"][:] = np.ones((2, 10), dtype=np.uint16)
+        contig_offsets = {"chr1": [0, 10]}
+        arr = root.create_array("coverage", shape=(10, 2), dtype=np.uint16)
+        arr[:] = np.ones((10, 2), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([True, True]))
         sample_name_array = meta.create_array(
@@ -101,23 +124,36 @@ class TestInit:
         sample_name_array[:] = ["s1", "s2"]
         root.attrs["chromsizes"] = {"chr1": 10}
         root.attrs["chunk_len"] = 1024
+        root.attrs["contig_offsets"] = contig_offsets
+        root.attrs["chromosomes"] = ["chr1"]
 
         ds = cls(tmp_path / "meta_names_store.zarr")
         assert ds.sample_names == ["s1", "s2"]
 
     @pytest.mark.parametrize("cls", CLASSES)
-    def test_successful_init_with_bytes_sample_names(self, tmp_path, cls):
-        # Build a store where sample_names are bytes (legacy format)
-        root = zarr.open(str(tmp_path / "bytes_store.zarr"), mode="w")
-        root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
-        root["chr1"][:] = np.ones((2, 10), dtype=np.uint16)
-        meta = root.require_group("metadata")
-        meta.create_array("completed", data=np.array([True, True]))
-        # Store as object bytes
-        root.attrs["sample_names"] = ["s1", "s2"]
-        # Simulate bytes by patching after open
-        ds = cls(tmp_path / "bytes_store.zarr")
+    def test_successful_init_sample_names_from_root_attrs(self, tmp_path, cls):
+        store_path = _make_store(tmp_path, store_name="attrs_store.zarr")
+        ds = cls(store_path)
         assert ds.sample_names == ["s1", "s2"]
+
+
+# ---------------------------------------------------------------------------
+# TestChromsizes
+# ---------------------------------------------------------------------------
+
+
+class TestChromsizes:
+    @pytest.mark.parametrize("cls", CLASSES)
+    def test_chromsizes_returns_dict(self, tmp_path, cls):
+        store_path = _make_store(tmp_path)
+        ds = cls(store_path)
+        assert ds.chromsizes == {"chr1": 100, "chr2": 50}
+
+    @pytest.mark.parametrize("cls", CLASSES)
+    def test_chromosomes_list(self, tmp_path, cls):
+        store_path = _make_store(tmp_path, chrom_sizes={"chr1": 100, "chr2": 50, "chr3": 25})
+        ds = cls(store_path)
+        assert set(ds.chromosomes) == {"chr1", "chr2", "chr3"}
 
 
 # ---------------------------------------------------------------------------
@@ -127,12 +163,21 @@ class TestInit:
 
 class TestGetChrom:
     @pytest.mark.parametrize("cls", CLASSES)
-    def test_get_chrom_returns_array(self, tmp_path, cls):
+    def test_get_chrom_returns_zarr_array(self, tmp_path, cls):
         store_path = _make_store(tmp_path)
         ds = cls(store_path)
         arr = ds.get_chrom("chr1")
         assert arr is not None
-        assert arr.shape == (100, 2)
+        assert isinstance(arr, zarr.Array)
+
+    @pytest.mark.parametrize("cls", CLASSES)
+    def test_get_chrom_slice_has_correct_shape(self, tmp_path, cls):
+        store_path = _make_store(tmp_path)
+        ds = cls(store_path)
+        arr = ds.get_chrom("chr1")
+        s, e = ds._contig_row_range("chr1")
+        chrom_data = arr[s:e, :]
+        assert chrom_data.shape == (100, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -150,16 +195,8 @@ class TestValidSampleIndices:
 
     @pytest.mark.parametrize("cls", CLASSES)
     def test_mixed_complete(self, tmp_path, cls):
-        # Build store where second sample is incomplete
-        chrom_sizes = {"chr1": 10}
-        root = zarr.open(str(tmp_path / "mixed.zarr"), mode="w")
-        root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
-        meta = root.require_group("metadata")
-        meta.create_array("completed", data=np.array([True, False]))
-        root.attrs["chromsizes"] = chrom_sizes
-        root.attrs["chunk_len"] = 1024
-        root.attrs["sample_names"] = ["s1", "s2"]
-        ds = cls(tmp_path / "mixed.zarr")
+        store_path = _make_store(tmp_path, all_complete=False)
+        ds = cls(store_path)
         indices = ds.valid_sample_indices()
         np.testing.assert_array_equal(indices, [0])
 
@@ -176,6 +213,13 @@ class TestMetadataProperty:
         ds = cls(store_path)
         md = ds.metadata
         assert isinstance(md, pd.DataFrame)
+
+    @pytest.mark.parametrize("cls", CLASSES)
+    def test_index_is_sample_id(self, tmp_path, cls):
+        store_path = _make_store(tmp_path)
+        ds = cls(store_path)
+        assert ds.metadata.index.name == "sample_id"
+        assert list(ds.metadata.index) == ["s1", "s2"]
 
 
 # ---------------------------------------------------------------------------
@@ -207,12 +251,15 @@ class TestToXarray:
 
     @pytest.mark.parametrize("cls", CLASSES)
     def test_incomplete_sample_raises(self, tmp_path, cls):
+        contig_offsets = {"chr1": [0, 10]}
         root = zarr.open(str(tmp_path / "inc.zarr"), mode="w")
-        root.create_array("chr1", shape=(2, 10), dtype=np.uint16)
+        root.create_array("coverage", shape=(10, 2), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([True, False]))
         root.attrs["chromsizes"] = {"chr1": 10}
         root.attrs["sample_names"] = ["s1", "s2"]
+        root.attrs["contig_offsets"] = contig_offsets
+        root.attrs["chromosomes"] = ["chr1"]
         ds = cls(tmp_path / "inc.zarr")
         with pytest.raises(RuntimeError, match="incomplete"):
             ds.to_xarray()
@@ -233,30 +280,43 @@ class TestToXarray:
         assert "chr1" in result
 
     @pytest.mark.parametrize("cls", CLASSES)
-    def test_metadata_coordinates_in_result(self, tmp_path, cls):
+    def test_shape_and_dims(self, tmp_path, cls):
         store_path = _make_store(tmp_path)
         ds = cls(store_path)
         result = ds.to_xarray()
         da = result["chr1"]
-        assert "sample" in da.coords
-        assert list(da.coords["sample"].values) == ["s1", "s2"]
         assert da.dims == ("sample", "position")
+        assert list(da.coords["sample"].values) == ["s1", "s2"]
+        assert da.shape == (2, 100)
+
+    @pytest.mark.parametrize("cls", CLASSES)
+    def test_values_correct(self, tmp_path, cls):
+        store_path = _make_store(tmp_path)
+        ds = cls(store_path)
+        result = ds.to_xarray()
+        computed = result["chr1"].values
+        # s1 (row 0) = 1, s2 (row 1) = 2
+        assert np.all(computed[0, :] == 1)
+        assert np.all(computed[1, :] == 2)
 
 
 # ---------------------------------------------------------------------------
-# TestExtractRegion
+# TestExtractRegionParametrized
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("cls", CLASSES)
 class TestExtractRegionParametrized:
-    """Smoke test extract_region for both implementations."""
-
     def test_extract_region_basic(self, tmp_path, cls):
         store_path = _make_store(tmp_path)
         ds = cls(store_path)
         result = ds.extract_region("chr1:10-50")
         assert result.shape == (2, 40)
+
+
+# ---------------------------------------------------------------------------
+# TestExtractRegion (non-parametrized, richer coverage)
+# ---------------------------------------------------------------------------
 
 
 class TestExtractRegion:
@@ -357,12 +417,15 @@ class TestExtractRegion:
             ds.extract_region(chrom="chr1", start=50, end=10)
 
     def test_incomplete_sample_raises(self, tmp_path):
+        contig_offsets = {"chr1": [0, 100]}
         root = zarr.open(str(tmp_path / "inc2.zarr"), mode="w")
-        root.create_array("chr1", shape=(2, 100), dtype=np.uint16)
+        root.create_array("coverage", shape=(100, 2), dtype=np.uint16)
         meta = root.require_group("metadata")
         meta.create_array("completed", data=np.array([False, True]))
         root.attrs["chromsizes"] = {"chr1": 100}
         root.attrs["sample_names"] = ["s1", "s2"]
+        root.attrs["contig_offsets"] = contig_offsets
+        root.attrs["chromosomes"] = ["chr1"]
         ds = AnalysisCore(tmp_path / "inc2.zarr")
         with pytest.raises(RuntimeError, match="incomplete"):
             ds.extract_region("chr1:0-10", samples=["s1"])

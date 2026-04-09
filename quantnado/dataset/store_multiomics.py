@@ -1,365 +1,62 @@
+"""Simple read interface for multiomics stores."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-import dask.array as da
 import xarray as xr
-from loguru import logger
+import zarr
 
-from .store_coverage import BamStore, CoverageType
+from .store_coverage import BamStore
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
 
 
-def _coverage_group_nodes(
-    group,
-    sample_names: list[str],
-    chromsizes: dict[str, int],
-    prefix: str,
-    chromosomes: list[str],
-) -> dict[str, xr.Dataset]:
-    """Build DataTree nodes for a coverage zarr group (coverage/fwd/rev).
-
-    Returns ``{"{prefix}/{chrom}": xr.Dataset}`` for each chromosome.
-    Each Dataset holds a single ``coverage`` DataArray with dims ``(position, sample)``.
-    """
-    nodes: dict[str, xr.Dataset] = {}
-    for chrom in chromosomes:
-        if chrom not in group:
-            continue
-        arr = xr.DataArray(
-            da.from_zarr(group[chrom]),  # already (position, sample) on disk
-            dims=("position", "sample"),
-            coords={
-                "position": np.arange(chromsizes[chrom]),
-                "sample": sample_names,
-            },
-            name="coverage",
-        )
-        nodes[f"{prefix}/{chrom}"] = xr.Dataset({"coverage": arr})
-    return nodes
-
-
 class MultiomicsStore:
     """
-    Unified multi-modal genomic store combining coverage (BAM), methylation
-    (bedGraph), and variant (VCF) data in a single directory.
+    Lightweight read interface for multiomics Zarr stores.
 
-    On-disk layout::
-
-        <store_dir>.zarr/
-            coverage/           (zarr Group, present if BAM files were provided)
-                {chrom}         (position, n_samples) uint32
-            coverage_fwd/       (stranded only)
-            coverage_rev/       (stranded only)
-            methylation_pct     (flat array, present if methylation files were provided)
-            n_methylated        (flat array)
-            n_total             (flat array)
-            position            (flat array, shared site index)
-            contig              (flat array)
-            genotype            (flat array, present if VCF files were provided)
-            allele_depth_ref
-            allele_depth_alt
-            ...
-            metadata/
-
-    Example
-    -------
-    >>> ms = MultiomicsStore.from_files(
-    ...     store_dir="dataset/",
-    ...     bam_files=["atac.bam", "meth-rep1.bam"],
-    ...     methyldackel_files=["meth-rep1.bedGraph", "meth-rep2.bedGraph"],
-    ...     vcf_files=["snp.vcf.gz"],
-    ... )
-    >>> ms.modalities
-    ['coverage', 'methylation', 'variants']
-    >>> ms.coverage.sample_names
-    ['atac', 'meth-rep1']
-    >>> ms.methylation.to_xarray()
-    >>> ms.variants.extract_region("chr21:5000000-6000000")
+    Combines coverage (BAM), methylation (bedGraph), and variant (VCF) data
+    stored in a single Zarr directory or as separate stores.
     """
 
     def __init__(self, store_dir: Path | str) -> None:
+        """Open an existing multiomics store."""
         self.store_dir = Path(store_dir)
 
         self.coverage: BamStore | None = None
         self.methylation: MethylStore | None = None
         self.variants: VariantStore | None = None
 
-        # Legacy layout: separate sub-zarr directories (backwards compat)
+        # Try to open each modality store
         cov_path = self.store_dir / "coverage.zarr"
         meth_path = self.store_dir / "methylation.zarr"
         var_path = self.store_dir / "variants.zarr"
-        legacy = cov_path.exists() or meth_path.exists() or var_path.exists()
 
-        if legacy:
-            if cov_path.exists():
-                self.coverage = BamStore.open(cov_path)
-            if meth_path.exists():
-                self.methylation = MethylStore.open(meth_path)
-            if var_path.exists():
-                self.variants = VariantStore.open(var_path)
-        else:
-            # Unified layout: single zarr root at store_dir
-            import zarr as _zarr
-            if self.store_dir.exists():
-                root = _zarr.open_group(str(self.store_dir), mode="r")
-                if "coverage" in root and isinstance(root["coverage"], (_zarr.Group, _zarr.Array)):
+        if cov_path.exists():
+            self.coverage = BamStore.open(cov_path)
+        if meth_path.exists():
+            self.methylation = MethylStore.open(meth_path)
+        if var_path.exists():
+            self.variants = VariantStore.open(var_path)
+
+        # Also try unified layout (all in one zarr root)
+        if self.store_dir.exists():
+            try:
+                root = zarr.open_group(str(self.store_dir), mode="r")
+                if not self.coverage and "coverage" in root:
                     self.coverage = BamStore.open(self.store_dir)
-                if "methylation_pct" in root or "n_methylated" in root:
+                if not self.methylation and ("methylation_pct" in root or "methyl_position" in root):
                     self.methylation = MethylStore.open(self.store_dir)
-                if "genotype" in root or "allele_depth_ref" in root:
+                if not self.variants and ("genotype" in root or "variant_position" in root):
                     self.variants = VariantStore.open(self.store_dir)
-
-        if not self.modalities:
-            logger.warning(
-                f"No modality stores found in {self.store_dir}. "
-                "Run from_files() to populate the store."
-            )
-
-    # ---- Construction ----
-
-    @classmethod
-    def from_files(
-        cls,
-        store_dir: Path | str,
-        bam_files: list[str | Path] | None = None,
-        methyldackel_files: list[str | Path] | None = None,
-        cxreport_files: list[str | Path] | None = None,
-        mc_files: list[str | Path] | None = None,
-        hmc_files: list[str | Path] | None = None,
-        vcf_files: list[str | Path] | None = None,
-        chromsizes: str | Path | dict[str, int] | None = None,
-        metadata: pd.DataFrame | Path | str | list[Path | str] | None = None,
-        *,
-        bam_sample_names: list[str] | None = None,
-        methyldackel_sample_names: list[str] | None = None,
-        cxreport_sample_names: list[str] | None = None,
-        mc_hmc_sample_names: list[str] | None = None,
-        vcf_sample_names: list[str] | None = None,
-        filter_chromosomes: bool = True,
-        overwrite: bool = True,
-        resume: bool = False,
-        sample_column: str = "sample_id",
-        chunk_len: int | None = None,
-        construction_compression: str = "default",
-        local_staging: bool = False,
-        staging_dir: "Path | str | None" = None,
-        log_file: "Path | None" = None,
-        test: bool = False,
-        coverage_type: CoverageType
-        | list[CoverageType]
-        | dict[str, CoverageType] = CoverageType.UNSTRANDED,
-        count_fragments: bool = False,
-    ) -> "MultiomicsStore":
-        """
-        Create a MultiomicsStore from genomic data files.
-
-        At least one of ``bam_files``, ``methyldackel_files``, or ``vcf_files``
-        must be provided. Any omitted modality is simply absent from the store.
-
-        Parameters
-        ----------
-        store_dir : Path or str
-            Output directory. Created if it does not exist.
-        bam_files : list of Path, optional
-            BAM files for per-base coverage storage.
-        methyldackel_files : list of Path, optional
-            MethylDackel CpG bedGraph files for methylation storage.
-        vcf_files : list of Path, optional
-            VCF.gz files (one per sample) for variant storage.
-        chromsizes : str, Path, or dict, optional
-            Chromosome sizes for the coverage store. Extracted from the first
-            BAM file if not provided.
-        metadata : DataFrame, Path, or str, optional
-            Sample metadata CSV attached to all sub-stores. Each sub-store's
-            sample names are used to subset the metadata automatically.
-        bam_sample_names : list of str, optional
-            Override sample names for BAM files (default: file stems).
-        methyldackel_sample_names : list of str, optional
-            Override sample names for bedGraph files (default: file stems).
-            Useful when MethylDackel embeds genome/suffix in the filename,
-            e.g. ``meth-rep1_hg38_CpG_inverted.bedGraph`` → ``"meth-rep1"``.
-        vcf_sample_names : list of str, optional
-            Override sample names for VCF files (default: filename before first dot).
-        filter_chromosomes : bool, default True
-            Keep only canonical chromosomes (``chr*`` without underscores).
-        overwrite : bool, default True
-            Overwrite existing sub-stores.
-        resume : bool, default False
-            Resume processing an existing sub-store, skipping completed samples.
-        sample_column : str, default "sample_id"
-            Column in ``metadata`` matching sample names.
-        chunk_len : int or None, default None
-            Zarr chunk size for the position dimension (coverage store only).
-            If None, auto-estimated based on genome size, n_samples, and filesystem type.
-        construction_compression : {"default", "fast", "none"}, default "default"
-            Build-time compression profile for the coverage store.
-        local_staging : bool, default False
-            Build the coverage store under local scratch storage before publishing.
-        staging_dir : str or Path, optional
-            Scratch directory for local staging. Defaults to system temp dir.
-        log_file : Path, optional
-            Path to write BAM processing logs.
-        test : bool, default False
-            Restrict coverage to chr21/chr22/chrY (for testing).
-        coverage_type : CoverageType or list or dict, default CoverageType.UNSTRANDED
-            BAM type for coverage processing.  Pass a single :class:`CoverageType`
-            to apply to all samples, a list in the same order as *bam_files*,
-            or a dict mapping sample names to :class:`CoverageType` values.
-
-            - ``CoverageType.UNSTRANDED``: combined-strand coverage (default).
-            - ``CoverageType.STRANDED``: separate forward and reverse coverage arrays.
-            - ``CoverageType.MICRO_CAPTURE_C``: MCC mode — each BAM is expanded into
-              one virtual sample per viewpoint (VP tag).
-        count_fragments : bool, default False
-            Count fragments (insert-level) instead of individual reads.
-        """
-        if not any([bam_files, vcf_files, methyldackel_files, cxreport_files, mc_files, hmc_files]):
-            raise ValueError(
-                "Provide at least one of bam_files, methyldackel_files, cxreport_files, "
-                "mc_files/hmc_files, or vcf_files"
-            )
-        # cxreport_files cannot be mixed with bedgraph or split CXreport
-        if cxreport_files and (methyldackel_files or mc_files or hmc_files):
-            raise ValueError(
-                "cxreport_files cannot be combined with methyldackel_files or mc_files/hmc_files"
-            )
-
-        store_dir = Path(store_dir)
-        store_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create (or reuse) a single zarr root for the entire sample store.
-        import zarr as _zarr
-        from zarr.storage import LocalStore as _LocalStore
-        if overwrite and store_dir.exists() and any(store_dir.iterdir()):
-            import shutil as _shutil
-            _shutil.rmtree(store_dir)
-            store_dir.mkdir(parents=True, exist_ok=True)
-        _ls = _LocalStore(str(store_dir))
-        shared_root = _zarr.group(store=_ls, overwrite=False, zarr_format=3)
-
-        if bam_files:
-            logger.info(f"Building coverage store from {len(bam_files)} BAM file(s)...")
-            BamStore.from_bam_files(
-                bam_files=[str(f) for f in bam_files],
-                store_path=store_dir,
-                bam_sample_names=bam_sample_names,
-                chromsizes=chromsizes,
-                metadata=metadata,
-                filter_chromosomes=filter_chromosomes,
-                overwrite=False,
-                resume=resume,
-                sample_column=sample_column,
-                chunk_len=chunk_len,
-                construction_compression=construction_compression,
-                local_staging=local_staging,
-                staging_dir=staging_dir,
-                log_file=log_file,
-                test=test,
-                coverage_type=coverage_type,
-                count_fragments=count_fragments,
-                _shared_root=shared_root,
-            )
-
-        # Route methylation: mixed (bedgraph + cx), bedgraph-only, cxreport, or split cx
-        if methyldackel_files and (mc_files or hmc_files):
-            n_bg = len(methyldackel_files)
-            n_cx = len(mc_files or hmc_files)
-            logger.info(
-                f"Building mixed methylation store from {n_bg} bedGraph + {n_cx} CXreport sample(s)..."
-            )
-            MethylStore.from_mixed_files(
-                methyldackel_files=[str(f) for f in methyldackel_files],
-                mc_files=[str(f) for f in mc_files] if mc_files else None,
-                hmc_files=[str(f) for f in hmc_files] if hmc_files else None,
-                store_path=store_dir,
-                methyldackel_sample_names=methyldackel_sample_names,
-                mc_hmc_sample_names=mc_hmc_sample_names,
-                metadata=metadata,
-                filter_chromosomes=filter_chromosomes,
-                overwrite=False,
-                resume=resume,
-                sample_column=sample_column,
-                _shared_root=shared_root,
-            )
-        elif methyldackel_files:
-            logger.info(
-                f"Building methylation store from {len(methyldackel_files)} bedGraph file(s)..."
-            )
-            MethylStore.from_bedgraph_files(
-                methyldackel_files=[str(f) for f in methyldackel_files],
-                store_path=store_dir,
-                sample_names=methyldackel_sample_names,
-                metadata=metadata,
-                filter_chromosomes=filter_chromosomes,
-                overwrite=False,
-                resume=resume,
-                sample_column=sample_column,
-                _shared_root=shared_root,
-            )
-        elif cxreport_files:
-            logger.info(
-                f"Building methylation store from {len(cxreport_files)} CXreport file(s)..."
-            )
-            MethylStore.from_cxreport_files(
-                cxreport_files=[str(f) for f in cxreport_files],
-                store_path=store_dir,
-                sample_names=cxreport_sample_names,
-                metadata=metadata,
-                filter_chromosomes=filter_chromosomes,
-                overwrite=False,
-                resume=resume,
-                sample_column=sample_column,
-                _shared_root=shared_root,
-            )
-        elif mc_files or hmc_files:
-            n_cx = len(mc_files or hmc_files)
-            logger.info(f"Building methylation store from {n_cx} split CXreport sample(s)...")
-            MethylStore.from_split_cxreport_files(
-                mc_files=[str(f) for f in mc_files] if mc_files else None,
-                hmc_files=[str(f) for f in hmc_files] if hmc_files else None,
-                store_path=store_dir,
-                sample_names=mc_hmc_sample_names,
-                metadata=metadata,
-                filter_chromosomes=filter_chromosomes,
-                overwrite=False,
-                resume=resume,
-                sample_column=sample_column,
-                _shared_root=shared_root,
-            )
-
-        if vcf_files:
-            logger.info(f"Building variants store from {len(vcf_files)} VCF file(s)...")
-            VariantStore.from_vcf_files(
-                vcf_files=[str(f) for f in vcf_files],
-                store_path=store_dir,
-                sample_names=vcf_sample_names,
-                metadata=metadata,
-                filter_chromosomes=filter_chromosomes,
-                overwrite=False,
-                resume=resume,
-                sample_column=sample_column,
-                _shared_root=shared_root,
-            )
-
-        return cls(store_dir)
-
-    @classmethod
-    def open(cls, store_dir: str | Path) -> "MultiomicsStore":
-        """Open an existing MultiomicsStore directory."""
-        store_dir = Path(store_dir)
-        if not store_dir.exists():
-            raise FileNotFoundError(f"Store directory does not exist: {store_dir}")
-        return cls(store_dir)
-
-    # ---- Properties ----
+            except (OSError, ValueError):
+                pass
 
     @property
     def modalities(self) -> list[str]:
-        """List of available modalities in this store."""
+        """Available modalities: coverage, methylation, variants."""
         result = []
         if self.coverage is not None:
             result.append("coverage")
@@ -370,23 +67,8 @@ class MultiomicsStore:
         return result
 
     @property
-    def chromosomes(self) -> list[str]:
-        """Sorted union of chromosome names across all modalities."""
-        seen: set[str] = set()
-        for store in self._active_stores():
-            seen.update(store.chromosomes)
-        return sorted(seen)
-
-    @property
     def samples(self) -> dict[str, list[str]]:
-        """
-        Sample names available per modality.
-
-        Returns
-        -------
-        dict
-            Mapping modality name → list of sample names.
-        """
+        """Sample names per modality."""
         out: dict[str, list[str]] = {}
         if self.coverage is not None:
             out["coverage"] = list(self.coverage.sample_names)
@@ -397,48 +79,8 @@ class MultiomicsStore:
         return out
 
     @property
-    def all_sample_names(self) -> list[str]:
-        """Ordered union of sample names across all modalities."""
-        seen: set[str] = set()
-        result: list[str] = []
-        for store in self._active_stores():
-            for s in store.sample_names:
-                if s not in seen:
-                    result.append(s)
-                    seen.add(s)
-        return result
-
-    def _active_stores(self):
-        return [s for s in (self.coverage, self.methylation, self.variants) if s is not None]
-
-    # ---- Metadata ----
-
-    def set_metadata(
-        self,
-        metadata: pd.DataFrame,
-        sample_column: str = "sample_id",
-    ) -> None:
-        """
-        Attach metadata to all sub-stores.
-
-        Each store is updated using the subset of ``metadata`` that matches its
-        own sample names — samples not present in that store are ignored.
-        """
-        for store in self._active_stores():
-            try:
-                store.set_metadata(metadata, sample_column=sample_column)
-            except Exception as e:
-                logger.warning(f"Could not set metadata on {type(store).__name__}: {e}")
-
-    @property
     def metadata(self) -> pd.DataFrame:
-        """
-        Combined metadata across all modalities.
-
-        Returns a DataFrame indexed by ``sample_id`` with one row per unique
-        sample. A ``modalities`` column lists which modalities each sample
-        appears in.
-        """
+        """Union of metadata across all modalities."""
         frames: dict[str, pd.DataFrame] = {}
         for modality, store in [
             ("coverage", self.coverage),
@@ -447,184 +89,50 @@ class MultiomicsStore:
         ]:
             if store is None:
                 continue
-            df = store.metadata.copy()
-            df["modality"] = modality
-            frames[modality] = df
+            try:
+                df = store.metadata.copy()
+                frames[modality] = df
+            except Exception:
+                pass
 
         if not frames:
             return pd.DataFrame()
 
         combined = pd.concat(frames.values(), ignore_index=False)
+        return combined[~combined.index.duplicated(keep="first")]
 
-        # Build a modalities column showing which are available per sample.
-        # For coverage, use "stranded_coverage" for samples where stranded arrays exist.
-        sample_modalities: dict[str, list[str]] = {}
-        for modality, df in frames.items():
-            for sid in df.index:
-                if (
-                    modality == "coverage"
-                    and self.coverage is not None
-                    and self.coverage.coverage_type_map.get(sid) == CoverageType.STRANDED
-                ):
-                    label = "stranded_coverage"
-                else:
-                    label = modality
-                sample_modalities.setdefault(str(sid), []).append(label)
+    def to_xarray(self) -> xr.Dataset:
+        """Combine all modalities into a single xarray Dataset."""
+        datasets = []
 
-        # Deduplicate: keep first occurrence per sample_id
-        combined = combined[~combined.index.duplicated(keep="first")].drop(
-            columns=["modality"], errors="ignore"
-        )
-        combined["modalities"] = combined.index.map(
-            lambda s: ", ".join(sample_modalities.get(str(s), []))
-        )
-        return combined
-
-    # ---- DataTree ----
-
-    def to_datatree(
-        self,
-        chromosomes: list[str] | None = None,
-    ) -> xr.DataTree:
-        """Return all modalities as a hierarchical :class:`xr.DataTree`.
-
-        Each chromosome is a child node under its modality group so that the
-        ``position`` dimension is always chromosome-local (no size conflicts).
-        Methylation and variants are stored flat (all sites concatenated) with
-        a ``contig`` coordinate mirroring the on-disk layout.
-
-        Parameters
-        ----------
-        chromosomes : list[str], optional
-            Chromosomes to include. Defaults to all chromosomes.
-
-        Returns
-        -------
-        xr.DataTree
-            Tree structure::
-
-                /
-                ├── coverage/
-                │   ├── chr1    coverage (position, sample) uint32
-                │   └── ...
-                ├── coverage_fwd/   (stranded only)
-                │   └── chr1    coverage (position, sample) uint32
-                ├── coverage_rev/   (stranded only)
-                │   └── chr1    coverage (position, sample) uint32
-                ├── methylation/    methylation_pct, n_methylated, n_total (site, sample)
-                │                  + contig, position coords on site dim
-                └── metadata/       sample_names, assay, completed, ...
-        """
-        attrs: dict = {"sample_names": self.all_sample_names}
         if self.coverage is not None:
-            attrs["chromsizes"] = self.coverage.chromsizes
+            ds = self.coverage.to_xarray()
+            if isinstance(ds, dict):
+                # Multi-chromosome dict → combine
+                ds = xr.merge([xr.Dataset({k: v}) for k, v in ds.items()])
+            datasets.append(ds)
 
-        nodes: dict[str, xr.Dataset] = {"/": xr.Dataset(attrs=attrs)}
+        if self.methylation is not None:
+            ds = self.methylation.to_xarray()
+            if isinstance(ds, dict):
+                ds = xr.merge([xr.Dataset({k: v}) for k, v in ds.items()])
+            datasets.append(ds)
 
-        # ---- coverage ----
-        if self.coverage is not None:
-            chroms = chromosomes if chromosomes is not None else self.coverage.chromosomes
-            nodes.update(
-                _coverage_group_nodes(
-                    self.coverage.root["coverage"],
-                    self.coverage.sample_names,
-                    self.coverage.chromsizes,
-                    prefix="coverage",
-                    chromosomes=chroms,
-                )
-            )
-            for suffix in ("coverage_fwd", "coverage_rev"):
-                if suffix in self.coverage.root:
-                    nodes.update(
-                        _coverage_group_nodes(
-                            self.coverage.root[suffix],
-                            self.coverage.sample_names,
-                            self.coverage.chromsizes,
-                            prefix=suffix,
-                            chromosomes=chroms,
-                        )
-                    )
+        if self.variants is not None:
+            ds = self.variants.to_xarray()
+            if isinstance(ds, dict):
+                ds = xr.merge([xr.Dataset({k: v}) for k, v in ds.items()])
+            datasets.append(ds)
 
-        # ---- methylation (flat: all sites concatenated) ----
-        _meth_has_data = (
-            self.methylation is not None
-            and "position" in self.methylation.root
-            and int(self.methylation.root.attrs.get("n_sites", 0)) > 0
-        )
-        if _meth_has_data:
-            meth = self.methylation
-            contig_list: list[str] = meth.root.attrs.get("contig_list", meth.chromosomes)
+        if not datasets:
+            raise ValueError("No modalities to combine")
 
-            # filter to requested chromosomes and compute flat row slice
-            if chromosomes is not None:
-                row_slices = [meth._contig_row_range(c) for c in chromosomes if c in contig_list]
-                if row_slices:
-                    row_start = row_slices[0][0]
-                    row_end = row_slices[-1][1]
-                else:
-                    row_start, row_end = 0, 0
-            else:
-                row_start, row_end = (
-                    0,
-                    int(meth.root.attrs.get("n_sites", meth.root["position"].shape[0])),
-                )
-
-            site_slice = slice(row_start, row_end)
-
-            # contig labels: decode uint8 index → chromosome name
-            contig_idx = da.from_zarr(meth.root["contig"])[site_slice]
-            positions = da.from_zarr(meth.root["position"])[site_slice]
-
-            if meth.has_mc_hmc_split:
-                meth_vars = ["methylation_pct", "n_mc", "n_hmc", "n_c"]
-            else:
-                meth_vars = ["methylation_pct", "n_methylated", "n_total"]
-
-            data_vars: dict[str, xr.DataArray] = {}
-            for var in meth_vars:
-                data_vars[var] = xr.DataArray(
-                    da.from_zarr(meth.root[var])[site_slice, :],
-                    dims=("site", "sample"),
-                    coords={"sample": meth.sample_names},
-                )
-
-            nodes["methylation"] = xr.Dataset(
-                data_vars,
-                coords={
-                    "contig": ("site", contig_idx),
-                    "position": ("site", positions),
-                    "sample": meth.sample_names,
-                },
-            )
-
-        # ---- metadata ----
-        if self.coverage is not None or self.methylation is not None:
-            ref = self.coverage or self.methylation
-            meta_df = ref.metadata
-            meta_vars: dict[str, xr.DataArray] = {
-                col: xr.DataArray(
-                    meta_df[col].values, dims=("sample",), coords={"sample": ref.sample_names}
-                )
-                for col in meta_df.columns
-                if col != "sample_id"
-            }
-            nodes["metadata"] = xr.Dataset(meta_vars)
-
-        return xr.DataTree.from_dict(nodes)
-
-    # ---- Summary ----
+        return xr.merge(datasets, join="override")
 
     def __repr__(self) -> str:
         lines = [f"MultiomicsStore at '{self.store_dir}'"]
         lines.append(f"  modalities : {self.modalities}")
-        for modality, store in [
-            ("coverage", self.coverage),
-            ("methylation", self.methylation),
-            ("variants", self.variants),
-        ]:
-            if store is not None:
-                lines.append(
-                    f"  {modality:<12}: {len(store.sample_names)} samples, "
-                    f"{len(store.chromosomes)} chrom(s)"
-                )
+        for modality in self.modalities:
+            store = getattr(self, modality.split("_")[0])
+            lines.append(f"  {modality:<12}: {len(store.sample_names)} samples")
         return "\n".join(lines)

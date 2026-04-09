@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
+import re
 import shutil
 import warnings
 
@@ -22,6 +24,14 @@ GT_MISSING: np.int8 = np.int8(-1)
 GT_HOM_REF: np.int8 = np.int8(0)
 GT_HET: np.int8 = np.int8(1)
 GT_HOM_ALT: np.int8 = np.int8(2)
+
+
+@contextmanager
+def _suppress_allel_warnings():
+    """Suppress scikit-allel warnings (malformed VCF headers, etc.)."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning)
+        yield
 
 
 def _callset_to_chrom_dfs(
@@ -121,21 +131,38 @@ def _callset_to_chrom_dfs(
     return {chrom: grp.reset_index(drop=True) for chrom, grp in df.groupby("chrom")}
 
 
+def _extract_chromsizes_from_headers(headers: list[str]) -> dict[str, int]:
+    """Extract chromosome sizes from VCF header lines.
+
+    Parses lines like: ##contig=<ID=chr1,length=248956422>
+    """
+    chromsizes = {}
+    for line in headers:
+        if line.startswith("##contig="):
+            match = re.search(r"ID=([^,>]+).*length=(\d+)", line)
+            if match:
+                chrom_id = match.group(1)
+                length = int(match.group(2))
+                chromsizes[chrom_id] = length
+    return chromsizes
+
+
 def _read_vcf(
     path: Path | str,
     filter_chromosomes: bool = True,
-) -> dict[str, pd.DataFrame]:
+) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
     """Read variants from a single-sample VCF/VCF.gz file using scikit-allel.
 
     Requests all known optional fields; allel silently omits any that are
     absent from the VCF so no header pre-scan is needed.
 
-    Returns dict mapping chromosome -> DataFrame with columns:
-        pos (int64, 1-based), ref (str), alt (str), qual (float32),
+    Returns
+    -------
+    tuple
+        (dict mapping chromosome -> DataFrame, dict mapping chromosome -> chromsize from header)
+        DataFrame columns: pos (int64, 1-based), ref (str), alt (str), qual (float32),
         genotype (int8: -1 missing, 0 hom_ref, 1 het, 2 hom_alt),
-        ad_ref (uint16), ad_alt (uint16),
-        dp (uint16), mq (uint8), is_indel (bool), variant_id (str)
-    Columns for absent fields are filled with their zero/default values.
+        ad_ref (uint16), ad_alt (uint16), dp (uint16), mq (uint8), is_indel (bool), variant_id (str)
     """
     try:
         import allel
@@ -144,9 +171,17 @@ def _read_vcf(
             "scikit-allel is required to read VCF files: pip install scikit-allel"
         ) from e
 
-    import warnings
-
     path = Path(path)
+
+    # Extract chromsizes from VCF header using allel
+    header_chromsizes: dict[str, int] = {}
+    try:
+        with _suppress_allel_warnings():
+            header = allel.read_vcf_headers(input=str(path))
+        header_chromsizes = _extract_chromsizes_from_headers(header.headers)
+    except Exception as e:
+        logger.warning(f"Could not read chromsizes from {path.name}: {e}")
+
     fields = [
         "CHROM",
         "POS",
@@ -161,10 +196,11 @@ def _read_vcf(
         "calldata/AD",
     ]
     numbers = {"ALT": 1, "AD": 2}
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=UserWarning)
+    with _suppress_allel_warnings():
         callset = allel.read_vcf(str(path), fields=fields, numbers=numbers)
-    return _callset_to_chrom_dfs(callset, filter_chromosomes=filter_chromosomes)
+
+    chrom_dfs = _callset_to_chrom_dfs(callset, filter_chromosomes=filter_chromosomes)
+    return chrom_dfs, header_chromsizes
 
 
 class VariantStore(BaseStore):
@@ -193,6 +229,7 @@ class VariantStore(BaseStore):
             sample_names, n_samples, store_type,
             contig_list (list of chromosome names),
             contig_offsets (dict: chrom -> [start_row, end_row])
+            chromsizes (dict: chrom -> chromsize)
 
     Example
     -------
@@ -334,7 +371,9 @@ class VariantStore(BaseStore):
     def chromosomes(self) -> list[str]:
         return list(self.root.attrs.get("contig_list", []))
 
-    def _write_flat_store(self, all_file_data: list[dict[str, pd.DataFrame]]) -> None:
+    def _write_flat_store(
+        self, all_file_data: list[dict[str, pd.DataFrame]], chromsizes: dict[str, int] | None = None
+    ) -> None:
         """Build flat sparse arrays from per-sample per-chromosome DataFrames."""
         n_samples = len(all_file_data)
         single_sample = n_samples == 1
@@ -343,6 +382,7 @@ class VariantStore(BaseStore):
 
         contig_list: list[str] = []
         contig_offsets: dict[str, list[int]] = {}
+        calculated_chromsizes: dict[str, int] = {}
         all_contig_idx: list[np.ndarray] = []
         all_positions: list[np.ndarray] = []
         all_refs: list = []
@@ -366,36 +406,30 @@ class VariantStore(BaseStore):
                 chrom_positions = np.unique(
                     np.concatenate([fd[chrom]["pos"].values for fd in all_file_data if chrom in fd])
                 ).astype(np.int64)
-                # Build ref/alt lookup from first sample per position using vectorised ops.
-                pos_to_ref: dict[int, str] = {}
-                pos_to_alt: dict[int, str] = {}
-                pos_to_indel: dict[int, bool] = {}
-                pos_to_id: dict[int, str] = {}
-                for fd in all_file_data:
-                    if chrom not in fd:
-                        continue
-                    df = fd[chrom]
-                    pos_vals = df["pos"].values
-                    ref_vals = df["ref"].values
-                    alt_vals = df["alt"].values
-                    indel_vals = df["is_indel"].values
-                    id_vals = df["variant_id"].values
-                    for i in range(len(pos_vals)):
-                        p = int(pos_vals[i])
-                        if p not in pos_to_ref:
-                            pos_to_ref[p] = str(ref_vals[i])
-                            pos_to_alt[p] = str(alt_vals[i])
-                            pos_to_indel[p] = bool(indel_vals[i])
-                            pos_to_id[p] = str(id_vals[i])
-                all_refs.extend(pos_to_ref[int(p)] for p in chrom_positions)
-                all_alts.extend(pos_to_alt[int(p)] for p in chrom_positions)
-                all_indels.extend(pos_to_indel[int(p)] for p in chrom_positions)
-                all_ids.extend(pos_to_id[int(p)] for p in chrom_positions)
+                # Build ref/alt lookup from first sample per position
+                first_sample = next((fd[chrom] for fd in all_file_data if chrom in fd), None)
+                if first_sample is not None:
+                    pos_to_ref = dict(zip(first_sample["pos"].values.astype(int), first_sample["ref"].astype(str)))
+                    pos_to_alt = dict(zip(first_sample["pos"].values.astype(int), first_sample["alt"].astype(str)))
+                    pos_to_indel = dict(zip(first_sample["pos"].values.astype(int), first_sample["is_indel"].astype(bool)))
+                    pos_to_id = dict(zip(first_sample["pos"].values.astype(int), first_sample["variant_id"].astype(str)))
+                    all_refs.extend(pos_to_ref[int(p)] for p in chrom_positions)
+                    all_alts.extend(pos_to_alt[int(p)] for p in chrom_positions)
+                    all_indels.extend(pos_to_indel[int(p)] for p in chrom_positions)
+                    all_ids.extend(pos_to_id[int(p)] for p in chrom_positions)
 
             start_row = sum(len(a) for a in all_positions)
             end_row = start_row + len(chrom_positions)
             contig_list.append(chrom)
             contig_offsets[chrom] = [start_row, end_row]
+
+            # Use provided chromsizes if available, otherwise calculate from VCF
+            if chromsizes and chrom in chromsizes:
+                calculated_chromsizes[chrom] = int(chromsizes[chrom])
+            else:
+                chrom_size = chrom_positions.max() + 1 if len(chrom_positions) > 0 else 0
+                calculated_chromsizes[chrom] = int(chrom_size)
+
             all_contig_idx.append(np.full(len(chrom_positions), chrom_idx, dtype=np.uint8))
             all_positions.append(chrom_positions)
 
@@ -491,7 +525,7 @@ class VariantStore(BaseStore):
             self.root["qual"][:, sample_idx] = qual_col
 
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="NullTerminatedBytes")
+            warnings.filterwarnings("ignore", message=".*does not have a Zarr V3 specification")
             self.root.create_array(
                 "ref_alleles",
                 shape=(n_variants,),
@@ -536,6 +570,7 @@ class VariantStore(BaseStore):
             {
                 "contig_list": contig_list,
                 "contig_offsets": contig_offsets,
+                "chromsizes": calculated_chromsizes,
                 "n_variants": n_variants,
                 "chromosomes": contig_list,
             }
@@ -557,7 +592,10 @@ class VariantStore(BaseStore):
         sample_column: str = "sample_id",
         _shared_root=None,
     ) -> "VariantStore":
-        """Create a VariantStore from per-sample VCF.gz files."""
+        """Create a VariantStore from per-sample VCF.gz files.
+
+        Chromsizes are extracted from VCF header ##contig= lines and required.
+        """
         vcf_files = [Path(f) for f in vcf_files]
         if sample_names is None:
             sample_names = [f.name.split(".")[0] for f in vcf_files]
@@ -565,17 +603,31 @@ class VariantStore(BaseStore):
             raise ValueError("sample_names length must match vcf_files length")
 
         store = cls(
-            store_path=store_path, sample_names=sample_names, overwrite=overwrite, resume=resume,
+            store_path=store_path,
+            sample_names=sample_names,
+            overwrite=overwrite,
+            resume=resume,
             _shared_root=_shared_root,
         )
 
         logger.info("Reading VCF files...")
         all_file_data: list[dict[str, pd.DataFrame]] = []
-        for path in vcf_files:
+        reference_chromsizes: dict[str, int] | None = None
+        for i, path in enumerate(vcf_files):
             logger.info(f"  {path.name}")
-            all_file_data.append(_read_vcf(path, filter_chromosomes=filter_chromosomes))
+            chrom_dfs, header_chromsizes = _read_vcf(path, filter_chromosomes=filter_chromosomes)
+            all_file_data.append(chrom_dfs)
+            if i == 0:
+                reference_chromsizes = header_chromsizes
+            elif header_chromsizes and header_chromsizes != reference_chromsizes:
+                logger.warning(f"Chromsize mismatch in {path.name}—using first sample's chromsizes")
 
-        store._write_flat_store(all_file_data)
+        # Verify chromsizes were extracted from first sample
+        if not reference_chromsizes:
+            raise ValueError(
+                "VCF files must contain ##contig= header lines with length information"
+            )
+        store._write_flat_store(all_file_data, chromsizes=reference_chromsizes)
 
         if metadata is not None:
             if isinstance(metadata, (str, Path)):
@@ -597,8 +649,14 @@ class VariantStore(BaseStore):
         """Return (ref, alt) allele lists for a chromosome, aligned with get_positions."""
         start, end = self._contig_row_range(chrom)
         if "ref_alleles" in self.root:
-            refs = [v.decode() if isinstance(v, bytes) else v for v in self.root["ref_alleles"][start:end].tolist()]
-            alts = [v.decode() if isinstance(v, bytes) else v for v in self.root["alt_alleles"][start:end].tolist()]
+            refs = [
+                v.decode() if isinstance(v, bytes) else v
+                for v in self.root["ref_alleles"][start:end].tolist()
+            ]
+            alts = [
+                v.decode() if isinstance(v, bytes) else v
+                for v in self.root["alt_alleles"][start:end].tolist()
+            ]
         else:
             # Backwards compatibility: old stores kept alleles in attrs
             refs = self.root.attrs.get("ref_alleles", [])[start:end]
@@ -621,7 +679,14 @@ class VariantStore(BaseStore):
             If True, each dask chunk is backed by ``sparse.COO``. Beneficial for
             rare-variant datasets where most (variant, sample) pairs are hom_ref.
         """
-        valid = {"genotype", "allele_depth_ref", "allele_depth_alt", "coverage", "mapping_quality", "qual"}
+        valid = {
+            "genotype",
+            "allele_depth_ref",
+            "allele_depth_alt",
+            "coverage",
+            "mapping_quality",
+            "qual",
+        }
         if variable not in valid:
             raise ValueError(f"variable must be one of {valid}, got {variable!r}")
 

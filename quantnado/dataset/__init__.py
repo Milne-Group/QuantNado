@@ -1,4 +1,4 @@
-from .combine_stores import combine_bam_stores
+from .combine_multiomics import combine_multiomics_stores
 from .core import extract_metadata
 from .store_coverage import BamStore
 from .store_methyl import MethylStore

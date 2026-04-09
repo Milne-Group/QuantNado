@@ -24,7 +24,7 @@ from zarr.storage import LocalStore, ZipStore
 
 from quantnado.utils import estimate_chunk_len, is_network_fs
 from .core import BaseStore
-from .utils import _compute_sample_hash
+from .utils import _compute_sample_hash, _parse_chromsizes
 
 warnings.filterwarnings("ignore", category=UserWarning, module="zarr")
 
@@ -232,32 +232,6 @@ def _get_chromsizes_from_bam(bam_path: Path | str) -> dict[str, int]:
         return {ref: length for ref, length in zip(sam.references, sam.lengths)}
 
 
-def _parse_chromsizes(
-    chromsizes: str | Path | dict[str, int],
-    *,
-    filter_chromosomes: bool = True,
-    test: bool = False,
-) -> dict[str, int]:
-    if isinstance(chromsizes, dict):
-        chromsizes_dict = chromsizes
-    else:
-        path = Path(chromsizes)
-        if not path.exists():
-            raise FileNotFoundError(f"Chromsizes file not found: {path}")
-        df = pd.read_csv(path, sep="\t", header=None, names=["chrom", "size"])
-        chromsizes_dict = df.set_index("chrom")["size"].to_dict()
-
-    if filter_chromosomes:
-        chromsizes_dict = {
-            k: v for k, v in chromsizes_dict.items() if k.startswith("chr") and "_" not in k
-        }
-
-    if test:
-        desired = ["chr21", "chr22", "chrY"]
-        chromsizes_dict = {k: v for k, v in chromsizes_dict.items() if k in desired}
-        logger.info(f"Test mode enabled: keeping chromosomes {list(chromsizes_dict.keys())}")
-
-    return chromsizes_dict
 
 
 # ---------------------------------------------------------------------------
@@ -586,9 +560,14 @@ class BamStore(BaseStore):
         try:
             sample_names = list(group.attrs["sample_names"])
             chromsizes = {str(k): int(v) for k, v in group.attrs["chromsizes"].items()}
-            chunk_len = int(group.attrs["chunk_len"])
         except KeyError as e:
             raise ValueError(f"Missing required attribute in store: {e}")
+
+        # chunk_len may not exist in older stores; recalculate if missing
+        if "chunk_len" in group.attrs:
+            chunk_len = int(group.attrs["chunk_len"])
+        else:
+            chunk_len = _resolve_chunk_len(chromsizes, store_path, chunk_len=None)
         raw_strand = group.attrs.get("stranded")
         if isinstance(raw_strand, dict):
             coverage_type: CoverageType | dict[str, CoverageType] = {
@@ -1085,7 +1064,6 @@ class BamStore(BaseStore):
         # Chromosomes are processed sequentially to keep peak RAM bounded to
         # chrom_len × 4 B instead of n_viewpoints × chrom_len × 4 B.
         for i, contig in enumerate(contigs, 1):
-            logger.debug(f"MCC {contig} ({i}/{n_chroms})")
             _, vp_arrays = _do_chrom(contig)
             _write_result(contig, vp_arrays)
 

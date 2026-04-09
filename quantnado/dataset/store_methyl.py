@@ -490,9 +490,9 @@ class MethylStore(BaseStore):
             max(1, n_sites),
         )
 
-        # Create flat coordinate arrays
+        # Create flat coordinate arrays with "methyl_" prefix to distinguish from flat coverage
         self.root.create_array(
-            "contig",
+            "methyl_contig",
             shape=(n_sites,),
             dtype=np.uint8,
             fill_value=0,
@@ -501,7 +501,7 @@ class MethylStore(BaseStore):
             compressors=[self.compressor],
         )
         self.root.create_array(
-            "position",
+            "methyl_position",
             shape=(n_sites,),
             dtype=np.uint32,
             fill_value=0,
@@ -509,8 +509,8 @@ class MethylStore(BaseStore):
             chunks=(chunk,),
             compressors=[self.compressor],
         )
-        self.root["contig"][:] = contig_arr
-        self.root["position"][:] = position_arr
+        self.root["methyl_contig"][:] = contig_arr
+        self.root["methyl_position"][:] = position_arr
 
         # Create data arrays
         if mc_hmc_split:
@@ -859,7 +859,7 @@ class MethylStore(BaseStore):
     def get_positions(self, chrom: str) -> np.ndarray:
         """Return CpG positions (0-based) for a chromosome."""
         start, end = self._contig_row_range(chrom)
-        return self.root["position"][start:end]
+        return self.root["methyl_position"][start:end]
 
     def to_xarray(
         self,
@@ -900,7 +900,7 @@ class MethylStore(BaseStore):
         result: dict[str, xr.DataArray] = {}
         for chrom in chroms:
             start_row, end_row = self._contig_row_range(chrom)
-            positions = self.root["position"][start_row:end_row]
+            positions = self.root["methyl_position"][start_row:end_row]
             zarr_arr = self.root[variable]
             # Slice the flat array for this chrom: shape (n_sites_chrom, n_samples)
             dask_arr = da.from_zarr(zarr_arr)[start_row:end_row, :]
@@ -970,7 +970,7 @@ class MethylStore(BaseStore):
                 sample_names_out.append(self.sample_names[idx])
 
         row_start, row_end = self._contig_row_range(chrom)
-        positions = self.root["position"][row_start:row_end]
+        positions = self.root["methyl_position"][row_start:row_end]
 
         # Filter to requested position range using binary search (positions are sorted).
         if start is not None or end is not None:

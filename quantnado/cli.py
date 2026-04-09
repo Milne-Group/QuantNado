@@ -516,9 +516,24 @@ def combine_stores(
         quantnado dataset combine -i s1.zarr -i s2.zarr -i s3.zarr -o combined.zarr
     """
     _setup_cli_logging(log_file, verbose)
-    from quantnado.dataset.combine_stores import combine_bam_stores
+    from quantnado.dataset.combine_multiomics import combine_multiomics_stores
     try:
-        combine_bam_stores(inputs, output, overwrite=overwrite)
+        # Auto-detect store type from first store
+        first_store = __import__('zarr').open(str(inputs[0]), mode='r')
+        if 'coverage' in first_store:
+            assay_type = 'coverage'
+        elif 'genotype' in first_store:
+            assay_type = 'variants'
+        elif 'methylation_pct' in first_store:
+            assay_type = 'methylation'
+        else:
+            assay_type = 'unknown'
+
+        combine_multiomics_stores(
+            {assay_type: [str(p) for p in inputs]},
+            output,
+            overwrite=overwrite
+        )
     except Exception as e:
         logger.error(f"combine failed: {e}")
         logger.debug(traceback.format_exc())

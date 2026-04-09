@@ -36,7 +36,8 @@ dependencies = [
     "typer>=0.24",
     "xarray>=2026",
     "zarr>=3.1.5,<4.0",
-    "plotnado>=0.3"
+    "plotnado>=0.3",
+    "pytest>=9.0.2",
 ]
 
 [project.optional-dependencies]

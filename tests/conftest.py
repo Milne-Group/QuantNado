@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -11,7 +12,6 @@ from loguru import logger
 
 from quantnado.dataset.store_coverage import BamStore, CoverageType
 
-# Ensure the project root is on sys.path so imports work when running locally.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -24,10 +24,8 @@ def reset_loguru():
     logger.remove()
 
 
-
-
 # ---------------------------------------------------------------------------
-# Primitive fixtures (reused by both unit and integration layers)
+# Primitive fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -43,7 +41,7 @@ def sample_names():
 
 
 # ---------------------------------------------------------------------------
-# BamStore helpers
+# BamStore helpers (monkeypatched — no real BAM I/O)
 # ---------------------------------------------------------------------------
 
 
@@ -116,12 +114,8 @@ def simple_store_extract_stranded(tmp_path, monkeypatch):
 
 @pytest.fixture(scope="module")
 def mv411_bam(tmp_path_factory):
-    """Subsampled (~6k reads, chrY + chr22) BAM from MV411-CAT_MLL-N-1.
-
-    Used to test unstranded coverage, stranded coverage, and fragment counting
-    with a real non-MCC BAM file.
-    """
-    test_bam = Path(__file__).resolve().parent / "data" / "MV411-CAT_MLL-N-1_subsample.bam"
+    """Subsampled (~6k reads, chrY + chr22) BAM from MV411-CAT_MLL-N-1."""
+    test_bam = Path(__file__).resolve().parent.parent / "old_tests" / "data" / "MV411-CAT_MLL-N-1_subsample.bam"
 
     if not test_bam.exists():
         pytest.skip(f"Test BAM file not found at {test_bam}")
@@ -129,40 +123,9 @@ def mv411_bam(tmp_path_factory):
     bam_dir = tmp_path_factory.mktemp("mv411")
     bam_path = bam_dir / "MV411-CAT_MLL-N-1.bam"
 
-    import shutil
     shutil.copy2(test_bam, bam_path)
     bai = test_bam.with_suffix(".bam.bai")
     if bai.exists():
         shutil.copy2(bai, bam_path.with_suffix(".bam.bai"))
-
-    return bam_path
-
-
-# ---------------------------------------------------------------------------
-# Subsampled BAM file for MCC integration tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def mock_mcc_bam(tmp_path_factory):
-    """Use a subsampled BAM file for MCC (Micro-Capture C) tests.
-
-    The test data BAM contains ~260k reads subsampled from the real
-    OCI-AML3-control-1-1-A.bam file, preserving VP tags and chromosome distribution
-    to validate the API with real data.
-    """
-    test_bam = Path(__file__).resolve().parent / "data" / "OCI-AML3-control-1-1-A_subsample.bam"
-
-    if not test_bam.exists():
-        pytest.skip(f"Test BAM file not found at {test_bam}")
-
-    # Copy to temp directory to avoid modifying test data
-    bam_dir = tmp_path_factory.mktemp("bam")
-    bam_path = bam_dir / "OCI-AML3-control-1-1-A.bam"
-
-    import shutil
-    shutil.copy2(test_bam, bam_path)
-    if test_bam.with_suffix(".bam.bai").exists():
-        shutil.copy2(test_bam.with_suffix(".bam.bai"), bam_path.with_suffix(".bam.bai"))
 
     return bam_path

@@ -4,6 +4,8 @@ import pytest
 
 from quantnado.peak_calling.call_quantile_peaks import call_quantile_peaks
 
+pytestmark = pytest.mark.integration
+
 
 def test_call_quantile_peaks_basic():
     signal = pd.Series([0, 1, 5, 10, 1, 0], name="test_sample")
@@ -41,13 +43,12 @@ def test_call_quantile_peaks_no_peaks_above_threshold():
         starts=starts,
         ends=ends,
         tilesize=100,
-        quantile=1.0,  # nothing can be strictly above max
+        quantile=1.0,
         blacklist_file=None,
     )
 
-    # Either None or empty PyRanges
-    if peaks is not None:
-        assert len(peaks) == 0
+    # quantile=1.0 → returns None immediately
+    assert peaks is None
 
 
 def test_call_quantile_peaks_multiple_chroms():
@@ -67,3 +68,22 @@ def test_call_quantile_peaks_multiple_chroms():
     )
     assert peaks is not None
     assert len(peaks) >= 1
+
+
+def test_call_quantile_peaks_all_zero_returns_none():
+    """All-zero signal should return None (no nonzero values)."""
+    signal = pd.Series([0, 0, 0], name="zero")
+    chroms = pd.Series(["chr1"] * 3)
+    starts = pd.Series([0, 100, 200])
+    ends = pd.Series([100, 200, 300])
+
+    peaks = call_quantile_peaks(
+        signal=signal,
+        chroms=chroms,
+        starts=starts,
+        ends=ends,
+        tilesize=100,
+        quantile=0.9,
+        blacklist_file=None,
+    )
+    assert peaks is None
