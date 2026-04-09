@@ -48,7 +48,7 @@ def get_mean_read_lengths(dataset) -> pd.Series:
 
     Parameters
     ----------
-    dataset : QuantNado | BamStore | MultiomicsStore
+    dataset : QuantNadoDataset | BamStore | MultiomicsStore
 
     Returns
     -------
@@ -60,6 +60,11 @@ def get_mean_read_lengths(dataset) -> pd.Series:
     RuntimeError
         If the store does not contain ``mean_read_length`` metadata.
     """
+    from .core import QuantNadoDataset
+
+    if isinstance(dataset, QuantNadoDataset):
+        return _mean_read_lengths_from_qnd(dataset)
+
     bam_store = _resolve_bam_store(dataset)
 
     meta = bam_store.meta
@@ -86,7 +91,7 @@ def get_library_sizes(dataset) -> pd.Series:
 
     Parameters
     ----------
-    dataset : QuantNado | BamStore | MultiomicsStore
+    dataset : QuantNadoDataset | BamStore
         Any QuantNado object with a coverage store attached.
 
     Returns
@@ -99,29 +104,85 @@ def get_library_sizes(dataset) -> pd.Series:
     RuntimeError
         If the store does not contain ``total_reads`` metadata.
     """
-    bam_store = _resolve_bam_store(dataset)
+    from .core import QuantNadoDataset
 
-    meta = bam_store.meta
+    if isinstance(dataset, QuantNadoDataset):
+        return _library_sizes_from_qnd(dataset)
+
+    # Legacy BamStore path (has .meta + .sample_names)
+    if hasattr(dataset, "coverage") and dataset.coverage is not None:
+        dataset = dataset.coverage
+    if not (hasattr(dataset, "meta") and hasattr(dataset, "sample_names")):
+        raise TypeError(
+            f"Cannot resolve library sizes from {type(dataset).__name__}. "
+            "Pass a QuantNadoDataset or BamStore."
+        )
+    meta = dataset.meta
     if "total_reads" not in meta:
         raise RuntimeError(
-            "This store does not contain 'total_reads' metadata (it was built before "
-            "library-size tracking was added). Either rebuild the store from BAM files, "
-            "or pass library_sizes explicitly to normalise()."
+            "This store does not contain 'total_reads' metadata. "
+            "Rebuild from BAM files or pass library_sizes explicitly."
         )
+    reads = meta["total_reads"][:].astype(float)
+    reads[~dataset.completed_mask] = np.nan
+    return pd.Series(reads, index=dataset.sample_names, name="library_size")
 
-    reads = meta["total_reads"][:].astype(np.int64)
-    completed = bam_store.completed_mask
-    reads_float = reads.astype(float)
-    reads_float[~completed] = np.nan
-    return pd.Series(reads_float, index=bam_store.sample_names, name="library_size")
+
+def _library_sizes_from_qnd(dataset) -> pd.Series:
+    """Extract library sizes from a QuantNadoDataset."""
+    if dataset._combined:
+        meta = dataset._combined_root.get("metadata")
+        if meta is None or "total_reads" not in meta:
+            raise RuntimeError(
+                "Combined store does not contain 'total_reads' metadata. "
+                "Rebuild from per-sample stores or pass library_sizes explicitly."
+            )
+        reads = meta["total_reads"][:].astype(float)
+        return pd.Series(reads, index=dataset.sample_names, name="library_size")
+
+    sizes: dict[str, float] = {}
+    for store in dataset._stores:
+        reads = float(store.total_reads) if store.total_reads else np.nan
+        if store.viewpoints:
+            for vp in store.viewpoints:
+                sizes[f"{store.sample}_{vp}"] = reads
+        else:
+            sizes[store.sample] = reads
+    return pd.Series(sizes, name="library_size")
+
+
+def _mean_read_lengths_from_qnd(dataset) -> pd.Series:
+    """Extract mean read lengths from a QuantNadoDataset."""
+    if dataset._combined:
+        meta = dataset._combined_root.get("metadata")
+        if meta is None or "mean_read_length" not in meta:
+            raise RuntimeError(
+                "Combined store does not contain 'mean_read_length' metadata. "
+                "Rebuild from per-sample stores or pass mean_read_lengths explicitly."
+            )
+        lengths = meta["mean_read_length"][:].astype(float)
+        completed = dataset.completed_mask
+        lengths[~completed] = np.nan
+        return pd.Series(lengths, index=dataset.sample_names, name="mean_read_length")
+
+    lengths_dict: dict[str, float] = {}
+    for store in dataset._stores:
+        if store.mean_read_length and not np.isnan(store.mean_read_length):
+            mrl = float(store.mean_read_length)
+        else:
+            mrl = np.nan
+        if store.viewpoints:
+            for vp in store.viewpoints:
+                lengths_dict[f"{store.sample}_{vp}"] = mrl
+        else:
+            lengths_dict[store.sample] = mrl
+    return pd.Series(lengths_dict, name="mean_read_length")
 
 
 def _resolve_bam_store(dataset):
-    """Extract a BamStore from any QuantNado-family object."""
-    # QuantNado API facade
+    """Extract a BamStore from any QuantNado-family object (legacy helper)."""
     if hasattr(dataset, "coverage") and dataset.coverage is not None:
         return dataset.coverage
-    # BamStore directly (has meta + sample_names)
     if hasattr(dataset, "meta") and hasattr(dataset, "sample_names"):
         return dataset
     raise TypeError(

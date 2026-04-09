@@ -723,6 +723,7 @@ def _compute_islands_for_sample_chrom(
 def call_seacr_peaks_from_zarr(
     zarr_path: Path,
     output_dir: Path,
+    assay: Optional[str] = None,
     control_zarr_path: Optional[Path] = None,
     fdr_threshold: float = 0.01,
     norm: str = "non",
@@ -731,7 +732,7 @@ def call_seacr_peaks_from_zarr(
     n_workers: int = 1,
     device: str | None = None,
 ) -> list[str]:
-    """Call SEACR peaks from a QuantNado zarr coverage store (pure Python).
+    """Call SEACR peaks from a QuantNado zarr store (pure Python).
 
     Replicates SEACR_1.3.sh + SEACR_1.3.R without calling any external
     R/bash processes.  Raw read counts are used directly — SEACR operates on
@@ -760,7 +761,7 @@ def call_seacr_peaks_from_zarr(
     n_workers:
         Number of parallel processes for chromosome-level island computation (default: 1).
     """
-    from ..dataset.store_coverage import BamStore
+    from ..analysis.core import QuantNadoDataset
     from ._device import get_device as _get_device
 
     zarr_path = Path(zarr_path)
@@ -774,13 +775,11 @@ def call_seacr_peaks_from_zarr(
     if norm not in ("norm", "non"):
         raise ValueError(f"norm must be 'norm' or 'non', got {norm!r}")
 
-    store = BamStore.open(zarr_path, read_only=True)
-    chromsizes = {chrom: size for chrom, size in store.chromsizes.items() if "_" not in chrom}
+    qn = QuantNadoDataset(zarr_path)
+    assay_key = assay or qn.assays[0]
+    chromsizes = {c: s for c, s in qn.chromsizes.items() if "_" not in c}
 
-    sample_names = store.sample_names
-    completed = store.completed_mask
-    valid_samples = [s for s, c in zip(sample_names, completed) if c]
-    valid_indices = [i for i, c in enumerate(completed) if c]
+    valid_samples = qn.sample_names  # QuantNadoDataset already filters to completed
 
     if not valid_samples:
         logger.error("No completed samples found in store.")
@@ -800,14 +799,14 @@ def call_seacr_peaks_from_zarr(
     if n_workers == 1:
         # Sequential chromosome processing, one sample at a time (memory-efficient)
         for chrom, chrom_len in chromsizes.items():
-            if chrom not in store.chromosomes:
+            if chrom not in qn.chromosomes:
                 continue
             logger.debug(f"Computing islands for {chrom} ({chrom_len:,} bp)")
-            chrom_arr = store.root[chrom]
+            ds_chrom = qn.sel(chrom=chrom)
+            cov_matrix = ds_chrom[assay_key].values.astype(np.float32)  # (n_samples, chrom_len)
 
-            for idx, sample in zip(valid_indices, valid_samples):
-                # Load and process one sample per chromosome to avoid large memory allocation
-                cov = chrom_arr[idx:idx+1, :chrom_len].astype(np.float32).ravel()
+            for i, sample in enumerate(valid_samples):
+                cov = cov_matrix[i, :]
                 islands_df = _compute_islands(cov, chrom)
                 if islands_df is not None:
                     islands_by_sample[sample].append(islands_df)
@@ -815,26 +814,20 @@ def call_seacr_peaks_from_zarr(
         # Parallel processing via ProcessPoolExecutor (one sample-chromosome per task)
         from concurrent.futures import ProcessPoolExecutor
 
-        # Build task list: (sample_idx, sample_name, chrom, chrom_len)
         tasks = []
         for chrom, chrom_len in chromsizes.items():
-            if chrom not in store.chromosomes:
+            if chrom not in qn.chromosomes:
                 continue
-            for sample_idx, sample in zip(valid_indices, valid_samples):
-                tasks.append((sample_idx, sample, chrom, chrom_len))
+            ds_chrom = qn.sel(chrom=chrom)
+            cov_matrix = ds_chrom[assay_key].values.astype(np.float32)
+            for i, sample in enumerate(valid_samples):
+                tasks.append((cov_matrix[i, :].copy(), sample, chrom))
 
-        # Submit futures
-        chrom_arr_cache = {}  # cache zarr arrays to avoid re-opening
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {}
-            for sample_idx, sample, chrom, chrom_len in tasks:
-                if chrom not in chrom_arr_cache:
-                    chrom_arr_cache[chrom] = store.root[chrom]
-                chrom_arr = chrom_arr_cache[chrom]
-                cov = chrom_arr[sample_idx:sample_idx+1, :chrom_len].astype(np.float32).ravel()
-                future = executor.submit(_compute_islands_for_sample_chrom, cov, sample, chrom)
-                futures[future] = sample
-
+            futures = {
+                executor.submit(_compute_islands_for_sample_chrom, cov, sample, chrom): sample
+                for cov, sample, chrom in tasks
+            }
             for future in futures:
                 sample, islands_df = future.result()
                 if islands_df is not None:
@@ -846,25 +839,21 @@ def call_seacr_peaks_from_zarr(
     ctrl_islands_df: pd.DataFrame | None = None
 
     if control_zarr_path is not None:
-        ctrl_store = BamStore.open(Path(control_zarr_path), read_only=True)
-        ctrl_samples = [s for s, c in zip(ctrl_store.sample_names, ctrl_store.completed_mask) if c]
-        ctrl_indices = [i for i, c in enumerate(ctrl_store.completed_mask) if c]
+        ctrl_qn = QuantNadoDataset(Path(control_zarr_path))
+        ctrl_assay_key = assay_key if assay_key in ctrl_qn.assays else ctrl_qn.assays[0]
+        ctrl_samples = ctrl_qn.sample_names
 
         if not ctrl_samples:
             logger.warning("No completed samples in control zarr; falling back to FDR threshold.")
         else:
             ctrl_islands_parts: list[pd.DataFrame] = []
             for chrom, chrom_len in chromsizes.items():
-                if chrom not in ctrl_store.chromosomes:
+                if chrom not in ctrl_qn.chromosomes:
                     continue
-                ctrl_arr = ctrl_store.root[chrom]
-                # Load control samples one at a time and average to minimize memory
-                ctrl_mean = np.zeros(chrom_len, dtype=np.float64)
-                for idx in ctrl_indices:
-                    ctrl_mean += ctrl_arr[idx:idx+1, :chrom_len].astype(np.float64).ravel()
-                ctrl_mean /= len(ctrl_indices)
-                # Call islands on averaged control signal
-                islands_df = _compute_islands(ctrl_mean.astype(np.float32), chrom)
+                ds_ctrl_chrom = ctrl_qn.sel(chrom=chrom)
+                ctrl_cov = ds_ctrl_chrom[ctrl_assay_key].values.astype(np.float64)  # (n_ctrl, chrom_len)
+                ctrl_mean = ctrl_cov.mean(axis=0).astype(np.float32)
+                islands_df = _compute_islands(ctrl_mean, chrom)
                 if islands_df is not None:
                     ctrl_islands_parts.append(islands_df)
 

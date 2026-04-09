@@ -1,4 +1,4 @@
-from ..dataset.core import BaseStore
+from .core import QuantNadoDataset
 from .counts import count_features
 from .features import (
     annotate_intervals,

@@ -92,3 +92,73 @@ def ranges_loader(
         ranges = ranges.merge_overlaps()
 
     return ranges
+
+
+def extract_signal_into_bins(
+    intervals: list[tuple[str, int, int]],
+    dataset,
+    assay: str,
+    bin_size: int,
+    samples: list[str] | None = None,
+) -> np.ndarray:
+    """Extract signal from dataset into fixed-width bins over intervals.
+
+    Parameters
+    ----------
+    intervals : list of (chrom, start, end) tuples
+        1-based inclusive genomic intervals.
+    dataset : QuantNadoDataset
+        Dataset to extract signal from.
+    assay : str
+        Assay name (e.g., "atac", "chip_h3k27ac", "rna_fwd").
+    bin_size : int
+        Width of each bin in bp.
+    samples : list of str, optional
+        Sample names to extract. If None, uses all samples.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_intervals, n_bins, n_samples) with summed signal per bin.
+    """
+    import xarray as xr
+
+    if samples is None:
+        samples = dataset.sample_names
+
+    n_intervals = len(intervals)
+    n_samples = len(samples)
+
+    # Determine n_bins from first interval
+    if not intervals:
+        raise ValueError("No intervals provided")
+
+    _, start, end = intervals[0]
+    interval_width = end - start + 1
+    n_bins = max(1, interval_width // bin_size)
+
+    output = np.zeros((n_intervals, n_bins, n_samples), dtype=np.float32)
+
+    for i, (chrom, start, end) in enumerate(intervals):
+        try:
+            region = dataset.sel(chrom=chrom, start=start, end=end)
+        except (ValueError, KeyError):
+            continue
+
+        if assay not in region.data_vars:
+            continue
+
+        signal = region[assay].sel(sample=samples).values  # (n_samples, n_pos)
+        if signal.ndim == 1:
+            signal = signal[np.newaxis, :]  # (1, n_pos) -> (1, n_pos)
+
+        signal = signal.T  # (n_pos, n_samples)
+        n_pos = signal.shape[0]
+
+        # Divide into bins, summing within each bin
+        for j in range(n_bins):
+            bin_start = j * bin_size
+            bin_end = min((j + 1) * bin_size, n_pos)
+            output[i, j, :] = signal[bin_start:bin_end, :].sum(axis=0)
+
+    return output

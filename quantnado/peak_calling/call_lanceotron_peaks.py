@@ -672,6 +672,7 @@ def _process_chromosome(
 def _process_one_sample(
     sample: str,
     ds: "QuantNadoDataset",  # type: ignore
+    assay_key: str,
     library_sizes: "pd.Series",  # type: ignore
     chromosomes: list[str],
     model: "LanceOtronModel",  # type: ignore
@@ -696,9 +697,8 @@ def _process_one_sample(
         if chrom_len == 0:
             continue
 
-        # Raw coverage: uint32 array shape (1, chrom_len) → squeeze
-        raw = ds.extract_region(chrom=chrom, samples=[sample], as_xarray=False)
-        cov = raw[0]  # (chrom_len,)
+        ds_chrom = ds.sel(chrom=chrom)
+        cov = ds_chrom[assay_key].sel(sample=sample).values.astype(np.float32)  # (chrom_len,)
 
         norm_cov = _rpkm_normalise(cov, total_reads)
 
@@ -727,6 +727,7 @@ def _process_one_sample(
 def call_lanceotron_peaks_from_zarr(
     zarr_path: Path,
     output_dir: Path,
+    assay: Optional[str] = None,
     score_threshold: float = 0.5,
     blacklist_file: Optional[Path] = None,
     smooth_window: int = SMOOTH_WINDOW,
@@ -762,7 +763,7 @@ def call_lanceotron_peaks_from_zarr(
     list[str]
         Paths of output BED files written.
     """
-    from ..dataset.core import QuantNadoDataset
+    from ..analysis.core import QuantNadoDataset
     from ..analysis.normalise import get_library_sizes
 
     zarr_path = Path(zarr_path)
@@ -783,9 +784,10 @@ def call_lanceotron_peaks_from_zarr(
 
     # ── open dataset ─────────────────────────────────────────────────────
     ds = QuantNadoDataset(zarr_path)
+    assay_key = assay or ds.assays[0]
     library_sizes = get_library_sizes(ds)
 
-    valid_samples = [s for s, c in zip(ds.sample_names, ds.completed_mask) if c]
+    valid_samples = ds.sample_names  # QuantNadoDataset already filters to completed
     if not valid_samples:
         logger.error("No completed samples in store.")
         return []
@@ -839,6 +841,7 @@ def call_lanceotron_peaks_from_zarr(
             all_peaks = _process_one_sample(
                 sample=sample,
                 ds=ds,
+                assay_key=assay_key,
                 library_sizes=library_sizes,
                 chromosomes=chromosomes,
                 model=model,
@@ -864,6 +867,7 @@ def call_lanceotron_peaks_from_zarr(
                     _process_one_sample,
                     sample=sample,
                     ds=ds,
+                    assay_key=assay_key,
                     library_sizes=library_sizes,
                     chromosomes=chromosomes,
                     model=model,

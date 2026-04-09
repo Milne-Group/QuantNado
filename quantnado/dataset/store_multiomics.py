@@ -11,6 +11,8 @@ import zarr
 from .store_coverage import BamStore
 from .store_methyl import MethylStore
 from .store_variants import VariantStore
+from .combine_multiomics import combine_multiomics_stores
+from loguru import logger
 
 
 class MultiomicsStore:
@@ -53,6 +55,148 @@ class MultiomicsStore:
                     self.variants = VariantStore.open(self.store_dir)
             except (OSError, ValueError):
                 pass
+
+    @classmethod
+    def from_files(
+        cls,
+        store_dir: Path | str,
+        bam_files: list[str | Path] | None = None,
+        methyldackel_files: list[str | Path] | None = None,
+        cxreport_files: list[str | Path] | None = None,
+        mc_files: list[str | Path] | None = None,
+        hmc_files: list[str | Path] | None = None,
+        vcf_files: list[str | Path] | None = None,
+        chromsizes: str | Path | dict[str, int] | None = None,
+        metadata: pd.DataFrame | Path | str | None = None,
+        bam_sample_names: list[str] | None = None,
+        methyldackel_sample_names: list[str] | None = None,
+        cxreport_sample_names: list[str] | None = None,
+        mc_hmc_sample_names: list[str] | None = None,
+        vcf_sample_names: list[str] | None = None,
+        filter_chromosomes: bool = True,
+        test: bool = False,
+        overwrite: bool = True,
+        resume: bool = False,
+        chunk_len: int = 65536,
+        n_workers: int = 1,
+        sample_column: str = "sample_id",
+        stranded: dict[str, bool] | list[str] | None = None,
+        use_fragment: bool = False,
+        read_filter: int | None = None,
+        coverage_type: dict[str, str] | None = None,
+        construction_compression: str = "zstd",
+        local_staging: bool = False,
+        staging_dir: str | Path | None = None,
+        log_file: str | Path | None = None,
+    ) -> "MultiomicsStore":
+        """Create multiomics store from individual BAM, methylation, and VCF files.
+
+        Creates separate stores for each data type, then combines them into a unified
+        multiomics dataset.
+        """
+        store_dir = Path(store_dir)
+        store_dir.mkdir(parents=True, exist_ok=True)
+
+        individual_stores = {}
+
+        # Create coverage store
+        if bam_files:
+            cov_path = store_dir / "coverage.zarr"
+            logger.info(f"Creating coverage store at {cov_path}")
+            BamStore.from_bam_files(
+                bam_files=bam_files,
+                store_path=cov_path,
+                bam_sample_names=bam_sample_names,
+                metadata=metadata,
+                chromsizes=chromsizes,
+                filter_chromosomes=filter_chromosomes,
+                test=test,
+                overwrite=overwrite,
+                resume=resume,
+                chunk_len=chunk_len,
+                coverage_type=coverage_type,
+                sample_column=sample_column,
+                construction_compression=construction_compression,
+                local_staging=local_staging,
+                staging_dir=staging_dir,
+                log_file=log_file,
+            )
+            individual_stores["coverage"] = [cov_path]
+
+        # Create methylation store
+        if methyldackel_files or cxreport_files or mc_files or hmc_files:
+            meth_path = store_dir / "methylation.zarr"
+            logger.info(f"Creating methylation store at {meth_path}")
+
+            if methyldackel_files:
+                MethylStore.from_bedgraph_files(
+                    methyldackel_files=methyldackel_files,
+                    store_path=meth_path,
+                    sample_names=methyldackel_sample_names,
+                    metadata=metadata,
+                    filter_chromosomes=filter_chromosomes,
+                    test=test,
+                    overwrite=overwrite,
+                    resume=resume,
+                    sample_column=sample_column,
+                )
+            elif cxreport_files:
+                MethylStore.from_cxreport_files(
+                    cxreport_files=cxreport_files,
+                    store_path=meth_path,
+                    sample_names=cxreport_sample_names,
+                    metadata=metadata,
+                    filter_chromosomes=filter_chromosomes,
+                    test=test,
+                    overwrite=overwrite,
+                    resume=resume,
+                    sample_column=sample_column,
+                )
+            elif mc_files or hmc_files:
+                MethylStore.from_split_cxreport_files(
+                    mc_files=mc_files,
+                    hmc_files=hmc_files,
+                    store_path=meth_path,
+                    sample_names=mc_hmc_sample_names,
+                    metadata=metadata,
+                    filter_chromosomes=filter_chromosomes,
+                    test=test,
+                    overwrite=overwrite,
+                    resume=resume,
+                    sample_column=sample_column,
+                )
+
+            individual_stores["methylation"] = [meth_path]
+
+        # Create variant store
+        if vcf_files:
+            var_path = store_dir / "variants.zarr"
+            logger.info(f"Creating variant store at {var_path}")
+            VariantStore.from_vcf_files(
+                vcf_files=vcf_files,
+                store_path=var_path,
+                sample_names=vcf_sample_names,
+                metadata=metadata,
+                filter_chromosomes=filter_chromosomes,
+                test=test,
+                overwrite=overwrite,
+                resume=resume,
+                sample_column=sample_column,
+            )
+            individual_stores["variants"] = [var_path]
+
+        # Combine stores
+        if individual_stores:
+            combined_path = store_dir / "multiomics.zarr"
+            logger.info(f"Combining stores into {combined_path}")
+            combine_multiomics_stores(
+                stores=individual_stores,
+                output_path=combined_path,
+                overwrite=overwrite,
+            )
+
+        # Open and return
+        return cls(store_dir)
 
     @property
     def modalities(self) -> list[str]:

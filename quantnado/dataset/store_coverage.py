@@ -1,6 +1,10 @@
+from __future__ import annotations
+
+# Shim — BamStore and enums moved to dataset/store_bam.py
+from .store_bam import BamStore, CoverageType, Strandedness  # noqa: F401
+
 """BamStore — Zarr-backed per-base coverage store constructed from BAM files."""
 
-from __future__ import annotations
 
 import hashlib
 import json
@@ -11,7 +15,7 @@ import uuid
 import warnings
 from enum import StrEnum
 from pathlib import Path
-from typing import Iterable, Any
+from typing import Any, Iterable
 
 import bamnado
 import numpy as np
@@ -23,6 +27,7 @@ from zarr.codecs import BloscCodec
 from zarr.storage import LocalStore, ZipStore
 
 from quantnado.utils import estimate_chunk_len, is_network_fs
+
 from .core import BaseStore
 from .utils import _compute_sample_hash, _parse_chromsizes
 
@@ -230,8 +235,6 @@ def _collect_bam_stats(bam_file: str) -> tuple[str, int, float]:
 def _get_chromsizes_from_bam(bam_path: Path | str) -> dict[str, int]:
     with pysam.AlignmentFile(str(bam_path), "rb") as sam:
         return {ref: length for ref, length in zip(sam.references, sam.lengths)}
-
-
 
 
 # ---------------------------------------------------------------------------

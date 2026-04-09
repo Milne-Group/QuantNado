@@ -15,11 +15,9 @@ build/
 # Allow test data BAM files
 !tests/data/
 !tests/data/**
-example/multiomics_run/
+
+multiomics_run/
 logs/
-modality
-my_test/
-notebooks/
 site/
 sps*
 

@@ -7,7 +7,7 @@ from typing import Iterable
 from loguru import logger
 from functools import lru_cache
 
-from ..dataset.utils import FeatureType
+from ..dataset.metadata import FeatureType
 
 
 """GTF utilities using PyRanges to extract feature ranges (genes/transcripts)

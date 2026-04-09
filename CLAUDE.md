@@ -1,6 +1,6 @@
 # QuantNado — Codebase Guide
 
-High-performance genomic signal quantification and peak calling. Stores per-bp coverage in Zarr v3 format and provides Python / CLI APIs for signal analysis.
+High-performance genomic signal quantification. Stores per-bp coverage in Zarr v3 format with a unified multiomics read API backed by xarray.
 
 ---
 
@@ -27,9 +27,6 @@ uv run pytest tests -m cli
 # Lint
 uv run ruff check .
 uv run ruff format .
-
-# Docs
-uv run mkdocs serve
 ```
 
 ---
@@ -38,116 +35,249 @@ uv run mkdocs serve
 
 ```
 quantnado/
-├── dataset/              # Zarr store construction (write path)
-│   ├── store_bam.py      # BamStore — per-chromosome uint32 coverage arrays
-│   ├── store_methyl.py   # Methylation store
-│   ├── store_variants.py # VCF/variant store
-│   ├── store_multiomics.py
-│   └── metadata.py       # Zarr metadata extraction helpers
-├── analysis/             # Read/analysis API (use this, not dataset/ directly)
-│   ├── core.py           # QuantNadoDataset — lightweight read-only Zarr wrapper
+├── dataset/              # Write path — one builder per assay type
+│   ├── store_bam.py      # BamStore — ATAC, ChIP, CUT&TAG, RNA, MCC
+│   ├── store_methyl.py   # MethylStore — TAPS/WGBS (coverage + methylation)
+│   ├── store_variants.py # VariantStore — SNP/VCF
+│   └── metadata.py       # Zarr metadata helpers + domain enums
+├── analysis/             # Read path — use this, not dataset/ directly
+│   ├── core.py           # QuantNadoDataset — unified read-only xarray view
 │   ├── normalise.py      # get_library_sizes(), normalise() (CPM/RPKM/TPM)
 │   ├── reduce.py         # Signal aggregation over BED/GTF ranges
-│   ├── features.py       # Feature-level extraction
+│   ├── features.py       # GTF feature extraction
 │   ├── counts.py         # Feature counting (DESeq2-compatible)
 │   ├── plot.py           # metaplot, tornadoplot, heatmap, correlate
 │   ├── pca.py            # PCA via dask-ml
 │   └── ranges.py         # Range operations
 ├── peak_calling/
 │   ├── call_quantile_peaks.py   # Quantile threshold method
-│   ├── call_seacr_peaks.py      # SEACR-style AUC island method (pure Python)
-│   ├── call_lanceotron_peaks.py # LanceOtron ML method (PyTorch)
-│   └── static/lanceotron/       # Pre-converted model weights + scaler .npy files
-├── cli.py                # Typer CLI — `quantnado call-peaks`, `create-dataset`
+│   ├── call_seacr_peaks.py      # SEACR-style AUC island method
+│   └── call_lanceotron_peaks.py # LanceOtron ML method (PyTorch)
+├── cli.py                # Typer CLI — create-dataset, call-peaks
 ├── api.py                # QuantNado facade (unified entry point)
-└── utils.py              # Logging setup, region parsing, chunk estimation
+└── utils.py              # Logging, region parsing, chunk estimation
 ```
 
 ---
 
-## Key data structures
+## Metadata table
 
-### Zarr store layout (BamStore)
+The metadata CSV/TSV is the single source of truth for store creation.
+
+| column | required | description |
+|---|---|---|
+| `assay` | yes | ATAC, ChIP, CUT&TAG, RNA, METH, SNP, MCC |
+| `sample_name` | yes | unique identifier → zarr filename |
+| `ip` | ChIP/CUT&TAG only | IP target e.g. H3K27ac, MLLN, Menin |
+| `bam_path` | all except SNP | path to aligned BAM |
+| `stranded` | RNA only | R (reverse), F (forward), U (unstranded) |
+| `methylation_path` | METH only | bedGraph from MethylDackel |
+| `variant_path` | SNP only | annotated VCF (.vcf.gz) |
+
+Example:
+
+| assay | sample_name | ip | bam_path | stranded | methylation_path | variant_path |
+|---|---|---|---|---|---|---|
+| ATAC | ATAC-SEM-1 | | aligned/ATAC-SEM-1.bam | | | |
+| ATAC | ATAC-SEM-2 | | aligned/ATAC-SEM-2.bam | | | |
+| CUT&TAG | CAT-HSC_H3K27ac | H3K27ac | aligned/CAT-HSC_H3K27ac.bam | | | |
+| CUT&TAG | CAT-HSC_MLLN | MLLN | aligned/CAT-HSC_MLLN.bam | | | |
+| ChIP | CM-RCHACV-1_MLLN | MLLN | aligned/CM-RCHACV-1_MLLN.bam | | | |
+| ChIP | CM-RCHACV-1_Menin | Menin | aligned/CM-RCHACV-1_Menin.bam | | | |
+| RNA | RNA-RCHACV-1 | | aligned/RNA-RCHACV-1.bam | R | | |
+| RNA | RNA-RCHACV-2 | | aligned/RNA-RCHACV-2.bam | R | | |
+| METH | TAPS-RCHACV | | aligned/TAPS-RCHACV.bam | | methylation/TAPS-RCHACV_CpG.bedGraph | |
+| METH | TAPS-RS411 | | aligned/TAPS-RS411.bam | | methylation/TAPS-RS411_CpG.bedGraph | |
+| SNP | gDNA-RCHACV | | | | | variant/gDNA-RCHACV.anno.vcf.gz |
+| SNP | gDNA-SEM | | | | | variant/gDNA-SEM.anno.vcf.gz |
+| MCC | MCC-OCI-AML3 | | aligned/OCI-AML3.bam | | | |
+
+---
+
+## Zarr store layout
+
+### Per-sample store
+
+Each sample gets its own `.zarr`. All stores share the same layout:
 
 ```
-root/
-├── {chrom}              # zarr array, shape (n_samples, chrom_len), dtype uint32
-│                        # chunks (1, 65536) — one sample per chunk
-├── {chrom}_fwd / _rev   # stranded arrays (optional)
-└── metadata/
-    ├── completed        # bool (n_samples,) — marks finished samples
-    ├── total_reads      # int64 (n_samples,) — mapped reads per sample
-    ├── mean_read_length # float32 (n_samples,)
-    ├── sparsity         # float (n_samples,)
-    └── sample_names     # string array
-root.attrs: sample_names, chromsizes, chunk_len, stranded
+{SampleName}.zarr/
+├── {chrom}/                          # one zarr group per chromosome
+│   └── {array_key}  (1, chrom_len)  # shape (1, chrom_len), chunks (1, 65536)
+├── metadata/
+│   ├── completed        bool    (1,)
+│   ├── total_reads      int64   (1,)
+│   ├── mean_read_length float32 (1,)
+│   └── sparsity         float32 (1,)
+└── root.attrs: assay, sample, ip, chromsizes, chunk_len, stranded
 ```
 
-### QuantNadoDataset (analysis API)
+**Array keys per assay** (written under each `{chrom}/` group):
 
-Read-only wrapper. **Always use this rather than accessing Zarr directly.**
+| Assay | Array keys | dtype | Builder | Notes |
+|---|---|---|---|---|
+| ATAC | `atac` | uint32 | BamStore | bamnado coverage |
+| ChIP | `chip_{ip}` e.g. `chip_h3k27ac` | uint32 | BamStore | assay + ip column |
+| CUT&TAG | `cat_{ip}` e.g. `cat_mlln` | uint32 | BamStore | assay + ip column |
+| RNA | `rna_fwd`, `rna_rev` | uint32 | BamStore | stranded; bamnado |
+| METH | `coverage`, `methyl_pct`, `n_methylated`, `n_total` | uint32/float32/uint32/uint32 | MethylStore | BAM + bedGraph |
+| SNP | `GT`, `DP`, `AF` (VCF FORMAT fields) | varies | VariantStore | VCF only |
+| MCC | `mcc_{viewpoint}` per viewpoint | uint32 | BamStore | VP tag filter via bamnado |
+
+**Key naming rules:**
+- ChIP/CUT&TAG: `f"{assay}_{ip}".lower().replace("&", "")` → `chip_h3k27ac`, `cat_mlln`
+- RNA: always two arrays `rna_fwd` + `rna_rev` (stranded stores only)
+- MCC: one array per viewpoint `mcc_{viewpoint}`; sample names = `{bam_name}_{viewpoint}`; `root.attrs["viewpoints"]` lists all VP names
+- SNP keys are derived from VCF FORMAT header fields
+
+### Combined store
+
+After combining, same-assay samples are stacked along axis 0 (`(1, L) × N → (N, L)`):
+
+```
+combined.zarr/
+├── {chrom}/
+│   ├── atac          (n_atac, chrom_len)  uint32
+│   ├── chip_h3k27ac  (n_chip, chrom_len)  uint32
+│   ├── rna_fwd       (n_rna,  chrom_len)  uint32
+│   ├── rna_rev       (n_rna,  chrom_len)  uint32
+│   ├── coverage      (n_meth, chrom_len)  uint32
+│   ├── methyl_pct    (n_meth, chrom_len)  float32
+│   └── GT            (n_snp,  chrom_len)  int8
+├── metadata/
+│   ├── sample_names     str array (all samples, ordered)
+│   ├── assay            str array (per sample)
+│   ├── completed        bool
+│   ├── total_reads      int64
+│   ├── mean_read_length float32
+│   └── sparsity         float32
+└── root.attrs: assays=[...], chromsizes, chunk_len
+```
+
+---
+
+## QuantNadoDataset (analysis API)
+
+**Always use this for reading — never access zarr directly.**
 
 ```python
 from quantnado.analysis.core import QuantNadoDataset
-from quantnado.analysis.normalise import get_library_sizes
 
-ds = QuantNadoDataset("/path/to/store.zarr")
-ds.sample_names        # list[str]
-ds.completed_mask      # np.ndarray[bool]
-ds.chromosomes         # list[str]  (excludes 'metadata' group)
-ds.chromsizes          # dict[str, int]
+# Open a directory of per-sample zarrs or a combined zarr — auto-detected
+qn = QuantNadoDataset("dataset/")
+qn = QuantNadoDataset("dataset/combined.zarr")
 
-# Extract whole chromosome as numpy (shape: n_samples × chrom_len)
-arr = ds.extract_region(chrom="chr1", as_xarray=False)  # uint32
+# Properties
+qn.sample_names   # list[str]
+qn.assays         # list[str]  — array keys present across stores
+qn.chromosomes    # list[str]  — excludes 'metadata' group
+qn.chromsizes     # dict[str, int]
 
-# Extract per sample
-arr = ds.extract_region(chrom="chr1", samples=["s1"], as_xarray=False)  # (1, chrom_len)
+# Region slice → xr.Dataset  (1-based coords)
+region = qn.sel(chrom="chr1", start=1_000_000, end=1_001_000)
+# xr.Dataset
+#   dims:      sample × position
+#   coords:    position=[1000000..1001000]  (1-based), sample=[...]
+#   data_vars: atac, chip_h3k27ac, rna_fwd, rna_rev, coverage, methyl_pct, GT, ...
 
-# Lazy xarray (all chroms)
-xr_dict = ds.to_xarray()  # dict[chrom -> xr.DataArray(sample, position)]
+# Standard xarray slicing
+region["atac"].sel(sample="ATAC-SEM-1")
+region.sel(position=slice(1_000_100, 1_000_200))
+region["atac"].plot()   # x-axis = genomic coords
 
-# Library sizes for RPKM etc.
-lib_sizes = get_library_sizes(ds)  # pd.Series indexed by sample name
+# Full genome → xr.DataTree  (one node per chromosome)
+tree = qn.to_datatree()
+tree["chr1"].ds.sel(position=slice(1_000_000, 2_000_000))
+
+# Combine per-sample zarrs (only completed samples included)
+QuantNadoDataset.combine("dataset/", output="dataset/combined.zarr")
 ```
 
 ---
 
-## Peak calling methods
+## Workflow
 
-All methods share the same CLI entry point and zarr-in / BED-out contract.
+### Stage 1 — Create (per-sample, parallelisable)
+
+Via Python:
+
+```python
+from quantnado.dataset.store_bam import BamStore
+from quantnado.dataset.store_methyl import MethylStore
+from quantnado.dataset.store_variants import VariantStore
+
+BamStore.from_bam_files(
+    bam_path="aligned/ATAC-SEM-1.bam",
+    store_path="dataset/ATAC-SEM-1.zarr",
+    assay="atac",
+    sample="ATAC-SEM-1",
+    chromsizes=chromsizes,
+)
+
+MethylStore.from_files(
+    bam_path="aligned/TAPS-RCHACV.bam",
+    methyl_path="methylation/TAPS-RCHACV_CpG.bedGraph",
+    store_path="dataset/TAPS-RCHACV.zarr",
+    sample="TAPS-RCHACV",
+    chromsizes=chromsizes,
+)
+
+VariantStore.from_vcf(
+    vcf_path="variant/gDNA-RCHACV.anno.vcf.gz",
+    store_path="dataset/gDNA-RCHACV.zarr",
+    sample="gDNA-RCHACV",
+    chromsizes=chromsizes,
+)
+```
+
+Or via CLI with a metadata CSV:
+
+```bash
+quantnado create-dataset \
+  --metadata samples.csv \
+  --output-dir dataset/ \
+  --chromsizes hg38.chrom.sizes
+```
+
+### Stage 2 — Combine (optional)
+
+```python
+QuantNadoDataset.combine("dataset/", output="dataset/combined.zarr")
+# stacks (1, chrom_len) × N → (N, chrom_len) per assay
+# only completed samples included
+```
+
+`QuantNadoDataset` reads both formats with the same API.
+
+---
+
+## Peak calling
+
+All callers: `QuantNadoDataset` in, one BED file per sample out.
 
 | Method | File | Use case |
-|--------|------|----------|
-| `quantile` | `call_quantile_peaks.py` | Fast, simple threshold on tiled signal |
+|---|---|---|
+| `quantile` | `call_quantile_peaks.py` | Fast, simple threshold |
 | `seacr` | `call_seacr_peaks.py` | AUC island calling (CUT&RUN/ATAC) |
-| `lanceotron` | `call_lanceotron_peaks.py` | ML classifier (ChIP-seq / broad marks) |
-
-### CLI
+| `lanceotron` | `call_lanceotron_peaks.py` | ML classifier (ChIP-seq) |
 
 ```bash
 quantnado call-peaks \
-  --zarr <path>                 # QuantNado zarr store
-  --method [quantile|seacr|lanceotron]
+  --zarr <path> \
+  --method [quantile|seacr|lanceotron] \
+  --assay atac \
   --output-dir <path>
-
-# lanceotron-specific
-  --score-threshold 0.5         # overall_classification cutoff
-  --smooth-window 400           # rolling mean window for candidates (bp)
-  --batch-size 512              # inference batch size
 ```
 
----
-
-## Adding a new peak caller
+### Adding a new peak caller
 
 1. Create `quantnado/peak_calling/call_{name}_peaks.py`
-2. Implement a `call_{name}_peaks_from_zarr(zarr_path, output_dir, ...) -> list[str]` entry point that:
-   - Opens the store with `QuantNadoDataset`
-   - Iterates `valid_samples = [s for s, c in zip(ds.sample_names, ds.completed_mask) if c]`
-   - Writes one BED file per sample to `output_dir`
-   - Returns list of output paths
-3. Add `elif method == "{name}":` dispatch in `cli.py`
-4. Expose from `peak_calling/__init__.py`
+2. Implement `call_{name}_peaks_from_zarr(zarr_path, output_dir, assay, ...) -> list[str]`:
+   - Open with `QuantNadoDataset(zarr_path)`
+   - Iterate valid samples (where `completed` is True)
+   - Write one BED per sample to `output_dir`
+3. Add `elif method == "{name}":` in `cli.py`
+4. Export from `peak_calling/__init__.py`
 
 ---
 
@@ -155,8 +285,8 @@ quantnado call-peaks \
 
 Core: `zarr>=3`, `numpy`, `pandas`, `xarray`, `dask`, `scipy`, `pyranges1`, `loguru`, `typer`, `bamnado`, `pysam`
 
-Optional extras:
-- `pip install quantnado[lanceotron]` → adds `torch>=2.0`, `scipy`
+Optional:
+- `pip install quantnado[lanceotron]` → adds `torch>=2.0`
 - Dev: `pytest`, `ruff`, `mkdocs-material`
 
 ---
@@ -166,8 +296,6 @@ Optional extras:
 ```
 tests/
 ├── unit/          # Pure-numpy / no I/O  (pytest -m unit)
-├── integration/   # Requires BamStore    (pytest -m integration)
-└── cli/           # CLI smoke tests      (pytest -m cli)
+├── integration/   # Requires real zarr stores  (pytest -m integration)
+└── cli/           # CLI smoke tests  (pytest -m cli)
 ```
-
-Run: `uv run pytest` from project root (respects `testpaths = ["tests"]` in `pyproject.toml`).

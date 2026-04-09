@@ -105,21 +105,28 @@ def call_quantile_peaks(
     return pr_obj if len(pr_obj) > 0 else None
 
 
-def call_peaks_from_zarr(
+def call_quantile_peaks_from_zarr(
     zarr_path: Path,
     output_dir: Path,
+    assay: Optional[str] = None,
     blacklist_file: Optional[Path] = None,
     tilesize: int = 128,
     window_overlap: int = 8,
     quantile: float = 0.98,
     merge: bool = True,
 ) -> list[str]:
-    """Call quantile-based peaks from a QuantNado zarr coverage store.
+    """Call quantile-based peaks from a QuantNado zarr store.
 
     Reads per-base coverage from zarr, computes mean depth in sliding windows,
     applies RPKM normalisation (mean_depth × 1e9 / library_size), then log1p.
+
+    Parameters
+    ----------
+    assay:
+        Assay key to use (e.g. ``"atac"``, ``"chip_h3k27ac"``). Defaults to the
+        first assay found in the store.
     """
-    from ..dataset.store_coverage import BamStore
+    from ..analysis.core import QuantNadoDataset
     from ..analysis.normalise import get_library_sizes
 
     zarr_path = Path(zarr_path)
@@ -135,18 +142,12 @@ def call_peaks_from_zarr(
         )
     step = tilesize - window_overlap
 
-    store = BamStore.open(zarr_path, read_only=True)
-    chromsizes = {
-        chrom: size
-        for chrom, size in store.chromsizes.items()
-        if "_" not in chrom
-    }
+    qn = QuantNadoDataset(zarr_path)
+    assay_key = assay or qn.assays[0]
+    chromsizes = {c: s for c, s in qn.chromsizes.items() if "_" not in c}
 
-    library_sizes = get_library_sizes(store)
-    sample_names = store.sample_names
-    completed = store.completed_mask
-    valid_samples = [s for s, c in zip(sample_names, completed) if c]
-    valid_indices = [i for i, c in enumerate(completed) if c]
+    library_sizes = get_library_sizes(qn)
+    valid_samples = qn.sample_names  # QuantNadoDataset already filters to completed
 
     if not valid_samples:
         logger.error("No completed samples found in store.")
@@ -164,15 +165,15 @@ def call_peaks_from_zarr(
     tile_coord_parts: list[tuple[str, np.ndarray, np.ndarray]] = []
 
     for chrom, chrom_len in chromsizes.items():
-        if chrom not in store.chromosomes:
+        if chrom not in qn.chromosomes:
             continue
         logger.debug(
             f"Sliding-window tiling {chrom} ({chrom_len:,} bp): size={tilesize}, overlap={window_overlap}, step={step}"
         )
 
-        chrom_arr = store.root[chrom]
-        # shape: (n_valid_samples, chrom_len)
-        cov = chrom_arr[valid_indices, :chrom_len].astype(np.float32)
+        ds_chrom = qn.sel(chrom=chrom)
+        # shape: (n_samples, chrom_len)
+        cov = ds_chrom[assay_key].values.astype(np.float32)
 
         tile_starts = np.arange(0, chrom_len, step, dtype=np.int64)
         tile_ends = np.minimum(tile_starts + tilesize, chrom_len).astype(np.int64)

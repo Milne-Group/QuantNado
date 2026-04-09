@@ -1,3 +1,3 @@
-from .call_quantile_peaks import call_peaks_from_zarr
+from .call_quantile_peaks import call_quantile_peaks_from_zarr
 from .call_lanceotron_peaks import call_lanceotron_peaks_from_zarr
 from ._device import get_device
