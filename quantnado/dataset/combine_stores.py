@@ -140,9 +140,14 @@ def combine_bam_stores(
 
     all_chroms = sorted(all_chromsizes.keys())
 
-    # Detect store layout: new (coverage/ group, shape (chrom_len, n_samples)) vs
-    # old (chromosomes at root, shape (n_samples, chrom_len))
-    _new_layout = "coverage" in ref.root
+    # Detect store layout:
+    #   flat  — coverage is a zarr Array (new unified layout)
+    #   group — coverage is a zarr Group with per-chrom sub-arrays
+    #   old   — chromosomes stored at root, shape (n_samples, chrom_len)
+    _ref_cov = ref.root.get("coverage")
+    _flat_layout = isinstance(_ref_cov, zarr.Array)
+    _new_layout = isinstance(_ref_cov, zarr.Group)
+    _layout_label = "flat" if _flat_layout else ("group" if _new_layout else "old")
 
     # Per-sample stores use large chunks for sequential writes; use the standard
     # analysis chunk size for the combined output so individual chunks are manageable.
@@ -155,30 +160,66 @@ def combine_bam_stores(
 
     logger.info(
         f"Combining {n_total} samples across {len(all_chroms)} chromosomes "
-        f"with chunk_len={out_chunk_len} ({'new' if _new_layout else 'old'} layout)"
+        f"with chunk_len={out_chunk_len} ({_layout_label} layout)"
     )
 
     # --- Build output store ---
     out_store = LocalStore(str(_write_path))
     out_root = zarr.group(store=out_store, overwrite=True, zarr_format=3)
 
-    # Copy root attrs from first store, updating sample-level fields
+    # Copy root attrs, updating combined-store fields
     src_attrs = dict(ref.root.attrs)
     src_attrs["sample_names"] = all_sample_names
     src_attrs["n_samples"] = n_total
     src_attrs["chromsizes"] = all_chromsizes
     src_attrs["chunk_len"] = out_chunk_len
-    # sample_names_hash is per-sample; clear it — will be rebuilt from metadata
     src_attrs.pop("sample_names_hash", None)
+    if _flat_layout:
+        from quantnado.dataset.store_coverage import _build_contig_offsets
+        all_contig_offsets = _build_contig_offsets(
+            {c: all_chromsizes[c] for c in sorted(all_chromsizes)}
+        )
+        src_attrs["contig_offsets"] = all_contig_offsets
     out_root.attrs.update(src_attrs)
 
     # --- Write chromosome arrays ---
-    # Use direct numpy writes rather than dask.store to avoid:
-    #   1. dask concatenate3 overhead (graph construction + scheduler)
-    #   2. Zarr's per-chunk array_equal empty-check (19s in profiling) by setting
-    #      write_empty_chunks=True — we're writing real data so always write.
     with zarr.config.set({"array.write_empty_chunks": True}):
-        if _new_layout:
+        if _flat_layout:
+            total_len = sum(all_chromsizes.values())
+            # Collect all flat coverage array keys (coverage, coverage_fwd, coverage_rev)
+            flat_keys = sorted({
+                key
+                for ds in datasets
+                for key in ds.root.keys()
+                if key != "metadata"
+                and isinstance(ds.root[key], zarr.Array)
+                and key.startswith("coverage")
+            })
+            for akey in flat_keys:
+                logger.info(f"Writing flat {akey} ({total_len:,} x {n_total})")
+                out_arr = out_root.create_array(
+                    name=akey,
+                    shape=(total_len, n_total),
+                    chunks=(out_chunk_len, n_total),
+                    dtype=np.uint32,
+                    fill_value=0,
+                    overwrite=True,
+                )
+                col = 0
+                for ds in datasets:
+                    n = len(ds.sample_names)
+                    if akey not in ds.root or not isinstance(ds.root[akey], zarr.Array):
+                        col += n
+                        continue
+                    src_arr = ds.root[akey]
+                    src_offsets = ds.root.attrs.get("contig_offsets", {})
+                    for chrom in all_chroms:
+                        dst_s, dst_e = all_contig_offsets[chrom]
+                        if chrom in src_offsets:
+                            src_s, src_e = src_offsets[chrom]
+                            out_arr[dst_s:dst_e, col : col + n] = src_arr[src_s:src_e, :]
+                    col += n
+        elif _new_layout:
             cov_groups = sorted(
                 {
                     gkey
@@ -190,7 +231,12 @@ def combine_bam_stores(
             for gkey in cov_groups:
                 out_cov_group = out_root.require_group(gkey)
                 all_chroms_in_group = sorted(
-                    {chrom for ds in datasets if gkey in ds.root for chrom in ds.root[gkey].keys()}
+                    {
+                        chrom
+                        for ds in datasets
+                        if gkey in ds.root and isinstance(ds.root[gkey], zarr.Group)
+                        for chrom in ds.root[gkey].keys()
+                    }
                 )
                 for chrom in all_chroms_in_group:
                     logger.info(f"Writing {gkey}/{chrom}")
@@ -206,7 +252,11 @@ def combine_bam_stores(
                     col = 0
                     for ds in datasets:
                         n = len(ds.sample_names)
-                        if gkey in ds.root and chrom in ds.root[gkey]:
+                        if (
+                            gkey in ds.root
+                            and isinstance(ds.root[gkey], zarr.Group)
+                            and chrom in ds.root[gkey]
+                        ):
                             out_arr[:, col : col + n] = ds.root[gkey][chrom][:]
                         col += n
         else:

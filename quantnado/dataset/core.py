@@ -134,10 +134,19 @@ class BaseStore:
 
     @property
     def chromosomes(self) -> list[str]:
-        """List of chromosome names (from coverage/ group)."""
+        """List of chromosome names."""
         if self._chromosomes is None:
-            if "coverage" in self.root and isinstance(self.root["coverage"], zarr.Group):
-                self._chromosomes = sorted(self.root["coverage"].keys())
+            if "coverage" in self.root:
+                cov = self.root["coverage"]
+                if isinstance(cov, zarr.Group):
+                    # Old group layout: keys are chrom names
+                    self._chromosomes = sorted(cov.keys())
+                else:
+                    # Flat array layout: chroms from contig_offsets attrs
+                    offsets = self.root.attrs.get("contig_offsets", {})
+                    self._chromosomes = sorted(offsets.keys()) if offsets else list(
+                        self.root.attrs.get("chromosomes", [])
+                    )
             else:
                 # Fallback: old layout or methyl/variant stores (keys excluding metadata)
                 self._chromosomes = sorted(
@@ -155,6 +164,10 @@ class BaseStore:
             stored = self.root.attrs.get("chromsizes")
             if stored is not None:
                 self._chromsizes = {str(k): int(v) for k, v in stored.items()}
+            elif "coverage" in self.root and isinstance(self.root["coverage"], zarr.Array):
+                # Flat layout: derive from contig_offsets
+                offsets = self.root.attrs.get("contig_offsets", {})
+                self._chromsizes = {c: v[1] - v[0] for c, v in offsets.items()}
             elif "coverage" in self.root and isinstance(self.root["coverage"], zarr.Group):
                 self._chromsizes = {c: self.root["coverage"][c].shape[0] for c in self.chromosomes}
             else:
@@ -307,10 +320,31 @@ class BaseStore:
     def completed_mask(self) -> np.ndarray:
         return self.completed_mask_raw
 
+    def _get_coverage_array_and_offset(
+        self, chrom: str, suffix: str = "coverage"
+    ) -> tuple[zarr.Array, int]:
+        """Return ``(zarr_array, row_offset)`` for chromosome-level coverage access.
+
+        For group layout: returns ``(root[suffix][chrom], 0)`` — array is chrom-sized.
+        For flat layout: returns ``(root[suffix], chrom_start_row)`` — array is genome-wide.
+        """
+        arr = self.root.get(suffix)
+        if arr is None:
+            raise KeyError(f"'{suffix}' not found in store")
+        if isinstance(arr, zarr.Group):
+            return arr[chrom], 0
+        else:
+            start, _ = self._contig_row_range(chrom)
+            return arr, start
+
     def get_chrom(self, chrom: str) -> zarr.Array:
-        """Return the coverage array for a chromosome: shape (chrom_len, n_samples)."""
+        """Return the coverage zarr array for a chromosome: shape (chrom_len, n_samples).
+
+        For flat-layout stores returns the whole-genome array; use
+        ``_get_coverage_array_and_offset`` for correct positional access.
+        """
         if "coverage" in self.root:
-            return self.root["coverage"][chrom]
+            return self._get_coverage_array_and_offset(chrom)[0]
         return self.root[chrom]
 
     def valid_sample_indices(self) -> np.ndarray:
@@ -358,35 +392,58 @@ class BaseStore:
 
         if chunks is None:
             first_chrom = chroms_to_extract[0]
-            zarr_arr = self.get_chrom(first_chrom)
+            zarr_arr, _ = self._get_coverage_array_and_offset(first_chrom)
             chunk_len = self.root.attrs.get("chunk_len") or zarr_arr.chunks[0]
             chunks = {"position": chunk_len, "sample": self.n_samples}
 
         metadata_df = self.metadata
+
+        # For flat layout, build the genome-wide dask array once and slice per chrom.
+        _suffix = ("coverage_fwd" if strand == "+" else "coverage_rev") if strand else "coverage"
+        _cov_arr = self.root.get(_suffix)
+        _flat = isinstance(_cov_arr, zarr.Array)
+        _full_dask = da.from_zarr(_cov_arr) if _flat else None
 
         result = {}
         for chrom in chroms_to_extract:
             chrom_size = self.chromsizes[chrom]
             if strand is not None:
                 suffix = "coverage_fwd" if strand == "+" else "coverage_rev"
-                if suffix not in self.root or chrom not in self.root[suffix]:
+                if suffix not in self.root:
+                    raise RuntimeError(
+                        f"Strand-specific array '{suffix}' not found. "
+                        "Store may not be stranded."
+                    )
+                cov = self.root[suffix]
+                if isinstance(cov, zarr.Group) and chrom not in cov:
                     raise RuntimeError(
                         f"Strand-specific array '{suffix}/{chrom}' not found. "
                         "Store may not be stranded."
                     )
-                zarr_array = self.root[suffix][chrom]
+
+            if _flat:
+                start_row, end_row = self._contig_row_range(chrom)
+                dask_arr = _full_dask[start_row:end_row, :]
+                if isinstance(chunks, dict):
+                    pos_chunk = chunks.get("position", "auto")
+                    smp_chunk = chunks.get("sample", "auto")
+                    dask_arr = dask_arr.rechunk({0: pos_chunk, 1: smp_chunk})
+                elif chunks == "auto":
+                    dask_arr = dask_arr.rechunk("auto")
             else:
-                zarr_array = self.get_chrom(chrom)
-            dask_arr = da.from_zarr(zarr_array, chunks=chunks)
-            if chunks == "auto":
-                dask_arr = dask_arr.rechunk("auto")
-            elif isinstance(chunks, dict):
-                chunks_by_axis = {}
-                dim_names = ("position", "sample")
-                for dim_name, chunk_size in chunks.items():
-                    if dim_name in dim_names:
-                        chunks_by_axis[dim_names.index(dim_name)] = chunk_size
-                dask_arr = dask_arr.rechunk(chunks_by_axis)
+                zarr_array, _ = self._get_coverage_array_and_offset(
+                    chrom, suffix if strand else "coverage"
+                )
+                dask_arr = da.from_zarr(zarr_array, chunks=chunks)
+                if chunks == "auto":
+                    dask_arr = dask_arr.rechunk("auto")
+                elif isinstance(chunks, dict):
+                    chunks_by_axis = {}
+                    dim_names = ("position", "sample")
+                    for dim_name, chunk_size in chunks.items():
+                        if dim_name in dim_names:
+                            chunks_by_axis[dim_names.index(dim_name)] = chunk_size
+                    dask_arr = dask_arr.rechunk(chunks_by_axis)
 
             # Array is (position, sample); transpose to (sample, position) for xarray
             dask_arr = dask_arr.T
@@ -450,7 +507,7 @@ class BaseStore:
             )
         }
 
-        def _add_group(group, prefix: str) -> None:
+        def _add_group(group: zarr.Group, prefix: str) -> None:
             for chrom in chroms:
                 if chrom not in group:
                     continue
@@ -467,15 +524,39 @@ class BaseStore:
                 )
                 nodes[f"{prefix}/{chrom}"] = xr.Dataset({"coverage": arr})
 
+        def _add_flat(flat_arr: zarr.Array, prefix: str) -> None:
+            full_dask = da.from_zarr(flat_arr)
+            for chrom in chroms:
+                start_row, end_row = self._contig_row_range(chrom)
+                chrom_size = end_row - start_row
+                arr = xr.DataArray(
+                    full_dask[start_row:end_row, :],
+                    dims=("position", "sample"),
+                    coords={
+                        "position": np.arange(chrom_size),
+                        "sample": self.sample_names,
+                    },
+                    name="coverage",
+                )
+                nodes[f"{prefix}/{chrom}"] = xr.Dataset({"coverage": arr})
+
         if "coverage" in self.root:
-            _add_group(self.root["coverage"], "coverage")
+            cov = self.root["coverage"]
+            if isinstance(cov, zarr.Group):
+                _add_group(cov, "coverage")
+            else:
+                _add_flat(cov, "coverage")
         else:
             # Old layout: arrays at root
             _add_group(self.root, "coverage")
 
         for suffix in ("coverage_fwd", "coverage_rev"):
             if suffix in self.root:
-                _add_group(self.root[suffix], suffix)
+                arr = self.root[suffix]
+                if isinstance(arr, zarr.Group):
+                    _add_group(arr, suffix)
+                else:
+                    _add_flat(arr, suffix)
 
         meta_df = self.metadata
         meta_vars = {
@@ -529,7 +610,10 @@ class BaseStore:
             raise ValueError("Must specify either 'region' or 'chrom'")
 
         if chrom not in self.chromosomes:
-            has_fwd = "coverage_fwd" in self.root and chrom in self.root["coverage_fwd"]
+            has_fwd = "coverage_fwd" in self.root and (
+                isinstance(self.root["coverage_fwd"], zarr.Array)
+                or chrom in self.root["coverage_fwd"]
+            )
             if not has_fwd:
                 raise ValueError(
                     f"Chromosome '{chrom}' not in store. Available: {self.chromosomes}"
@@ -537,9 +621,14 @@ class BaseStore:
 
         chrom_size = self.chromsizes.get(chrom)
         if chrom_size is None:
-            if "coverage_fwd" in self.root and chrom in self.root["coverage_fwd"]:
-                chrom_size = self.root["coverage_fwd"][chrom].shape[0]
-            else:
+            fwd = self.root.get("coverage_fwd")
+            if fwd is not None:
+                if isinstance(fwd, zarr.Array):
+                    s, e = self._contig_row_range(chrom)
+                    chrom_size = e - s
+                elif chrom in fwd:
+                    chrom_size = fwd[chrom].shape[0]
+            if chrom_size is None:
                 raise ValueError(f"Chromosome '{chrom}' size not found")
 
         if start is None:
@@ -584,20 +673,26 @@ class BaseStore:
                 f"Cannot extract region: {len(incomplete_samples)} sample(s) incomplete: {incomplete_samples}"
             )
 
-        # Select the right zarr array
+        # Select the right zarr array (and its genome offset for flat stores)
         if strand is not None:
             if strand not in ("+", "-"):
                 raise ValueError(f"strand must be '+', '-', or None, got {strand!r}")
             suffix = "coverage_fwd" if strand == "+" else "coverage_rev"
-            if suffix not in self.root or chrom not in self.root[suffix]:
+            if suffix not in self.root:
+                raise RuntimeError(f"Strand-specific array '{suffix}' not found in store.")
+            cov = self.root[suffix]
+            if isinstance(cov, zarr.Group) and chrom not in cov:
                 raise RuntimeError(f"Strand-specific array '{suffix}/{chrom}' not found in store.")
-            zarr_array = self.root[suffix][chrom]
+            zarr_array, chrom_offset = self._get_coverage_array_and_offset(chrom, suffix)
         else:
-            zarr_array = self.get_chrom(chrom)
+            zarr_array, chrom_offset = self._get_coverage_array_and_offset(chrom)
+
+        abs_start = chrom_offset + start
+        abs_end = chrom_offset + end
 
         if not as_xarray:
             # Array is (position, sample); slice positions, select samples, transpose to (sample, position)
-            result_np = zarr_array[start:end, sample_indices.tolist()].T
+            result_np = zarr_array[abs_start:abs_end, sample_indices.tolist()].T
             if normalise is None:
                 return result_np
             from ..analysis.normalise import normalise as _normalise
@@ -614,11 +709,11 @@ class BaseStore:
         n_sel = len(sample_indices)
 
         if region_len < 10 * chunk_len:
-            data = zarr_array[start:end, sample_indices.tolist()].T
+            data = zarr_array[abs_start:abs_end, sample_indices.tolist()].T
             dask_arr = da.from_array(data, chunks={0: n_sel, 1: min(chunk_len, region_len)})
         else:
             dask_arr = da.from_zarr(zarr_array, chunks={0: chunk_len, 1: n_sel})
-            dask_arr = dask_arr[start:end, sample_indices.tolist()].T
+            dask_arr = dask_arr[abs_start:abs_end, sample_indices.tolist()].T
 
         metadata_df = self.metadata
         metadata_subset = metadata_df.iloc[sample_indices]

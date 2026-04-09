@@ -106,7 +106,7 @@ class MultiomicsStore:
             import zarr as _zarr
             if self.store_dir.exists():
                 root = _zarr.open_group(str(self.store_dir), mode="r")
-                if "coverage" in root and isinstance(root["coverage"], _zarr.Group):
+                if "coverage" in root and isinstance(root["coverage"], (_zarr.Group, _zarr.Array)):
                     self.coverage = BamStore.open(self.store_dir)
                 if "methylation_pct" in root or "n_methylated" in root:
                     self.methylation = MethylStore.open(self.store_dir)

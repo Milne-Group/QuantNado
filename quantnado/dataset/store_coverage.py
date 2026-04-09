@@ -356,6 +356,16 @@ def _get_viewpoints_from_mcc_bam(
 # ---------------------------------------------------------------------------
 
 
+def _build_contig_offsets(chromsizes: dict[str, int]) -> dict[str, list[int]]:
+    """Build {chrom: [start_row, end_row]} for a flat genome-wide array."""
+    offsets: dict[str, list[int]] = {}
+    pos = 0
+    for chrom, size in chromsizes.items():
+        offsets[chrom] = [pos, pos + size]
+        pos += size
+    return offsets
+
+
 class BamStore(BaseStore):
     """
     Zarr-backed BAM signal store.
@@ -363,10 +373,9 @@ class BamStore(BaseStore):
     Store layout::
 
         root/
-        ├── coverage/
-        │   ├── chr1   (chrom_len, n_samples)  uint32  chunks (chunk_len, n_samples)
-        │   └── ...
-        ├── coverage_fwd/   (stranded only)
+        ├── coverage    (total_genome_len, n_samples)  uint32  chunks (chunk_len, n_samples)
+        ├── coverage_fwd   (stranded only)
+        ├── coverage_rev   (stranded only)
         │   └── ...
         ├── coverage_rev/   (stranded only)
         │   └── ...
@@ -612,37 +621,35 @@ class BamStore(BaseStore):
         return path.with_suffix(".zarr")
 
     def _init_store(self) -> None:
-        """Create a new combined store with coverage/ groups (position, n_samples) arrays."""
+        """Create a new store with flat genome-wide coverage arrays (total_len, n_samples)."""
         store = LocalStore(str(self.store_path))
         self.root = zarr.group(store=store, overwrite=True, zarr_format=3)
         self.meta = self.root.create_group("metadata")
 
-        cov_grp = self.root.create_group("coverage")
-        for chrom, size in self.chromsizes.items():
-            cov_grp.create_array(
-                name=chrom,
-                shape=(size, self.n_samples),
-                chunks=(self.chunk_len, self.n_samples),
-                dtype=CONSTRUCTION_ARRAY_DTYPE,
-                compressors=self.compressors,
-                fill_value=0,
-                overwrite=True,
-            )
+        total_len = sum(self.chromsizes.values())
+        contig_offsets = _build_contig_offsets(self.chromsizes)
+        self.root.create_array(
+            "coverage",
+            shape=(total_len, self.n_samples),
+            chunks=(self.chunk_len, self.n_samples),
+            dtype=CONSTRUCTION_ARRAY_DTYPE,
+            compressors=self.compressors,
+            fill_value=0,
+            overwrite=True,
+        )
 
         has_stranded = any(bt == CoverageType.STRANDED for bt in self.coverage_type_map.values())
         if has_stranded:
             for suffix in ("coverage_fwd", "coverage_rev"):
-                grp = self.root.create_group(suffix)
-                for chrom, size in self.chromsizes.items():
-                    grp.create_array(
-                        name=chrom,
-                        shape=(size, self.n_samples),
-                        chunks=(self.chunk_len, self.n_samples),
-                        dtype=np.uint32,
-                        compressors=self.compressors,
-                        fill_value=0,
-                        overwrite=True,
-                    )
+                self.root.create_array(
+                    suffix,
+                    shape=(total_len, self.n_samples),
+                    chunks=(self.chunk_len, self.n_samples),
+                    dtype=np.uint32,
+                    compressors=self.compressors,
+                    fill_value=0,
+                    overwrite=True,
+                )
 
         self.meta.create_array(
             "completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True
@@ -683,10 +690,11 @@ class BamStore(BaseStore):
             {
                 "chromosomes": self.chromosomes,
                 "chromsizes": self.chromsizes,
+                "contig_offsets": contig_offsets,
                 "n_samples": self.n_samples,
                 "chunk_len": self.chunk_len,
                 "construction_compression": self.construction_compression,
-                "structure": "coverage groups (position x sample)",
+                "structure": "flat coverage array (total_genome_len x n_samples)",
                 "bin_size": BIN_SIZE,
                 "sample_names": self.sample_names,
                 "sample_names_hash": self.sample_hash,
@@ -697,33 +705,31 @@ class BamStore(BaseStore):
         logger.info(f"Initialized BamStore at {self.store_path}")
 
     def _init_store_in_group(self) -> None:
-        """Initialise coverage arrays inside an already-open shared zarr group."""
-        cov_grp = self.root.require_group("coverage")
-        for chrom, size in self.chromsizes.items():
-            cov_grp.create_array(
-                name=chrom,
-                shape=(size, self.n_samples),
-                chunks=(self.chunk_len, self.n_samples),
-                dtype=CONSTRUCTION_ARRAY_DTYPE,
-                compressors=self.compressors,
-                fill_value=0,
-                overwrite=True,
-            )
+        """Initialise flat coverage arrays inside an already-open shared zarr group."""
+        total_len = sum(self.chromsizes.values())
+        contig_offsets = _build_contig_offsets(self.chromsizes)
+        self.root.create_array(
+            "coverage",
+            shape=(total_len, self.n_samples),
+            chunks=(self.chunk_len, self.n_samples),
+            dtype=CONSTRUCTION_ARRAY_DTYPE,
+            compressors=self.compressors,
+            fill_value=0,
+            overwrite=True,
+        )
 
         has_stranded = any(bt == CoverageType.STRANDED for bt in self.coverage_type_map.values())
         if has_stranded:
             for suffix in ("coverage_fwd", "coverage_rev"):
-                grp = self.root.require_group(suffix)
-                for chrom, size in self.chromsizes.items():
-                    grp.create_array(
-                        name=chrom,
-                        shape=(size, self.n_samples),
-                        chunks=(self.chunk_len, self.n_samples),
-                        dtype=np.uint32,
-                        compressors=self.compressors,
-                        fill_value=0,
-                        overwrite=True,
-                    )
+                self.root.create_array(
+                    suffix,
+                    shape=(total_len, self.n_samples),
+                    chunks=(self.chunk_len, self.n_samples),
+                    dtype=np.uint32,
+                    compressors=self.compressors,
+                    fill_value=0,
+                    overwrite=True,
+                )
 
         self.meta.create_array(
             "completed", shape=(self.n_samples,), dtype=bool, fill_value=False, overwrite=True
@@ -763,10 +769,11 @@ class BamStore(BaseStore):
             {
                 "chromosomes": self.chromosomes,
                 "chromsizes": self.chromsizes,
+                "contig_offsets": contig_offsets,
                 "n_samples": self.n_samples,
                 "chunk_len": self.chunk_len,
                 "construction_compression": self.construction_compression,
-                "structure": "coverage groups (position x sample)",
+                "structure": "flat coverage array (total_genome_len x n_samples)",
                 "bin_size": BIN_SIZE,
                 "sample_names": self.sample_names,
                 "sample_names_hash": self.sample_hash,
@@ -777,31 +784,30 @@ class BamStore(BaseStore):
         logger.info(f"Initialized BamStore (shared root) at {self.store_path}")
 
     def _init_sample_store_at(self, path: Path, is_stranded: bool) -> zarr.Group:
-        """Create a 1D per-sample temp store (no sample dimension)."""
+        """Create a 1D per-sample temp store (no sample dimension, flat layout)."""
         store = LocalStore(str(path))
         root = zarr.group(store=store, overwrite=True, zarr_format=3)
-        cov_grp = root.create_group("coverage")
-        for chrom, size in self.chromsizes.items():
-            cov_grp.create_array(
-                name=chrom,
-                shape=(size,),
-                dtype=CONSTRUCTION_ARRAY_DTYPE,
-                compressors=self.compressors,
-                fill_value=0,
-                overwrite=True,
-            )
+        total_len = sum(self.chromsizes.values())
+        contig_offsets = _build_contig_offsets(self.chromsizes)
+        root.create_array(
+            "coverage",
+            shape=(total_len,),
+            dtype=CONSTRUCTION_ARRAY_DTYPE,
+            compressors=self.compressors,
+            fill_value=0,
+            overwrite=True,
+        )
         if is_stranded:
             for suffix in ("coverage_fwd", "coverage_rev"):
-                grp = root.create_group(suffix)
-                for chrom, size in self.chromsizes.items():
-                    grp.create_array(
-                        name=chrom,
-                        shape=(size,),
-                        dtype=np.uint32,
-                        compressors=self.compressors,
-                        fill_value=0,
-                        overwrite=True,
-                    )
+                root.create_array(
+                    suffix,
+                    shape=(total_len,),
+                    dtype=np.uint32,
+                    compressors=self.compressors,
+                    fill_value=0,
+                    overwrite=True,
+                )
+        root.attrs["contig_offsets"] = contig_offsets
         return root
 
     def _load_existing(self) -> None:
@@ -949,6 +955,7 @@ class BamStore(BaseStore):
                 read_filter.filter_tag_value = vp
 
         tmp_root = self._init_sample_store_at(tmp_path, is_stranded)
+        tmp_offsets = dict(tmp_root.attrs["contig_offsets"])
         sparsity_values: list[float] = []
         for contig, size in self.chromsizes.items():
             sparsity, fwd, rev = self._process_chromosome(
@@ -959,11 +966,12 @@ class BamStore(BaseStore):
                 use_fragment=use_fragment,
                 read_filter=read_filter,
             )
+            s, e = tmp_offsets[contig]
             if rev is not None:
-                tmp_root["coverage_fwd"][contig][: fwd.shape[0]] = fwd
-                tmp_root["coverage_rev"][contig][: rev.shape[0]] = rev
+                tmp_root["coverage_fwd"][s:e] = fwd
+                tmp_root["coverage_rev"][s:e] = rev
             else:
-                tmp_root["coverage"][contig][: fwd.shape[0]] = fwd
+                tmp_root["coverage"][s:e] = fwd
             sparsity_values.append(sparsity)
 
         bam_hash, total_reads, mean_read_length = _collect_bam_stats(bam_file)
@@ -993,6 +1001,7 @@ class BamStore(BaseStore):
                 read_filter.filter_tag = self.viewpoint_tag
                 read_filter.filter_tag_value = vp
 
+        offsets = dict(self.root.attrs["contig_offsets"])
         sparsity_values: list[float] = []
         for contig, size in self.chromsizes.items():
             sparsity, fwd, rev = self._process_chromosome(
@@ -1003,11 +1012,12 @@ class BamStore(BaseStore):
                 use_fragment=use_fragment,
                 read_filter=read_filter,
             )
+            s, e = offsets[contig]
             if rev is not None:
-                self.root["coverage_fwd"][contig][: fwd.shape[0], sample_idx] = fwd
-                self.root["coverage_rev"][contig][: rev.shape[0], sample_idx] = rev
+                self.root["coverage_fwd"][s:e, sample_idx] = fwd
+                self.root["coverage_rev"][s:e, sample_idx] = rev
             else:
-                self.root["coverage"][contig][: fwd.shape[0], sample_idx] = fwd
+                self.root["coverage"][s:e, sample_idx] = fwd
             sparsity_values.append(sparsity)
 
         bam_hash, total_reads, mean_read_length = _collect_bam_stats(bam_file)
@@ -1061,14 +1071,16 @@ class BamStore(BaseStore):
                 use_fragment=self.count_fragments,
             )
 
+        offsets = dict(self.root.attrs["contig_offsets"])
+
         def _write_result(contig: str, vp_arrays: dict[str, np.ndarray]) -> None:
-            size = self.chromsizes[contig]
+            s, e = offsets[contig]
             for vp, arr in vp_arrays.items():
                 sample_idx = vp_to_idx[vp]
                 sparsity = float((np.sum(arr == 0) / arr.size) * 100)
                 sparsity_per_vp[vp].append(sparsity)
                 if arr.any():
-                    self.root["coverage"][contig][:size, sample_idx] = arr
+                    self.root["coverage"][s:e, sample_idx] = arr
 
         # Chromosomes are processed sequentially to keep peak RAM bounded to
         # chrom_len × 4 B instead of n_viewpoints × chrom_len × 4 B.
@@ -1095,12 +1107,14 @@ class BamStore(BaseStore):
     def _write_sample_to_final(self, sample_idx: int, tmp_root: zarr.Group) -> None:
         """Copy a per-sample 1D temp store into column sample_idx of the final 2D store."""
         has_stranded = "coverage_fwd" in tmp_root
+        offsets = dict(self.root.attrs["contig_offsets"])
         for chrom in self.chromosomes:
+            s, e = offsets[chrom]
             if has_stranded:
-                self.root["coverage_fwd"][chrom][:, sample_idx] = tmp_root["coverage_fwd"][chrom][:]
-                self.root["coverage_rev"][chrom][:, sample_idx] = tmp_root["coverage_rev"][chrom][:]
+                self.root["coverage_fwd"][s:e, sample_idx] = tmp_root["coverage_fwd"][s:e]
+                self.root["coverage_rev"][s:e, sample_idx] = tmp_root["coverage_rev"][s:e]
             else:
-                self.root["coverage"][chrom][:, sample_idx] = tmp_root["coverage"][chrom][:]
+                self.root["coverage"][s:e, sample_idx] = tmp_root["coverage"][s:e]
 
         attrs = dict(tmp_root.attrs)
         self.meta["sparsity"][sample_idx] = attrs.get("sparsity", float("nan"))
