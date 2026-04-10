@@ -26,7 +26,6 @@ local/
 test_dataset.ipynb
 test_dataset/
 CLAUDE.md
-profiling.ipynb
-dataset_extraction.ipynb
+example.ipynb
 profiling_output/
 old_tests/

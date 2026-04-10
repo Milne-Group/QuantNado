@@ -116,13 +116,13 @@ Each sample gets its own `.zarr`. All stores share the same layout:
 
 | Assay | Array keys | dtype | Builder | Notes |
 |---|---|---|---|---|
-| ATAC | `atac` | uint32 | BamStore | bamnado coverage |
-| ChIP | `chip_{ip}` e.g. `chip_h3k27ac` | uint32 | BamStore | assay + ip column |
-| CUT&TAG | `cat_{ip}` e.g. `cat_mlln` | uint32 | BamStore | assay + ip column |
+| ATAC | `coverage` | uint32 | BamStore | bamnado coverage |
+| ChIP | `coverage` | uint32 | BamStore | bamnado coverage + ip column |
+| CUT&TAG | `coverage` | uint32 | BamStore | bamnado coverage + ip column |
 | RNA | `rna_fwd`, `rna_rev` | uint32 | BamStore | stranded; bamnado |
-| METH | `coverage`, `methyl_pct`, `n_methylated`, `n_total` | uint32/float32/uint32/uint32 | MethylStore | BAM + bedGraph |
-| SNP | `GT`, `DP`, `AF` (VCF FORMAT fields) | varies | VariantStore | VCF only |
-| MCC | `mcc_{viewpoint}` per viewpoint | uint32 | BamStore | VP tag filter via bamnado |
+| METH | `coverage`, `methyl_pct`, `n_methylated`, `n_total` | uint32/float32/uint32/uint32 | MethylStore | bamnado coverage + bedGraph |
+| SNP | `coverage`, `GT`, `DP`, `AF`(VCF FORMAT fields) | varies | VariantStore | bamnado coverage + VCF only |
+| MCC | `coverage` per viewpoint | uint32 | BamStore | VP tag filter via bamnado |
 
 **Key naming rules:**
 - ChIP/CUT&TAG: `f"{assay}_{ip}".lower().replace("&", "")` → `chip_h3k27ac`, `cat_mlln`
@@ -137,11 +137,9 @@ After combining, same-assay samples are stacked along axis 0 (`(1, L) × N → (
 ```
 combined.zarr/
 ├── {chrom}/
-│   ├── atac          (n_atac, chrom_len)  uint32
-│   ├── chip_h3k27ac  (n_chip, chrom_len)  uint32
 │   ├── rna_fwd       (n_rna,  chrom_len)  uint32
 │   ├── rna_rev       (n_rna,  chrom_len)  uint32
-│   ├── coverage      (n_meth, chrom_len)  uint32
+│   ├── coverage      (n_samples, chrom_len)  uint32
 │   ├── methyl_pct    (n_meth, chrom_len)  float32
 │   └── GT            (n_snp,  chrom_len)  int8
 ├── metadata/
@@ -151,7 +149,7 @@ combined.zarr/
 │   ├── total_reads      int64
 │   ├── mean_read_length float32
 │   └── sparsity         float32
-└── root.attrs: assays=[...], chromsizes, chunk_len
+└── root.attrs: assay_types=[...], array_keys=[...], chromsizes, chunk_len
 ```
 
 ---
@@ -169,7 +167,8 @@ qn = QuantNadoDataset("dataset/combined.zarr")
 
 # Properties
 qn.sample_names   # list[str]
-qn.assays         # list[str]  — array keys present across stores
+qn.assays         # list[str]  — biological assay types e.g. ['atac', 'chip', 'meth', 'rna', 'snp']
+qn.array_keys     # list[str]  — all zarr data variable names e.g. ['atac', 'coverage', 'rna_fwd', 'AF', ...]
 qn.chromosomes    # list[str]  — excludes 'metadata' group
 qn.chromsizes     # dict[str, int]
 

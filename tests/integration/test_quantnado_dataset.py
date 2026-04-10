@@ -121,7 +121,7 @@ class TestProperties:
     def test_assays(self, tmp_path):
         ds_dir = _make_dataset_dir(tmp_path, assay="atac")
         qn = QuantNadoDataset(ds_dir)
-        assert qn.assays == ["atac"]
+        assert qn.assays == ["ATAC"]
 
     def test_chromosomes(self, tmp_path):
         ds_dir = _make_dataset_dir(tmp_path)

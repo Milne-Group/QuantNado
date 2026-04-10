@@ -649,6 +649,7 @@ def locus_plot(
     methylation: "xr.DataArray | None" = None,
     allele_depth_ref: "xr.DataArray | None" = None,
     allele_depth_alt: "xr.DataArray | None" = None,
+    allele_freq: "xr.DataArray | None" = None,
     genotype: "xr.DataArray | None" = None,
     palette: "str | list | dict | None" = None,
     title: "str | None" = None,
@@ -692,10 +693,16 @@ def locus_plot(
         Required when any entry in ``modality`` is ``"methylation"``.
     allele_depth_ref : DataArray, optional
         Reference allele depth with dims ``(sample, position)`` (sparse variant sites).
-        Required when any entry in ``modality`` is ``"variant"``.
+        Used together with ``allele_depth_alt`` to compute allele frequency.
     allele_depth_alt : DataArray, optional
         Alternate allele depth with dims ``(sample, position)`` (sparse variant sites).
-        Required when any entry in ``modality`` is ``"variant"``.
+        Used together with ``allele_depth_ref`` to compute allele frequency.
+    allele_freq : DataArray, optional
+        Pre-computed allele frequency with dims ``(sample, position)``.
+        Use this when ``AF`` is stored directly (e.g. from a VCF FORMAT field).
+        Takes precedence over ``allele_depth_ref``/``allele_depth_alt`` when provided.
+        Required when any entry in ``modality`` is ``"variant"`` and
+        ``allele_depth_ref``/``allele_depth_alt`` are not provided.
     genotype : DataArray, optional
         Genotype DataArray with dims ``(sample, position)`` and encoding
         ``-1`` missing, ``0`` hom-ref, ``1`` het, ``2`` hom-alt.
@@ -816,36 +823,54 @@ def locus_plot(
             ax.set_ylim(0, 101)
 
         elif mod == "variant":
-            if allele_depth_ref is None or allele_depth_alt is None:
+            if allele_freq is not None:
+                # Direct AF path (e.g. from VCF AF FORMAT field)
+                af_arr = allele_freq.sel(sample=sample_name)
+                if hasattr(af_arr, "compute"):
+                    af_arr = af_arr.compute()
+                # Filter to positions with a called variant (AF > 0 and not NaN)
+                af_vals_full = af_arr.values.astype(float)
+                x_full = af_arr.coords["position"].values
+                variant_mask = (af_vals_full > 0) & np.isfinite(af_vals_full)
+                x = x_full[variant_mask]
+                af = af_vals_full[variant_mask]
+
+                gt_arr = None
+                if genotype is not None:
+                    gt_da = genotype.sel(sample=sample_name)
+                    if hasattr(gt_da, "compute"):
+                        gt_da = gt_da.compute()
+                    gt_arr = gt_da.values.astype(int)[variant_mask]
+            elif allele_depth_ref is not None and allele_depth_alt is not None:
+                ref_arr = allele_depth_ref.sel(sample=sample_name)
+                alt_arr = allele_depth_alt.sel(sample=sample_name)
+                if hasattr(ref_arr, "compute"):
+                    ref_arr = ref_arr.compute()
+                if hasattr(alt_arr, "compute"):
+                    alt_arr = alt_arr.compute()
+
+                gt_arr = None
+                if genotype is not None:
+                    gt_da = genotype.sel(sample=sample_name)
+                    if hasattr(gt_da, "compute"):
+                        gt_da = gt_da.compute()
+                    gt_arr = gt_da.reindex(position=ref_arr.coords["position"], fill_value=-1).values.astype(int)
+
+                x = ref_arr.coords["position"].values
+                ref_vals = ref_arr.values.astype(float)
+                alt_vals = alt_arr.values.astype(float)
+
+                total = ref_vals + alt_vals
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    af = np.where(total > 0, alt_vals / total, np.nan)
+            else:
                 raise ValueError(
-                    f"modality='variant' for sample '{sample_name}' requires "
-                    "both allele_depth_ref and allele_depth_alt."
+                    f"modality='variant' for sample '{sample_name}' requires either "
+                    "'allele_freq' or both 'allele_depth_ref' and 'allele_depth_alt'."
                 )
 
-            ref_arr = allele_depth_ref.sel(sample=sample_name)
-            alt_arr = allele_depth_alt.sel(sample=sample_name)
-            if hasattr(ref_arr, "compute"):
-                ref_arr = ref_arr.compute()
-            if hasattr(alt_arr, "compute"):
-                alt_arr = alt_arr.compute()
-
-            gt_arr = None
-            if genotype is not None:
-                gt_arr = genotype.sel(sample=sample_name)
-                if hasattr(gt_arr, "compute"):
-                    gt_arr = gt_arr.compute()
-                gt_arr = gt_arr.reindex(position=ref_arr.coords["position"], fill_value=-1)
-
-            x = ref_arr.coords["position"].values
-            ref_vals = ref_arr.values.astype(float)
-            alt_vals = alt_arr.values.astype(float)
-
-            total = ref_vals + alt_vals
-            with np.errstate(invalid="ignore", divide="ignore"):
-                af = np.where(total > 0, alt_vals / total, np.nan)
-
             if gt_arr is not None:
-                gt_vals = gt_arr.values.astype(int)
+                gt_vals = gt_arr if isinstance(gt_arr, np.ndarray) else gt_arr.values.astype(int)
             else:
                 # Fallback: approximate genotype from allele frequency
                 gt_vals = np.full(af.shape, -1, dtype=int)

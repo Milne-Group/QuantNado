@@ -17,9 +17,12 @@ from pathlib import Path
 
 import dask.array as da
 import numpy as np
+import pandas as pd
 import xarray as xr
 import zarr
 from loguru import logger
+
+from .features import load_gtf
 
 
 # Keys that are zarr infrastructure — excluded when listing chromosomes / assays
@@ -32,8 +35,8 @@ _META_KEYS = frozenset({"metadata"})
 
 
 def _is_combined_zarr(root: zarr.Group) -> bool:
-    """True if this is a combined multi-sample store (has assays attr)."""
-    return "assays" in root.attrs or "sample_names" in root.attrs
+    """True if this is a combined multi-sample store."""
+    return "sample_names" in root.attrs or "assay_types" in root.attrs or "assays" in root.attrs
 
 
 def _is_per_sample_zarr(root: zarr.Group) -> bool:
@@ -78,6 +81,8 @@ class _PerSampleStore:
         meta = root.get("metadata")
         self.completed = bool(meta["completed"][0]) if meta is not None and "completed" in meta else False
         self.total_reads: int = int(meta["total_reads"][0]) if meta is not None and "total_reads" in meta else 0
+        self.mean_read_length: float = float(meta["mean_read_length"][0]) if meta is not None and "mean_read_length" in meta else 0.0
+        self.sparsity: float = float(meta["sparsity"][0]) if meta is not None and "sparsity" in meta else 0.0
 
     def array_keys(self) -> list[str]:
         if not self.chromosomes:
@@ -111,11 +116,13 @@ class QuantNadoDataset:
     >>> tree = qn.to_datatree()
     """
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, annotation: str | Path | None = None) -> None:
         self.path = Path(path)
         self._stores: list[_PerSampleStore] = []
         self._combined_root: zarr.Group | None = None
         self._combined = False
+        self._genes_df: pd.DataFrame | None = None
+        self._exons_df: pd.DataFrame | None = None
 
         if self.path.is_dir() and not str(self.path).endswith(".zarr"):
             # Directory of per-sample zarrs
@@ -132,6 +139,9 @@ class QuantNadoDataset:
                 raise ValueError(f"Cannot determine store layout for {self.path}")
         else:
             raise FileNotFoundError(f"Path does not exist: {self.path}")
+
+        if annotation is not None:
+            self.set_annotation(annotation)
 
     def _load_directory(self, directory: Path) -> None:
         zarr_paths = sorted(directory.glob("*.zarr"))
@@ -174,9 +184,16 @@ class QuantNadoDataset:
 
     @property
     def assays(self) -> list[str]:
-        """All array keys present in the store(s)."""
+        """Distinct biological assay types present (e.g. 'ATAC', 'RNA', 'METH')."""
         if self._combined:
-            return list(self._combined_root.attrs.get("assays", []))
+            return sorted(set(s.upper() for s in self._combined_root.attrs.get("assay_types", [])))
+        return sorted(set(s.assay.upper() for s in self._stores))
+
+    @property
+    def array_keys(self) -> list[str]:
+        """All zarr data-variable names (e.g. 'atac', 'rna_fwd', 'coverage', 'AF')."""
+        if self._combined:
+            return list(self._combined_root.attrs.get("array_keys", []))
         keys: set[str] = set()
         for store in self._stores:
             keys.update(store.array_keys())
@@ -209,6 +226,138 @@ class QuantNadoDataset:
         return np.array([s.completed for s in self._stores], dtype=bool)
 
     # ------------------------------------------------------------------
+    # Gene annotation
+    # ------------------------------------------------------------------
+
+    def set_annotation(self, gtf_path: str | Path) -> None:
+        """Attach a GTF annotation file for gene-name-based queries.
+
+        Parameters
+        ----------
+        gtf_path:
+            Path to a GTF or GTF.gz file (e.g. hg38.gtf.gz).
+        """
+        gtf = load_gtf(
+            str(gtf_path),
+            feature_types=["gene", "exon"],
+            usecols=["gene_id", "gene_name", "transcript_id", "gene_type", "gene_biotype", "exon_number"],
+        )
+        df = pd.DataFrame(gtf)
+        self._genes_df = df[df["feature"] == "gene"].reset_index(drop=True)
+        self._exons_df = df[df["feature"] == "exon"].reset_index(drop=True)
+        logger.info(f"Loaded annotation: {len(self._genes_df):,} genes from {gtf_path}")
+
+    def gene_info(self, name: str) -> dict:
+        """Look up a gene by name and return its coordinates and exon structure.
+
+        Parameters
+        ----------
+        name:
+            Gene name (e.g. "GNAQ"). Case-sensitive; falls back to case-insensitive.
+
+        Returns
+        -------
+        dict with keys: gene_name, gene_id, chrom, start, end, strand, locus, exons.
+        Coordinates are 1-based inclusive.
+        """
+        if self._genes_df is None:
+            raise RuntimeError(
+                "No annotation loaded. Call set_annotation() or pass annotation= to __init__."
+            )
+
+        if "gene_name" not in self._genes_df.columns:
+            raise KeyError(f"Annotation has no 'gene_name' column — cannot look up '{name}'.")
+
+        # Case-sensitive lookup first, then case-insensitive fallback
+        hits = self._genes_df[self._genes_df["gene_name"] == name]
+        if hits.empty:
+            hits = self._genes_df[self._genes_df["gene_name"].str.upper() == name.upper()]
+        if hits.empty:
+            raise KeyError(f"Gene '{name}' not found in annotation.")
+
+        # Multiple hits (e.g. PAR regions) → take the largest span
+        if len(hits) > 1:
+            hits = hits.loc[[(hits["End"] - hits["Start"]).idxmax()]]
+        row = hits.iloc[0]
+
+        # PyRanges: 0-based half-open [Start, End) → 1-based inclusive [start, end]
+        chrom = str(row["Chromosome"])
+        start_1 = int(row["Start"]) + 1
+        end_1 = int(row["End"])
+        strand = str(row.get("Strand", "+"))
+        gene_id = row.get("gene_id") or None
+        gene_name_out = row.get("gene_name") or name
+
+        # Exons for this gene
+        exons_out: list[dict] = []
+        if self._exons_df is not None and not self._exons_df.empty:
+            if gene_id and "gene_id" in self._exons_df.columns:
+                ex = self._exons_df[self._exons_df["gene_id"] == gene_id]
+            elif "gene_name" in self._exons_df.columns:
+                ex = self._exons_df[self._exons_df["gene_name"] == gene_name_out]
+            else:
+                ex = self._exons_df.iloc[0:0]  # empty
+            for _, erow in ex.iterrows():
+                exons_out.append({
+                    "start": int(erow["Start"]) + 1,
+                    "end": int(erow["End"]),
+                    "exon_number": str(erow["exon_number"]) if "exon_number" in erow and pd.notna(erow.get("exon_number")) else None,
+                })
+            exons_out.sort(key=lambda e: e["start"])
+
+        return {
+            "gene_name": gene_name_out,
+            "gene_id": gene_id,
+            "chrom": chrom,
+            "start": start_1,
+            "end": end_1,
+            "strand": strand,
+            "locus": f"{chrom}:{start_1}-{end_1}",
+            "exons": exons_out,
+        }
+
+    def sel_gene(
+        self,
+        name: str,
+        padding: int = 0,
+        assay: str | None = None,
+    ) -> xr.Dataset:
+        """Select a genomic region by gene name.
+
+        Parameters
+        ----------
+        name:
+            Gene name (e.g. "GNAQ").
+        padding:
+            Extra bases to add on each side of the gene body (default: 0).
+        assay:
+            Optional assay filter passed to :meth:`sel`.
+
+        Returns
+        -------
+        xr.Dataset with gene metadata in ``.attrs``:
+        ``gene_name``, ``gene_id``, ``gene_strand``, ``locus``, ``exons``.
+        """
+        info = self.gene_info(name)
+        chrom = info["chrom"]
+        chrom_len = self.chromsizes.get(chrom, 0)
+
+        start = max(1, info["start"] - padding)
+        end = info["end"] + padding
+        if chrom_len:
+            end = min(end, chrom_len)
+
+        ds = self.sel(chrom, start, end, assay=assay)
+        ds.attrs.update({
+            "gene_name": info["gene_name"],
+            "gene_id": info["gene_id"],
+            "gene_strand": info["strand"],
+            "locus": f"{chrom}:{start}-{end}",
+            "exons": info["exons"],
+        })
+        return ds
+
+    # ------------------------------------------------------------------
     # Region selection
     # ------------------------------------------------------------------
 
@@ -217,6 +366,7 @@ class QuantNadoDataset:
         chrom: str,
         start: int | None = None,
         end: int | None = None,
+        assay: str | None = None,
     ) -> xr.Dataset:
         """Extract a genomic region as an xr.Dataset.
 
@@ -228,12 +378,18 @@ class QuantNadoDataset:
             1-based start position (inclusive). Defaults to 1.
         end:
             1-based end position (inclusive). Defaults to chromosome length.
+        assay:
+            If provided, restrict to samples whose assay type matches
+            (e.g. ``"atac"``, ``"rna"``, ``"meth"``). The returned Dataset
+            will only contain the array keys that belong to that assay, and
+            only the samples that have that assay type attached as the
+            ``assay`` coordinate.
 
         Returns
         -------
         xr.Dataset
             dims: sample × position
-            coords: position (1-based), sample
+            coords: position (1-based), sample, assay (non-index on sample)
             data_vars: one per assay key (atac, chip_h3k27ac, rna_fwd, …)
         """
         chrom_len = self.chromsizes.get(chrom)
@@ -257,8 +413,23 @@ class QuantNadoDataset:
         position_coords = np.arange(start_1, end_1 + 1, dtype=np.int64)
 
         if self._combined:
-            return self._sel_combined(chrom, s0, e0, position_coords)
-        return self._sel_per_sample(chrom, s0, e0, position_coords)
+            ds = self._sel_combined(chrom, s0, e0, position_coords)
+        else:
+            ds = self._sel_per_sample(chrom, s0, e0, position_coords)
+
+        if assay is not None:
+            assay_upper = assay.upper()
+            if "assay" not in ds.coords:
+                raise ValueError("Dataset has no 'assay' coordinate — cannot filter by assay.")
+            assay_mask = ds.coords["assay"].values == assay_upper
+            if not assay_mask.any():
+                available = sorted(set(ds.coords["assay"].values))
+                raise ValueError(f"Assay '{assay}' not found. Available: {available}")
+            ds = ds.isel(sample=assay_mask)
+            # Drop data vars that have no non-NaN data for this assay's samples
+            ds = ds[[v for v in ds.data_vars if not ds[v].isnull().all()]]
+
+        return ds
 
     def _sel_per_sample(
         self, chrom: str, s0: int, e0: int, position_coords: np.ndarray
@@ -272,6 +443,21 @@ class QuantNadoDataset:
             for key in store.array_keys():
                 key_to_stores.setdefault(key, []).append(store)
 
+        # Build the full ordered sample list and assay-per-sample mapping
+        all_samples: list[str] = []
+        sample_assay: dict[str, str] = {}
+        for store in self._stores:
+            if store.viewpoints:
+                for vp in store.viewpoints:
+                    name = f"{store.sample}_{vp}"
+                    all_samples.append(name)
+                    sample_assay[name] = store.assay.upper()
+            else:
+                all_samples.append(store.sample)
+                sample_assay[store.sample] = store.assay.upper()
+
+        assay_coord = np.array([sample_assay.get(s, "") for s in all_samples])
+
         data_vars: dict[str, xr.DataArray] = {}
         for key, stores in sorted(key_to_stores.items()):
             chunks: list[da.Array] = []
@@ -280,15 +466,23 @@ class QuantNadoDataset:
                 arr = store.get_array(chrom, key)  # (1, chrom_len)
                 chunk = da.from_zarr(arr)[:, s0:e0]  # (1, region_len)
                 chunks.append(chunk)
-                sample_labels.append(store.sample)
+                if store.viewpoints and key.startswith("viewpoint_"):
+                    vp = key[len("viewpoint_"):]
+                    sample_labels.append(f"{store.sample}_{vp}")
+                else:
+                    sample_labels.append(store.sample)
             stacked = da.concatenate(chunks, axis=0)  # (n_samples, region_len)
-            data_vars[key] = xr.DataArray(
+            # Reindex to full sample list so all vars share the same sample coord
+            da_var = xr.DataArray(
                 stacked,
                 dims=("sample", "position"),
                 coords={"sample": sample_labels, "position": position_coords},
-            )
+            ).reindex(sample=all_samples)
+            data_vars[key] = da_var
 
-        return xr.Dataset(data_vars)
+        ds = xr.Dataset(data_vars)
+        ds = ds.assign_coords(assay=("sample", assay_coord))
+        return ds
 
     def _sel_combined(
         self, chrom: str, s0: int, e0: int, position_coords: np.ndarray
@@ -298,19 +492,34 @@ class QuantNadoDataset:
         chrom_grp = root[chrom]
         all_assays = _assay_keys(chrom_grp)
         key_to_samples: dict[str, list[str]] = dict(root.attrs.get("key_to_samples", {}))
+        all_samples = self.sample_names
+
+        # Assay label per sample from metadata (written by combine())
+        meta = root.get("metadata")
+        if meta is not None and "assay" in meta:
+            raw = meta["assay"][:]
+            assay_coord = np.array([s.decode() if isinstance(s, bytes) else str(s) for s in raw])
+        else:
+            assay_coord = np.array([""] * len(all_samples))
 
         data_vars: dict[str, xr.DataArray] = {}
         for key in all_assays:
             arr = chrom_grp[key]  # (n_samples_for_assay, chrom_len)
             dask_arr = da.from_zarr(arr)[:, s0:e0]
             sample_labels = key_to_samples.get(key, [f"{key}_{i}" for i in range(dask_arr.shape[0])])
-            data_vars[key] = xr.DataArray(
+            da_var = xr.DataArray(
                 dask_arr,
                 dims=("sample", "position"),
                 coords={"sample": sample_labels, "position": position_coords},
             )
+            # Reindex to the full sample list so all DataArrays share the same
+            # sample coordinate.  Integer dtypes are upcasted to float64 to
+            # accommodate NaN for samples that don't contribute to this assay.
+            data_vars[key] = da_var.reindex(sample=all_samples)
 
-        return xr.Dataset(data_vars)
+        ds = xr.Dataset(data_vars)
+        ds = ds.assign_coords(assay=("sample", assay_coord))
+        return ds
 
     # ------------------------------------------------------------------
     # DataTree
@@ -495,10 +704,8 @@ class QuantNadoDataset:
 
         # Collect metadata across all stores
         all_samples: list[str] = src_ds.sample_names
-        all_assays: list[str] = src_ds.assays
-        all_assay_labels = [
-            s.assay for s in src_ds._stores for _ in (s.viewpoints if s.viewpoints else [None])
-        ]
+        all_array_keys: list[str] = src_ds.array_keys
+        all_assay_types: list[str] = src_ds.assays  # biological types e.g. ['atac', 'meth', 'rna']
 
         # Group stores by assay key; also build key→sample-names mapping for sel()
         key_to_stores: dict[str, list[_PerSampleStore]] = {}
@@ -510,12 +717,16 @@ class QuantNadoDataset:
         for key, stores in key_to_stores.items():
             names: list[str] = []
             for store in stores:
-                if store.viewpoints and key.startswith("mcc_"):
-                    vp = key[len("mcc_"):]
+                if store.viewpoints and key.startswith("viewpoint_"):
+                    vp = key[len("viewpoint_"):]
                     names.append(f"{store.sample}_{vp}")
                 else:
                     names.append(store.sample)
             key_to_samples[key] = names
+        # Unified coverage spans all samples regardless of assay
+        key_to_samples["coverage"] = all_samples
+        if "coverage" not in all_array_keys:
+            all_array_keys = sorted(set(all_array_keys) | {"coverage"})
 
         chromsizes = src_ds.chromsizes
         chunk_len = src_ds._stores[0].chunk_len if src_ds._stores else 65536
@@ -523,6 +734,8 @@ class QuantNadoDataset:
         for chrom, chrom_len in chromsizes.items():
             grp = out_root.require_group(chrom)
             for key, stores in key_to_stores.items():
+                if key == "coverage":
+                    continue  # written below as unified across all samples
                 # Stack: concatenate along sample axis
                 chunks_list = []
                 for store in stores:
@@ -533,7 +746,6 @@ class QuantNadoDataset:
                     continue
                 stacked = da.concatenate(chunks_list, axis=0)  # (N, chrom_len)
                 n = stacked.shape[0]
-                # Determine dtype from first array
                 first_dtype = chunks_list[0].dtype
                 fill = np.nan if np.issubdtype(first_dtype, np.floating) else 0
                 out_arr = grp.require_array(
@@ -546,6 +758,46 @@ class QuantNadoDataset:
                 )
                 da.store(stacked, out_arr)
 
+            # Unified coverage: one row per sample, using primary signal per assay.
+            # METH → coverage, RNA → rna_fwd + rna_rev, SNP → DP,
+            # ATAC/ChIP/CUT&TAG → first key, MCC → viewpoint_{vp} per viewpoint.
+            cov_rows: list[da.Array] = []
+            for store in src_ds._stores:
+                keys_set = set(store.array_keys())
+                missing_chrom = chrom not in store.chromosomes
+                if store.viewpoints:
+                    for vp in store.viewpoints:
+                        vp_key = f"viewpoint_{vp}"
+                        if missing_chrom or vp_key not in keys_set:
+                            cov_rows.append(da.zeros((1, chrom_len), dtype=np.float32))
+                        else:
+                            cov_rows.append(da.from_zarr(store.get_array(chrom, vp_key)).astype(np.float32))
+                elif missing_chrom:
+                    cov_rows.append(da.zeros((1, chrom_len), dtype=np.float32))
+                elif "coverage" in keys_set:
+                    cov_rows.append(da.from_zarr(store.get_array(chrom, "coverage")).astype(np.float32))
+                elif "rna_fwd" in keys_set:
+                    fwd = da.from_zarr(store.get_array(chrom, "rna_fwd")).astype(np.float32)
+                    rev = (da.from_zarr(store.get_array(chrom, "rna_rev")).astype(np.float32)
+                           if "rna_rev" in keys_set else da.zeros_like(fwd))
+                    cov_rows.append(fwd + rev)
+                elif "DP" in keys_set:
+                    cov_rows.append(da.from_zarr(store.get_array(chrom, "DP")).astype(np.float32))
+                else:
+                    first_key = store.array_keys()[0]
+                    cov_rows.append(da.from_zarr(store.get_array(chrom, first_key)).astype(np.float32))
+
+            cov_stacked = da.concatenate(cov_rows, axis=0)  # (n_all_samples, chrom_len)
+            cov_arr = grp.require_array(
+                "coverage",
+                shape=(len(all_samples), chrom_len),
+                chunks=(1, chunk_len),
+                dtype=np.float32,
+                fill_value=0.0,
+                overwrite=True,
+            )
+            da.store(cov_stacked, cov_arr)
+
         # Write combined metadata
         meta_grp = out_root.require_group("metadata")
         # Use VariableLengthUTF8 for string arrays in zarr v3
@@ -557,19 +809,33 @@ class QuantNadoDataset:
         # Expand per-store metadata to per-sample (MCC stores contribute N viewpoints each)
         completed_list: list[bool] = []
         total_reads_list: list[int] = []
+        assay_list: list[str] = []
+        mean_rl_list: list[float] = []
+        sparsity_list: list[float] = []
         for s in src_ds._stores:
             n = len(s.viewpoints) if s.viewpoints else 1
             completed_list.extend([s.completed] * n)
             total_reads_list.extend([s.total_reads] * n)
+            assay_list.extend([s.assay.upper()] * n)
+            mean_rl_list.extend([s.mean_read_length] * n)
+            sparsity_list.extend([s.sparsity] * n)
         completed = np.array(completed_list, dtype=bool)
-        total_reads_arr = np.array(total_reads_list, dtype=np.int64)
         meta_grp.require_array("completed", shape=(len(all_samples),), dtype=bool, overwrite=True)
         meta_grp["completed"][:] = completed
         meta_grp.require_array("total_reads", shape=(len(all_samples),), dtype=np.int64, overwrite=True)
-        meta_grp["total_reads"][:] = total_reads_arr
+        meta_grp["total_reads"][:] = np.array(total_reads_list, dtype=np.int64)
+        assay_arr = meta_grp.require_array(
+            "assay", shape=(len(all_samples),), dtype=VariableLengthUTF8(), overwrite=True
+        )
+        assay_arr[:] = assay_list
+        meta_grp.require_array("mean_read_length", shape=(len(all_samples),), dtype=np.float32, overwrite=True)
+        meta_grp["mean_read_length"][:] = np.array(mean_rl_list, dtype=np.float32)
+        meta_grp.require_array("sparsity", shape=(len(all_samples),), dtype=np.float32, overwrite=True)
+        meta_grp["sparsity"][:] = np.array(sparsity_list, dtype=np.float32)
 
         out_root.attrs.update({
-            "assays": all_assays,
+            "assay_types": all_assay_types,
+            "array_keys": all_array_keys,
             "sample_names": all_samples,
             "key_to_samples": key_to_samples,
             "chromsizes": chromsizes,

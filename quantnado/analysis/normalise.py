@@ -393,21 +393,23 @@ def _normalise_xr_dataset(
 ) -> xr.Dataset:
     sample_labels = list(data["sample"].values)
     scale = _scale_per_sample(lib_sizes, sample_labels)  # (n_samples,)
-    scale_da = da.from_array(scale, chunks=-1)[np.newaxis, :]  # (1, n_samples)
-
-    def _to_float_dask(var_name: str) -> da.Array:
-        arr = data[var_name].data
-        if not isinstance(arr, da.Array):
-            arr = da.from_array(arr)
-        if not np.issubdtype(arr.dtype, np.floating):
-            arr = arr.astype(np.float32)
-        return arr
+    # Use a labelled DataArray so broadcasts align on "sample" regardless of dim order
+    scale_xr = xr.DataArray(scale, dims=["sample"], coords={"sample": sample_labels})
 
     vars_to_norm = [v for v in data.data_vars if v != "count"]
 
     normed: dict[str, tuple] = {}
     for v in vars_to_norm:
-        normed[v] = (data[v].dims, _to_float_dask(v) / scale_da)
+        var = data[v]
+        arr = var.data
+        if not isinstance(arr, da.Array):
+            arr = da.from_array(arr if np.issubdtype(arr.dtype, np.floating) else arr.astype(np.float32))
+        elif not np.issubdtype(arr.dtype, np.floating):
+            arr = arr.astype(np.float32)
+        scale_da = da.from_array(scale, chunks=-1)
+        # Broadcast scale along sample axis (last axis assumed for reduce() output)
+        normed_arr = arr / scale_da[np.newaxis, :]
+        normed[v] = (var.dims, normed_arr)
 
     if method == "rpkm":
         # Try range_length coord first, fall back to feature_lengths arg

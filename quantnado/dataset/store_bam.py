@@ -17,7 +17,7 @@ Array keys:
     ChIP + ip=H3K27ac   → "chip_h3k27ac"
     CUT&TAG + ip=MLLN   → "cat_mlln"
     RNA (stranded)       → "rna_fwd", "rna_rev"
-    MCC                  → "mcc_{viewpoint}" per viewpoint
+    MCC                  → "viewpoint_{viewpoint}" per viewpoint
 """
 
 from __future__ import annotations
@@ -244,7 +244,7 @@ class BamStore:
         self.ip = ip
         self.chromsizes = chromsizes
         self.chromosomes = sorted(chromsizes.keys())
-        self.stranded = stranded in ("R", "F") if isinstance(stranded, str) else bool(stranded)
+        self.stranded = stranded if isinstance(stranded, str) and stranded in ("R", "F") else None
         self.viewpoints = viewpoints or []
         self.chunk_len = chunk_len
         self.compressors = compressors
@@ -275,7 +275,7 @@ class BamStore:
             if self.assay.upper() == "MCC" or CoverageType.MICRO_CAPTURE_C in self.assay.lower():
                 for vp in self.viewpoints:
                     grp.require_array(
-                        f"mcc_{vp}",
+                        f"viewpoint_{vp}",
                         shape=(1, chrom_len),
                         chunks=(1, self.chunk_len),
                         dtype=CONSTRUCTION_ARRAY_DTYPE,
@@ -313,12 +313,22 @@ class BamStore:
         read_filter: bamnado.ReadFilter,
         use_fragment: bool,
     ) -> tuple[np.ndarray, np.ndarray | None]:
-        """Return (fwd_signal, rev_signal | None) for one chromosome."""
+        """Return (fwd_signal, rev_signal | None) for one chromosome.
+
+        For stranded RNA, 'fwd' means forward gene strand:
+          - "R" (reverse/dUTP library): fwd gene ← reverse-strand reads, rev gene ← forward-strand reads
+          - "F" (forward library):       fwd gene ← forward-strand reads, rev gene ← reverse-strand reads
+        """
         if self.stranded:
+            # bamnado expects "forward" / "reverse" (full lowercase strings)
+            if self.stranded == "R":
+                fwd_bam_strand, rev_bam_strand = "reverse", "forward"
+            else:  # "F"
+                fwd_bam_strand, rev_bam_strand = "forward", "reverse"
             rf_fwd = _copy_read_filter(read_filter)
-            rf_fwd.strand = Strandedness.FORWARD.value
+            rf_fwd.strand = fwd_bam_strand
             rf_rev = _copy_read_filter(read_filter)
-            rf_rev.strand = Strandedness.REVERSE.value
+            rf_rev.strand = rev_bam_strand
             filters = [rf_fwd, rf_rev]
         else:
             filters = [read_filter]
@@ -362,7 +372,7 @@ class BamStore:
                 sparsity_vals.append(float(np.sum(fwd == 0) / fwd.size * 100))
         return float(np.mean(sparsity_vals)) if sparsity_vals else float("nan")
 
-    def _write_mcc_coverage(self, bam_file: str, read_filter: bamnado.ReadFilter, use_fragment: bool) -> float:
+    def _write_viewpoint_coverage(self, bam_file: str, read_filter: bamnado.ReadFilter, use_fragment: bool) -> float:
         """Write one array per viewpoint per chromosome. Returns mean sparsity.
 
         Iterates viewpoint × chromosome (not chromosome × viewpoint) so only one
@@ -395,7 +405,7 @@ class BamStore:
                         else np.pad(signal, (0, chrom_size - signal.shape[0]))
                     )
                 arr = signal.astype(np.uint32)
-                self.root[chrom][f"mcc_{vp}"][0, :] = arr
+                self.root[chrom][f"viewpoint_{vp}"][0, :] = arr
                 sparsity_per_vp[vp].append(float(np.sum(arr == 0) / arr.size * 100))
                 del arr, signal
 
@@ -433,7 +443,8 @@ class BamStore:
         obj.chromsizes = {str(k): int(v) for k, v in attrs.get("chromsizes", {}).items()}
         obj.chromosomes = sorted(obj.chromsizes.keys())
         obj.chunk_len = int(attrs.get("chunk_len", 65536))
-        obj.stranded = bool(attrs.get("stranded", ""))
+        raw_stranded = attrs.get("stranded", "")
+        obj.stranded = raw_stranded if raw_stranded in ("R", "F") else None
         obj.viewpoints = attrs.get("viewpoints", [])
         obj.meta = root.get("metadata")
         obj._array_key = array_key(obj.assay, obj.ip)
@@ -494,7 +505,6 @@ class BamStore:
 
         chromsizes_dict = _parse_chromsizes(chromsizes, filter_chromosomes=filter_chromosomes, test=test)
         read_filter = bam_filter or bamnado.ReadFilter()
-        is_stranded = stranded in ("R", "F")
         use_fragment = count_fragments
 
         viewpoints: list[str] = []
@@ -528,7 +538,7 @@ class BamStore:
         store._viewpoint_tag = viewpoint_tag
 
         if is_mcc:
-            sparsity = store._write_mcc_coverage(bam_path, read_filter, use_fragment)
+            sparsity = store._write_viewpoint_coverage(bam_path, read_filter, use_fragment)
         else:
             sparsity = store._write_coverage(bam_path, read_filter, use_fragment)
 
