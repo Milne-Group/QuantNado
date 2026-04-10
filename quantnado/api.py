@@ -19,6 +19,7 @@ Example::
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 import pandas as pd
@@ -269,6 +270,9 @@ class QuantNado:
     def __init__(self, dataset: QuantNadoDataset) -> None:
         self._dataset = dataset
 
+    def __getattr__(self, name):
+        return getattr(self._dataset, name)
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
@@ -320,6 +324,8 @@ class QuantNado:
         chrom: str,
         start: int | None = None,
         end: int | None = None,
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
     ) -> xr.Dataset:
         """Extract a genomic region as an xr.Dataset.
 
@@ -331,13 +337,17 @@ class QuantNado:
             1-based start position (inclusive). Defaults to 1.
         end:
             1-based end position (inclusive). Defaults to chromosome length.
+        assay:
+            Restrict to samples of this assay type.
+        samples:
+            Explicit sample names (overrides *assay*).
 
         Returns
         -------
         xr.Dataset
             dims: sample × position; one data_var per assay.
         """
-        return self._dataset.sel(chrom=chrom, start=start, end=end)
+        return self._dataset.sel(chrom=chrom, start=start, end=end, assay=assay, samples=samples)
 
     def to_datatree(self, chromosomes: list[str] | None = None) -> xr.DataTree:
         """Return the full dataset as an xr.DataTree (one node per chromosome)."""
@@ -359,35 +369,24 @@ class QuantNado:
         data: "xr.Dataset | xr.DataArray | pd.DataFrame",
         *,
         method: str = "cpm",
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
         library_sizes: "pd.Series | dict | None" = None,
         feature_lengths: "pd.Series | Any | None" = None,
     ) -> "xr.Dataset | xr.DataArray | pd.DataFrame":
-        """Normalise coverage signal or feature counts.
-
-        Parameters
-        ----------
-        data:
-            Output of :meth:`sel`, :meth:`QuantNadoDataset.sel`, or a feature
-            count DataFrame.
-        method:
-            ``"cpm"`` (Counts Per Million), ``"rpkm"``, or ``"tpm"``.
-        library_sizes:
-            Total mapped reads per sample; auto-read from store if omitted.
-        feature_lengths:
-            Required for ``"rpkm"`` / ``"tpm"`` on DataFrames.
-        """
-        return _normalise(
-            data,
-            self._dataset,
-            method=method,
-            library_sizes=library_sizes,
-            feature_lengths=feature_lengths,
+        """Normalise coverage signal or feature counts. See :meth:`QuantNadoDataset.normalise`."""
+        return self._dataset.normalise(
+            data, method=method, assay=assay, samples=samples,
+            library_sizes=library_sizes, feature_lengths=feature_lengths,
         )
 
     def pca(
         self,
-        data: xr.DataArray,
-        n_components: int = 10,
+        data_or_query=None,
+        n_components: int = 5,
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
+        modality: str | Sequence[str] | None = None,
         chromosome: str | None = None,
         nan_handling_strategy: str = "drop",
         standardize: bool = False,
@@ -395,29 +394,13 @@ class QuantNado:
         subset_size: int | None = None,
         subset_strategy: str = "random",
     ) -> tuple[Any, xr.DataArray]:
-        """Run PCA on reduced genomic signal data.
-
-        Parameters
-        ----------
-        data:
-            DataArray with dims (feature, sample).
-        n_components:
-            Number of principal components.
-
-        Returns
-        -------
-        pca_obj, transformed : tuple
-            sklearn PCA object and transformed DataArray (sample × component).
-        """
-        return _run_pca(
-            data,
-            n_components=n_components,
-            chromosome=chromosome,
-            nan_handling_strategy=nan_handling_strategy,
-            standardize=standardize,
-            random_state=random_state,
-            subset_size=subset_size,
-            subset_strategy=subset_strategy,
+        """Run PCA on reduced genomic signal. See :meth:`QuantNadoDataset.pca`."""
+        return self._dataset.pca(
+            data_or_query, n_components=n_components, assay=assay, samples=samples,
+            modality=modality,
+            chromosome=chromosome, nan_handling_strategy=nan_handling_strategy,
+            standardize=standardize, random_state=random_state,
+            subset_size=subset_size, subset_strategy=subset_strategy,
         )
 
     # ------------------------------------------------------------------
@@ -429,8 +412,9 @@ class QuantNado:
         data: xr.DataArray,
         data_rev: xr.DataArray | None = None,
         *,
-        modality: str | None = None,
-        samples: list[str] | None = None,
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
+        modality: str | Sequence[str] | None = None,
         groups: dict[str, list[str]] | None = None,
         flip_minus_strand: bool = True,
         error_stat: str | None = "sem",
@@ -444,14 +428,15 @@ class QuantNado:
         ax: Any = None,
         filepath: str | Path | None = None,
     ) -> Any:
-        """Plot a metagene profile. See :func:`quantnado.analysis.plot.metaplot`."""
-        return metaplot(
+        """Plot a metagene profile. See :meth:`QuantNadoDataset.metaplot`."""
+        return self._dataset.metaplot(
             data, data_rev,
-            modality=modality, samples=samples, groups=groups,
-            flip_minus_strand=flip_minus_strand, error_stat=error_stat,
-            palette=palette, reference_point=reference_point,
-            reference_label=reference_label, xlabel=xlabel, ylabel=ylabel,
-            title=title, figsize=figsize, ax=ax, filepath=filepath,
+            assay=assay, samples=samples, modality=modality,
+            groups=groups, flip_minus_strand=flip_minus_strand,
+            error_stat=error_stat, palette=palette,
+            reference_point=reference_point, reference_label=reference_label,
+            xlabel=xlabel, ylabel=ylabel, title=title, figsize=figsize,
+            ax=ax, filepath=filepath,
         )
 
     def tornadoplot(
@@ -459,8 +444,9 @@ class QuantNado:
         data: xr.DataArray,
         data_rev: xr.DataArray | None = None,
         *,
-        modality: str | None = None,
-        samples: list[str] | None = None,
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
+        modality: str | Sequence[str] | None = None,
         sample_names: list[str] | None = None,
         groups: dict[str, list[str]] | None = None,
         flip_minus_strand: bool = True,
@@ -477,11 +463,12 @@ class QuantNado:
         figsize: tuple[float, float] | None = None,
         filepath: str | Path | None = None,
     ) -> list:
-        """Tornado / heatmap plot. See :func:`quantnado.analysis.plot.tornadoplot`."""
-        return tornadoplot(
+        """Tornado / heatmap plot. See :meth:`QuantNadoDataset.tornadoplot`."""
+        return self._dataset.tornadoplot(
             data, data_rev,
-            modality=modality, samples=samples, sample_names=sample_names,
-            groups=groups, flip_minus_strand=flip_minus_strand, sort_by=sort_by,
+            assay=assay, samples=samples, modality=modality,
+            sample_names=sample_names, groups=groups,
+            flip_minus_strand=flip_minus_strand, sort_by=sort_by,
             vmin=vmin, vmax=vmax, scale_each=scale_each, cmap=cmap,
             reference_point=reference_point, reference_label=reference_label,
             xlabel=xlabel, ylabel=ylabel, title=title, figsize=figsize,
@@ -492,40 +479,116 @@ class QuantNado:
         self,
         data: xr.Dataset,
         *,
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
         variable: str = "mean",
-        samples: list[str] | None = None,
         title: str = "Signal heatmap",
         cmap: str = "viridis",
         figsize: tuple[float, float] = (10, 8),
         filepath: str | Path | None = None,
         **kwargs,
     ) -> Any:
-        """Heatmap of reduced signal. See :func:`quantnado.analysis.plot.heatmap`."""
-        return heatmap(
+        """Heatmap of reduced signal. See :meth:`QuantNadoDataset.heatmap`."""
+        return self._dataset.heatmap(
             data,
-            variable=variable, samples=samples, title=title, cmap=cmap,
-            figsize=figsize, filepath=filepath, **kwargs,
+            assay=assay, samples=samples, variable=variable,
+            title=title, cmap=cmap, figsize=figsize, filepath=filepath,
+            **kwargs,
         )
 
     def correlate(
         self,
         data: xr.Dataset,
         *,
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
         variable: str = "mean",
         method: str = "pearson",
-        samples: list[str] | None = None,
         title: str = "Sample correlation",
         figsize: tuple[float, float] = (8, 7),
         filepath: str | Path | None = None,
         **kwargs,
     ) -> tuple[pd.DataFrame, Any]:
-        """Compute and plot sample correlation. See :func:`quantnado.analysis.plot.correlate`."""
-        return correlate(
+        """Compute and plot sample correlation. See :meth:`QuantNadoDataset.correlate`."""
+        return self._dataset.correlate(
             data,
-            variable=variable, method=method, samples=samples,
-            title=title, figsize=figsize, filepath=filepath, **kwargs,
+            assay=assay, samples=samples, variable=variable,
+            method=method, title=title, figsize=figsize, filepath=filepath,
+            **kwargs,
         )
 
     def locus_plot(self, *args, **kwargs) -> Any:
-        """Plot a genomic locus. See :func:`quantnado.analysis.plot.locus_plot`."""
-        return locus_plot(*args, **kwargs)
+        """Plot a genomic locus. See :meth:`QuantNadoDataset.locus_plot`."""
+        return self._dataset.locus_plot(*args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Data extraction / reduction
+    # ------------------------------------------------------------------
+
+    def reduce(
+        self,
+        intervals_path: str | None = None,
+        ranges_df=None,
+        gtf_path: str | None = None,
+        feature_type: str | None = None,
+        reduction: str = "mean",
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
+        modality: str | Sequence[str] | None = None,
+        **kwargs,
+    ):
+        """Reduce signal over genomic intervals. See :meth:`QuantNadoDataset.reduce`."""
+        return self._dataset.reduce(
+            intervals_path=intervals_path,
+            ranges_df=ranges_df,
+            gtf_path=gtf_path,
+            feature_type=feature_type,
+            reduction=reduction,
+            assay=assay,
+            samples=samples,
+            modality=modality,
+            **kwargs,
+        )
+
+    def count_features(
+        self,
+        gtf_file: str | None = None,
+        bed_file: str | None = None,
+        ranges_df=None,
+        feature_type: str = "gene",
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
+        modality: str | Sequence[str] | None = None,
+        **kwargs,
+    ):
+        """Count reads over features. See :meth:`QuantNadoDataset.count_features`."""
+        return self._dataset.count_features(
+            gtf_file=gtf_file,
+            bed_file=bed_file,
+            ranges_df=ranges_df,
+            feature_type=feature_type,
+            assay=assay,
+            samples=samples,
+            modality=modality,
+            **kwargs,
+        )
+
+    def extract(self, *args, **kwargs):
+        """Extract signal into bins. See :meth:`QuantNadoDataset.extract`."""
+        return self._dataset.extract(*args, **kwargs)
+
+    def library_sizes(self, assay: str | Sequence[str] | None = None, samples: str | Sequence[str] | None = None):
+        """Return total mapped reads per sample. See :meth:`QuantNadoDataset.library_sizes`."""
+        return self._dataset.library_sizes(assay=assay, samples=samples)
+
+    # ------------------------------------------------------------------
+    # PCA extras
+    # ------------------------------------------------------------------
+
+    def pca_scree(self, pca_obj, **kwargs) -> Any:
+        """Plot PCA scree. See :meth:`QuantNadoDataset.pca_scree`."""
+        return self._dataset.pca_scree(pca_obj, **kwargs)
+
+    def pca_scatter(self, pca_obj, pca_result, colour_by=None, shape_by=None, **kwargs) -> Any:
+        """Scatter plot of PCA-transformed samples. See :meth:`QuantNadoDataset.pca_scatter`."""
+        return self._dataset.pca_scatter(pca_obj, pca_result, colour_by=colour_by, shape_by=shape_by, **kwargs)

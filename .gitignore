@@ -23,9 +23,8 @@ sps*
 
 test_output/
 local/
-test_dataset.ipynb
-test_dataset/
 CLAUDE.md
 example.ipynb
+mkdocs.yml
 profiling_output/
 old_tests/

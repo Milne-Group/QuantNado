@@ -188,7 +188,7 @@ def metaplot(
         data = data.compute()
 
     # Flip minus-strand intervals so all profiles run 5'→3'
-    if flip_minus_strand and "strand" in data.coords:
+    if flip_minus_strand and "strand" in data.coords and not data.attrs.get("strand_flipped", False):
         strands = data.coords["strand"].values
         minus_mask = strands == "-"
         if minus_mask.any():
@@ -206,7 +206,7 @@ def metaplot(
         _pdim_rev = next((d for d in data_rev.dims if d in ("relative_position", "bin")), None)
         if _pdim_rev and data_rev.dims != ("interval", _pdim_rev, "sample"):
             data_rev = data_rev.transpose("interval", _pdim_rev, "sample")
-        if flip_minus_strand and "strand" in data_rev.coords:
+        if flip_minus_strand and "strand" in data_rev.coords and not data_rev.attrs.get("strand_flipped", False):
             _strands_rev = data_rev.coords["strand"].values
             _minus_rev = _strands_rev == "-"
             if _minus_rev.any():
@@ -371,7 +371,7 @@ def _prep_extract(data: xr.DataArray, flip_minus_strand: bool) -> "tuple[xr.Data
         data = data.transpose("interval", position_dim, "sample")
     if hasattr(data, "chunks"):
         data = data.compute()
-    if flip_minus_strand and "strand" in data.coords:
+    if flip_minus_strand and "strand" in data.coords and not data.attrs.get("strand_flipped", False):
         strands = data.coords["strand"].values
         minus_mask = strands == "-"
         if minus_mask.any():
@@ -992,7 +992,9 @@ def heatmap(
     *,
     variable: "str | None" = None,
     samples: "list[str] | None" = None,
+    exclude_zeros: bool = False,
     log_transform: bool = True,
+    zscore: "int | None" = None,
     cmap: str = "mako",
     figsize: "tuple[float, float]" = (6, 6),
     title: str = "Signal heatmap",
@@ -1018,9 +1020,14 @@ def heatmap(
         (e.g. ``"mean"``, ``"sum"``). Defaults to ``"mean"`` if present.
     samples : list of str, optional
         Subset of samples to include. Defaults to all samples.
+    exclude_zeros : bool, default False
+        If True, drop rows whose values are zero across all samples before plotting.
     log_transform : bool, default True
         Apply ``log1p`` before plotting. Recommended for count/coverage data
         with a heavy-tailed distribution.
+    zscore : {0, 1, None}, optional
+        Standardize the matrix before plotting. ``0`` z-scores rows (features),
+        ``1`` z-scores columns (samples), and ``None`` disables z-scoring.
     cmap : str, default "mako"
         Matplotlib / seaborn colormap name.
     figsize : tuple, default (6, 6)
@@ -1046,15 +1053,30 @@ def heatmap(
 
     mat, sample_labels = _extract_signal_matrix(data, variable, samples)
 
+    if exclude_zeros:
+        keep_rows = np.any(np.nan_to_num(mat, nan=0.0) != 0, axis=1)
+        mat = mat[keep_rows]
+
     if log_transform:
         mat = np.log1p(mat)
 
-    # Drop zero-variance columns (uninformative samples)
-    col_var = mat.var(axis=0)
+    if mat.ndim != 2 or mat.shape[0] == 0 or mat.shape[1] == 0:
+        raise ValueError("heatmap requires a non-empty 2D feature-by-sample matrix")
+    if zscore not in (None, 0, 1):
+        raise ValueError("zscore must be one of None, 0, or 1")
+
+    # Drop zero-variance columns when at least one informative sample remains.
+    # For single-sample or all-constant inputs, keep the matrix and disable clustering.
+    col_var = np.nanvar(mat, axis=0)
     keep = col_var > 0
-    if not keep.all():
+    if keep.any() and not keep.all():
         sample_labels = [s for s, k in zip(sample_labels, keep) if k]
         mat = mat[:, keep]
+
+    row_var = np.nanvar(mat, axis=1) if mat.shape[0] else np.array([])
+    col_var = np.nanvar(mat, axis=0) if mat.shape[1] else np.array([])
+    row_cluster = mat.shape[0] > 1 and np.any(row_var > 0)
+    col_cluster = mat.shape[1] > 1 and np.any(col_var > 0)
 
     g = sns.clustermap(
         mat,
@@ -1062,8 +1084,9 @@ def heatmap(
         yticklabels=False,
         xticklabels=sample_labels,
         figsize=figsize,
-        col_cluster=True,
-        row_cluster=True,
+        col_cluster=col_cluster,
+        row_cluster=row_cluster,
+        z_score=zscore,
         cbar_kws={"label": "log1p(signal)" if log_transform else "signal"},
         cbar_pos=(1.0, 0.5, 0.02, 0.2),
         dendrogram_ratio=0.1,

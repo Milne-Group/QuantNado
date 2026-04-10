@@ -14,6 +14,7 @@ Both expose the same API.  Auto-detected on open.
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Sequence
 
 import dask.array as da
 import numpy as np
@@ -225,6 +226,22 @@ class QuantNadoDataset:
             return np.ones(len(self.sample_names), dtype=bool)
         return np.array([s.completed for s in self._stores], dtype=bool)
 
+    def _get_assay_per_sample(self) -> list[str]:
+        """Return assay type string for each sample, in sample_names order."""
+        if self._combined:
+            meta = self._combined_root.get("metadata")
+            if meta is not None and "assay" in meta:
+                raw = meta["assay"][:]
+                return [s.decode() if isinstance(s, bytes) else str(s) for s in raw]
+            return [""] * len(self.sample_names)
+        result = []
+        for store in self._stores:
+            if store.viewpoints:
+                result.extend([store.assay.upper()] * len(store.viewpoints))
+            else:
+                result.append(store.assay.upper())
+        return result
+
     # ------------------------------------------------------------------
     # Gene annotation
     # ------------------------------------------------------------------
@@ -239,12 +256,15 @@ class QuantNadoDataset:
         """
         gtf = load_gtf(
             str(gtf_path),
-            feature_types=["gene", "exon"],
+            feature_types=["gene", "transcript", "exon"],
             usecols=["gene_id", "gene_name", "transcript_id", "gene_type", "gene_biotype", "exon_number"],
         )
         df = pd.DataFrame(gtf)
         self._genes_df = df[df["feature"] == "gene"].reset_index(drop=True)
         self._exons_df = df[df["feature"] == "exon"].reset_index(drop=True)
+        if self._genes_df.empty:
+            logger.warning("No 'gene' features found in GTF; falling back to 'transcript'")
+            self._genes_df = df[df["feature"] == "transcript"].reset_index(drop=True)
         logger.info(f"Loaded annotation: {len(self._genes_df):,} genes from {gtf_path}")
 
     def gene_info(self, name: str) -> dict:
@@ -320,7 +340,8 @@ class QuantNadoDataset:
         self,
         name: str,
         padding: int = 0,
-        assay: str | None = None,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
     ) -> xr.Dataset:
         """Select a genomic region by gene name.
 
@@ -347,7 +368,7 @@ class QuantNadoDataset:
         if chrom_len:
             end = min(end, chrom_len)
 
-        ds = self.sel(chrom, start, end, assay=assay)
+        ds = self.sel(chrom, start, end, assay=assay, samples=samples)
         ds.attrs.update({
             "gene_name": info["gene_name"],
             "gene_id": info["gene_id"],
@@ -366,7 +387,8 @@ class QuantNadoDataset:
         chrom: str,
         start: int | None = None,
         end: int | None = None,
-        assay: str | None = None,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
     ) -> xr.Dataset:
         """Extract a genomic region as an xr.Dataset.
 
@@ -417,11 +439,13 @@ class QuantNadoDataset:
         else:
             ds = self._sel_per_sample(chrom, s0, e0, position_coords)
 
-        if assay is not None:
-            assay_upper = assay.upper()
+        if samples is not None:
+            ds = ds.sel(sample=self._resolve_samples(samples=samples))
+        elif assay is not None:
+            assay_upper = {a.upper() for a in ([assay] if isinstance(assay, str) else assay)}
             if "assay" not in ds.coords:
                 raise ValueError("Dataset has no 'assay' coordinate — cannot filter by assay.")
-            assay_mask = ds.coords["assay"].values == assay_upper
+            assay_mask = np.array([a in assay_upper for a in ds.coords["assay"].values], dtype=bool)
             if not assay_mask.any():
                 available = sorted(set(ds.coords["assay"].values))
                 raise ValueError(f"Assay '{assay}' not found. Available: {available}")
@@ -560,11 +584,16 @@ class QuantNadoDataset:
         self,
         feature_type: str = "promoter",
         GTF_FILE: str | None = None,
+        anchor_feature: str = "gene",
         fixed_width: int | None = None,
+        upstream: int | None = None,
+        downstream: int | None = None,
         anchor: str = "start",
+        flip_strand: bool = True,
         bin_size: int = 50,
-        assay: str = "atac",
-        samples: list[str] | None = None,
+        assay: "str | Sequence[str] | None" = None,
+        modality: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
     ) -> xr.DataArray:
         """Extract signal into fixed-width bins around genomic features.
 
@@ -574,15 +603,33 @@ class QuantNadoDataset:
             Feature type: "promoter", "gene", "transcript", or "exon".
         GTF_FILE : str
             Path to GTF file.
+        anchor_feature : str
+            Which feature type to anchor promoters on when ``feature_type="promoter"``.
+            Usually ``"gene"`` or ``"transcript"``. This is passed through to
+            :func:`quantnado.analysis.features.extract_promoters`.
         fixed_width : int, optional
             If provided, expands features to this width around anchor point.
             If None, uses feature length.
+        upstream, downstream : int, optional
+            Window around the anchor in base pairs. When provided, positions are
+            extracted from ``anchor - upstream`` to ``anchor + downstream`` and
+            plotted on a signed coordinate axis (for example ``-2000 .. 0 .. 2000``).
+            Cannot be used together with ``fixed_width``.
         anchor : str
             Anchor point: "start", "end", or "midpoint".
+        flip_strand : bool
+            If True (default), reverse minus-strand intervals after extraction
+            so the returned windows are oriented 5'→3' relative to the anchor.
+            This is especially useful for gene/transcript-body style plots where
+            the gene body should lie to the right of the TSS.
         bin_size : int
             Width of each bin in bp (default: 50).
-        assay : str
-            Signal array key (default: "atac").
+        assay : str, optional
+            Assay type to restrict samples to (e.g. "RNA", "ATAC", "METH").
+            Also accepted as the array key for backward compatibility.
+        modality : str, optional
+            Array key to extract (e.g. "rna_fwd", "coverage", "methyl_pct").
+            Required when assay is a type name rather than an array key.
         samples : list of str, optional
             Sample names to extract. If None, uses all samples.
 
@@ -597,15 +644,44 @@ class QuantNadoDataset:
 
         if GTF_FILE is None:
             raise ValueError("GTF_FILE is required")
+        if fixed_width is not None and (upstream is not None or downstream is not None):
+            raise ValueError("Cannot specify both fixed_width and upstream/downstream")
+
+        # Resolve modality (array key) and optional assay-type sample filter.
+        # Backward compat: if only assay is given and it looks like an array key,
+        # treat it as modality with no sample filtering.
+        array_keys = self.array_keys
+        if modality is not None:
+            array_key = self._resolve_modalities(modality)
+        elif isinstance(assay, str) and assay.lower() in [k.lower() for k in array_keys]:
+            array_key = assay
+            assay = None  # not a type filter
+        elif assay is not None:
+            raise ValueError(
+                f"modality is required when assay='{assay}' is an assay type. "
+                f"Available array keys: {array_keys}"
+            )
+        else:
+            raise ValueError("Either assay (array key) or modality must be provided.")
 
         if samples is None:
-            samples = self.sample_names
+            if assay is not None:
+                samples = self._resolve_samples(assay=assay)
+            else:
+                samples = self.sample_names
+        else:
+            samples = self._resolve_samples(samples=samples)
 
         # Load and extract features
         gtf = load_gtf(GTF_FILE)
 
         if feature_type == "promoter":
-            features_pr = extract_promoters(gtf, anchor_feature="gene")
+            features_pr = extract_promoters(
+                gtf,
+                upstream=upstream if upstream is not None else 1000,
+                downstream=downstream if downstream is not None else 200,
+                anchor_feature=anchor_feature,
+            )
         else:
             features_pr = extract_feature_ranges(gtf, feature_type=feature_type)
 
@@ -619,20 +695,42 @@ class QuantNadoDataset:
         if "End" in features_df.columns:
             features_df = features_df.rename(columns={"End": "end"})
 
-        # Apply fixed width if specified
-        if fixed_width is not None:
-            if anchor == "start":
-                center = features_df["start"].values
-            elif anchor == "end":
-                center = features_df["end"].values
-            elif anchor == "midpoint":
-                center = (features_df["start"].values + features_df["end"].values) // 2
-            else:
-                raise ValueError(f"Unknown anchor: {anchor}")
+        # Apply fixed-width or upstream/downstream windowing
+        strand_col = next((c for c in ("Strand", "strand") if c in features_df.columns), None)
+        strands = features_df[strand_col].fillna("+").astype(str).values if strand_col else None
+        if anchor == "start":
+            anchor_pos = features_df["start"].values.copy()
+            if strands is not None:
+                minus_mask = strands == "-"
+                anchor_pos[minus_mask] = features_df.loc[minus_mask, "end"].values
+        elif anchor == "end":
+            anchor_pos = features_df["end"].values.copy()
+            if strands is not None:
+                plus_mask = strands == "+"
+                minus_mask = strands == "-"
+                anchor_pos[plus_mask] = features_df.loc[plus_mask, "end"].values
+                anchor_pos[minus_mask] = features_df.loc[minus_mask, "start"].values
+        elif anchor == "midpoint":
+            anchor_pos = ((features_df["start"].values + features_df["end"].values) // 2).astype(int)
+        else:
+            raise ValueError(f"Unknown anchor: {anchor}")
 
+        if upstream is not None or downstream is not None:
+            left = upstream if upstream is not None else 0
+            right = downstream if downstream is not None else 0
+            features_df["start"] = anchor_pos - left
+            features_df["end"] = anchor_pos + right
+            window_upstream = left
+            window_downstream = right
+        elif fixed_width is not None:
             half_width = fixed_width // 2
-            features_df["start"] = center - half_width
-            features_df["end"] = center + half_width
+            features_df["start"] = anchor_pos - half_width
+            features_df["end"] = anchor_pos + (fixed_width - half_width)
+            window_upstream = half_width
+            window_downstream = fixed_width - half_width
+        else:
+            window_upstream = None
+            window_downstream = None
 
         # Convert to 1-based intervals
         intervals = [
@@ -642,13 +740,24 @@ class QuantNadoDataset:
 
         # Extract signal into bins
         signal_array = extract_signal_into_bins(
-            intervals, self, assay, bin_size, samples
+            intervals, self, array_key, bin_size, samples
         )
 
         # Create DataArray
         n_intervals, n_bins, n_samples = signal_array.shape
         interval_ids = np.arange(n_intervals)
-        bin_ids = np.arange(n_bins)
+        if window_upstream is not None:
+            bin_ids = np.arange(n_bins, dtype=np.int64) * bin_size - int(window_upstream)
+        else:
+            bin_ids = np.arange(n_bins, dtype=np.int64)
+
+        strand_values = strands if strands is not None else np.array(["+"] * n_intervals, dtype=object)
+
+        if flip_strand and strands is not None:
+            minus_mask = strand_values == "-"
+            if np.any(minus_mask):
+                signal_array = signal_array.copy()
+                signal_array[minus_mask] = signal_array[minus_mask, ::-1, :]
 
         da = xr.DataArray(
             signal_array,
@@ -657,6 +766,14 @@ class QuantNadoDataset:
                 "interval": interval_ids,
                 "bin": bin_ids,
                 "sample": samples,
+                "strand": ("interval", strand_values),
+            },
+            attrs={
+                "upstream": window_upstream,
+                "downstream": window_downstream,
+                "anchor": anchor,
+                "bin_size": bin_size,
+                "strand_flipped": bool(flip_strand and strands is not None),
             },
         )
 
@@ -845,3 +962,444 @@ class QuantNadoDataset:
         zarr.consolidate_metadata(str(output_path))
         logger.info(f"Combined {len(src_ds._stores)} stores → {output_path}")
         return cls(output_path)
+
+    # ------------------------------------------------------------------
+    # Uniform analysis API helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_samples(
+        self,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+    ) -> "list[str]":
+        """Return sample names after applying assay/samples filters."""
+        def _as_list(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, Sequence):
+                return [str(v) for v in value]
+            return [str(value)]
+
+        sample_list = _as_list(samples)
+        assay_list = _as_list(assay)
+
+        if sample_list is not None:
+            resolved = [s for s in sample_list if s in self.sample_names]
+            if not resolved:
+                raise ValueError(f"No requested samples found. Available: {self.sample_names}")
+            return resolved
+        if assay_list is not None:
+            assay_upper = {a.upper() for a in assay_list}
+            assay_per_sample = self._get_assay_per_sample()
+            resolved = [
+                s for s, a in zip(self.sample_names, assay_per_sample)
+                if a.upper() in assay_upper
+            ]
+            if not resolved:
+                raise ValueError(f"No samples found for assay='{assay}'. Available assays: {self.assays}")
+            return resolved
+        return list(self.sample_names)
+
+    def _resolve_modalities(
+        self,
+        modality: "str | Sequence[str] | None" = None,
+        *,
+        allow_multiple: bool = False,
+        default: "str | None" = None,
+    ):
+        """Normalise modality selection to one string or a list of strings."""
+        if modality is None:
+            return [] if allow_multiple and default is None else default
+        if isinstance(modality, str):
+            modalities = [modality]
+        elif isinstance(modality, Sequence):
+            modalities = [str(m) for m in modality]
+        else:
+            modalities = [str(modality)]
+        if not allow_multiple and len(modalities) != 1:
+            raise ValueError("This method accepts exactly one modality; pass a single string or a single-item list.")
+        return modalities if allow_multiple else modalities[0]
+
+    def _sample_indices(self, sample_list: "list[str]") -> "np.ndarray":
+        """Map sample names to integer indices in ``self.sample_names``."""
+        idx_map = {s: i for i, s in enumerate(self.sample_names)}
+        return np.array([idx_map[s] for s in sample_list if s in idx_map], dtype=np.int64)
+
+    def _filter_sample_data(self, data, sample_list: "list[str]"):
+        """Filter xarray/pandas data structures to the requested samples."""
+        if hasattr(data, "coords") and "sample" in data.coords:
+            keep = [s for s in sample_list if s in data.coords["sample"].values]
+            return data.sel(sample=keep)
+        if hasattr(data, "columns"):
+            keep = [s for s in sample_list if s in data.columns]
+            return data.loc[:, keep]
+        return data
+
+    # ------------------------------------------------------------------
+    # Reduction / signal aggregation
+    # ------------------------------------------------------------------
+
+    def reduce(
+        self,
+        intervals_path: "str | None" = None,
+        ranges_df=None,
+        gtf_path: "str | None" = None,
+        feature_type: "str | None" = None,
+        reduction: str = "mean",
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        modality: "str | Sequence[str] | None" = None,
+        **kwargs,
+    ):
+        """Reduce signal over genomic intervals.
+
+        Parameters
+        ----------
+        intervals_path:
+            Path to a BED or GTF file.
+        ranges_df:
+            Pre-parsed ranges DataFrame / PyRanges.
+        gtf_path:
+            GTF file path (used with *feature_type*).
+        feature_type:
+            Feature type (e.g. ``"gene"``, ``"promoter"``).
+        reduction:
+            One of ``"mean"``, ``"sum"``, ``"max"``, ``"min"``, ``"median"``.
+        assay:
+            Restrict to samples of this assay type.
+        samples:
+            Explicit sample names (overrides *assay*).
+        modality:
+            Zarr array key (e.g. ``"atac"``, ``"rna_fwd"``).
+
+        Returns
+        -------
+        xr.Dataset
+        """
+        from .reduce import reduce_byranges_signal
+
+        resolved = self._resolve_samples(assay=assay, samples=samples)
+        indices = self._sample_indices(resolved)
+
+        return reduce_byranges_signal(
+            self,
+            ranges_df=ranges_df,
+            intervals_path=intervals_path,
+            feature_type=feature_type,
+            gtf_path=gtf_path,
+            reduction=reduction,
+            sample_indices=indices if len(indices) < len(self.sample_names) else None,
+            array_key=self._resolve_modalities(modality) if modality is not None else None,
+            **kwargs,
+        )
+
+    # ------------------------------------------------------------------
+    # Feature counting
+    # ------------------------------------------------------------------
+
+    def count_features(
+        self,
+        gtf_file: "str | None" = None,
+        bed_file: "str | None" = None,
+        ranges_df=None,
+        feature_type: str = "gene",
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        modality: "str | Sequence[str] | None" = None,
+        **kwargs,
+    ):
+        """Count reads over genomic features (DESeq2-compatible matrix).
+
+        Parameters
+        ----------
+        gtf_file:
+            Path to GTF file.
+        bed_file:
+            Path to BED file.
+        ranges_df:
+            Pre-parsed ranges DataFrame.
+        feature_type:
+            GTF feature level (default ``"gene"``).
+        assay:
+            Restrict to samples of this assay type.
+        samples:
+            Explicit sample names (overrides *assay*).
+        modality:
+            Zarr array key hint (e.g. ``"rna_fwd"``).
+
+        Returns
+        -------
+        tuple[pd.DataFrame, pd.DataFrame]
+            (counts_df, feature_metadata)
+        """
+        from .counts import count_features as _count_features
+
+        resolved = self._resolve_samples(assay=assay, samples=samples)
+        return _count_features(
+            self,
+            ranges_df=ranges_df,
+            bed_file=bed_file,
+            gtf_file=gtf_file,
+            feature_type=feature_type,
+            samples=resolved if len(resolved) < len(self.sample_names) else None,
+            modality=self._resolve_modalities(modality) if modality is not None else None,
+            **kwargs,
+        )
+
+    # ------------------------------------------------------------------
+    # Normalisation
+    # ------------------------------------------------------------------
+
+    def normalise(
+        self,
+        data,
+        method: str = "cpm",
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        library_sizes=None,
+        feature_lengths=None,
+    ):
+        """Normalise coverage signal or feature counts.
+
+        Parameters
+        ----------
+        data:
+            xr.Dataset, xr.DataArray, or pd.DataFrame.
+        method:
+            ``"cpm"``, ``"rpkm"``, or ``"tpm"``.
+        assay:
+            Pre-filter data to samples of this assay type.
+        samples:
+            Explicit sample names (overrides *assay*).
+        library_sizes:
+            Total mapped reads per sample; auto-read from store if omitted.
+        feature_lengths:
+            Required for ``"rpkm"`` / ``"tpm"`` on DataFrames.
+        """
+        from .normalise import normalise as _normalise
+
+        if assay is not None or samples is not None:
+            resolved = self._resolve_samples(assay=assay, samples=samples)
+            data = self._filter_sample_data(data, resolved)
+
+        return _normalise(
+            data, self, method=method,
+            library_sizes=library_sizes,
+            feature_lengths=feature_lengths,
+        )
+
+    def library_sizes(
+        self,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+    ):
+        """Return total mapped reads per sample as a pd.Series.
+
+        Parameters
+        ----------
+        assay:
+            Restrict to samples of this assay type.
+        samples:
+            Explicit sample names (overrides *assay*).
+        """
+        from .normalise import get_library_sizes
+        sizes = get_library_sizes(self)
+        if assay is not None or samples is not None:
+            resolved = self._resolve_samples(assay=assay, samples=samples)
+            sizes = sizes.reindex(resolved)
+        return sizes
+
+    # ------------------------------------------------------------------
+    # PCA
+    # ------------------------------------------------------------------
+
+    def pca(
+        self,
+        data_or_query=None,
+        n_components: int = 5,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        modality: "str | Sequence[str] | None" = None,
+        chromosome: "str | None" = None,
+        nan_handling_strategy: str = "drop",
+        standardize: bool = False,
+        random_state: "int | None" = None,
+        subset_size: "int | None" = None,
+        subset_strategy: str = "random",
+    ):
+        """Run PCA on reduced genomic signal.
+
+        Parameters
+        ----------
+        data_or_query:
+            Either a 2D DataArray, a chromosome name string, or ``None``.
+            When a chromosome or ``None`` is provided, data are auto-extracted
+            from :meth:`sel` using ``modality`` (default ``"coverage"``).
+        n_components:
+            Number of principal components.
+        assay:
+            Pre-filter samples before PCA.
+        samples:
+            Explicit sample names (overrides *assay*).
+
+        Returns
+        -------
+        tuple[PCA, xr.DataArray]
+        """
+        from .pca import run_pca as _run_pca
+
+        pca_chromosome = chromosome
+
+        if isinstance(data_or_query, xr.DataArray):
+            data = data_or_query
+            if assay is not None or samples is not None:
+                data = self._filter_sample_data(data, self._resolve_samples(assay=assay, samples=samples))
+            if not any(coord in data.coords for coord in ("contig", "chrom")):
+                pca_chromosome = None
+        elif isinstance(data_or_query, xr.Dataset):
+            data = data_or_query
+            if assay is not None or samples is not None:
+                data = self._filter_sample_data(data, self._resolve_samples(assay=assay, samples=samples))
+            resolved_modality = self._resolve_modalities(modality, default="coverage")
+            if resolved_modality not in data.data_vars:
+                raise ValueError(
+                    f"Modality '{resolved_modality}' not found in dataset input. "
+                    f"Available: {list(data.data_vars)}"
+                )
+            data = data[resolved_modality]
+            if not any(coord in data.coords for coord in ("contig", "chrom")):
+                pca_chromosome = None
+        else:
+            query_chrom = data_or_query if isinstance(data_or_query, str) else chromosome
+            if query_chrom is None:
+                raise ValueError("Provide a DataArray, a chromosome name, or set chromosome=...")
+            selected = self.sel(query_chrom, assay=assay, samples=samples)
+            resolved_modality = self._resolve_modalities(modality, default="coverage")
+            if resolved_modality not in selected.data_vars:
+                raise ValueError(
+                    f"Modality '{resolved_modality}' not found for chromosome '{query_chrom}'. "
+                    f"Available: {list(selected.data_vars)}"
+                )
+            data = selected[resolved_modality]
+
+        return _run_pca(
+            data,
+            n_components=n_components,
+            chromosome=pca_chromosome,
+            nan_handling_strategy=nan_handling_strategy,
+            standardize=standardize,
+            random_state=random_state,
+            subset_size=subset_size,
+            subset_strategy=subset_strategy,
+        )
+
+    def pca_scree(self, pca_obj, **kwargs):
+        """Plot PCA scree (explained variance)."""
+        from .pca import plot_pca_scree
+        return plot_pca_scree(pca_obj, **kwargs)
+
+    def pca_scatter(self, pca_obj, pca_result, colour_by=None, shape_by=None, **kwargs):
+        """Scatter plot of PCA-transformed samples."""
+        from .pca import plot_pca_scatter
+        return plot_pca_scatter(pca_obj, pca_result, colour_by=colour_by, shape_by=shape_by, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Visualisation
+    # ------------------------------------------------------------------
+
+    def metaplot(
+        self,
+        data,
+        data_rev=None,
+        *,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        modality: "str | Sequence[str] | None" = None,
+        **kwargs,
+    ):
+        """Plot a metagene profile. See :func:`quantnado.analysis.plot.metaplot`."""
+        from .plot import metaplot as _metaplot
+
+        if assay is not None or samples is not None:
+            resolved = self._resolve_samples(assay=assay, samples=samples)
+            data = self._filter_sample_data(data, resolved)
+            if data_rev is not None:
+                data_rev = self._filter_sample_data(data_rev, resolved)
+
+        resolved_modality = self._resolve_modalities(modality) if modality is not None else None
+        return _metaplot(data, data_rev, modality=resolved_modality, **kwargs)
+
+    def tornadoplot(
+        self,
+        data,
+        data_rev=None,
+        *,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        modality: "str | Sequence[str] | None" = None,
+        **kwargs,
+    ):
+        """Tornado / heatmap plot. See :func:`quantnado.analysis.plot.tornadoplot`."""
+        from .plot import tornadoplot as _tornadoplot
+
+        if assay is not None or samples is not None:
+            data = self._filter_sample_data(data, self._resolve_samples(assay=assay, samples=samples))
+
+        resolved_modality = self._resolve_modalities(modality) if modality is not None else None
+        return _tornadoplot(data, data_rev, modality=resolved_modality, **kwargs)
+
+    def heatmap(
+        self,
+        data,
+        *,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        exclude_zeros: bool = False,
+        zscore: "int | None" = None,
+        **kwargs,
+    ):
+        """Heatmap of reduced signal. See :func:`quantnado.analysis.plot.heatmap`."""
+        from .plot import heatmap as _heatmap
+
+        if assay is not None or samples is not None:
+            data = self._filter_sample_data(data, self._resolve_samples(assay=assay, samples=samples))
+
+        return _heatmap(data, exclude_zeros=exclude_zeros, zscore=zscore, **kwargs)
+
+    def correlate(
+        self,
+        data,
+        *,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        **kwargs,
+    ):
+        """Compute and plot sample correlation. See :func:`quantnado.analysis.plot.correlate`."""
+        from .plot import correlate as _correlate
+
+        if assay is not None or samples is not None:
+            data = self._filter_sample_data(data, self._resolve_samples(assay=assay, samples=samples))
+
+        return _correlate(data, **kwargs)
+
+    def locus_plot(
+        self,
+        locus,
+        sample_names,
+        modality,
+        assay: "str | Sequence[str] | None" = None,
+        **kwargs,
+    ):
+        """Plot a genomic locus. See :func:`quantnado.analysis.plot.locus_plot`."""
+        from .plot import locus_plot
+
+        if assay is not None:
+            allowed = set(self._resolve_samples(assay=assay))
+            sample_names = [s for s in sample_names if s in allowed]
+
+        if isinstance(sample_names, str):
+            sample_names = [sample_names]
+        modalities = self._resolve_modalities(modality, allow_multiple=True)
+        return locus_plot(locus, sample_names=sample_names, modality=modalities, **kwargs)

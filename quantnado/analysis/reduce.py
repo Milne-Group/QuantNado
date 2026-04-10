@@ -73,6 +73,71 @@ class _RootView:
 		return self._root.attrs
 
 
+class _TransposedArray:
+	"""Presents a (n_samples, chrom_len) array as (chrom_len, n_samples) for the reduce loop."""
+
+	def __init__(self, arr) -> None:
+		self._arr = arr
+		ns, nc = int(arr.shape[0]), int(arr.shape[1])
+		self.shape = (nc, ns)
+		_c = getattr(arr, "chunks", None)
+		self.chunks = (_c[1], _c[0]) if _c else (nc, ns)
+
+	def __getitem__(self, key):
+		if isinstance(key, tuple) and len(key) == 2:
+			pos_key, sam_key = key
+			result = np.asarray(self._arr[sam_key, pos_key])
+			return result.T if result.ndim == 2 else result
+		result = np.asarray(self._arr[:, key])
+		return result.T if result.ndim == 2 else result
+
+
+class _CombinedZarrView:
+	"""Adapts the current QuantNado combined zarr (root[chrom][array_key]) to the reduce API.
+
+	Present arrays in (chrom_len, n_samples) orientation — same as _RootView —
+	so the reduce loop needs no changes.
+	"""
+
+	pos_axis = 0
+	samples_axis = 1
+
+	def __init__(self, zarr_root, array_key: str = "coverage") -> None:
+		self._root = zarr_root
+		self._array_key = array_key
+
+	def _chrom_keys(self):
+		import zarr as _zarr
+
+		return [
+			k for k in self._root.keys()
+			if k != "metadata" and isinstance(self._root[k], _zarr.Group)
+			and self._array_key in self._root[k]
+		]
+
+	def __contains__(self, key: str) -> bool:
+		return key in self._root and self._array_key in self._root.get(key, {})
+
+	def __getitem__(self, key: str) -> _TransposedArray:
+		return _TransposedArray(self._root[key][self._array_key])
+
+	def keys(self):
+		return iter(self._chrom_keys())
+
+	def chrom_len(self, key: str) -> int:
+		return int(self._root[key][self._array_key].shape[1])
+
+	def get(self, key: str, default=None):
+		try:
+			return self[key]
+		except (KeyError, TypeError):
+			return default
+
+	@property
+	def attrs(self):
+		return self._root.attrs
+
+
 def _ensure_dask_2d(data: xr.DataArray | np.ndarray | da.Array) -> da.Array:
 	"""Return a 2D dask array (positions x samples) for reduction."""
 	arr = data
@@ -232,6 +297,7 @@ def _select_samples(
 	dataset,
 	include_incomplete: bool,
 	sample_indices: np.ndarray | None,
+	array_key: str | None = None,
 ) -> tuple[np.ndarray, list[str], object]:
 	"""
 	Resolve which samples to use and return their indices, labels and the zarr root.
@@ -244,6 +310,10 @@ def _select_samples(
 		If True, include samples not marked complete.
 	sample_indices : np.ndarray, optional
 		Explicit indices (overrides completion filter).
+	array_key : str, optional
+		When given, wrap the zarr root so that ``root[chrom]`` returns the
+		per-key array (e.g. ``"atac"``, ``"coverage"``).  Also restricts
+		``sample_names`` to only those samples stored under that key.
 
 	Returns
 	-------
@@ -255,11 +325,22 @@ def _select_samples(
 	ValueError
 		If no samples are selected or no chromosome data is found.
 	"""
-	root = dataset.root if hasattr(dataset, "root") else dataset
+	if hasattr(dataset, "_combined_root") and dataset._combined_root is not None:
+		root = dataset._combined_root
+	elif hasattr(dataset, "_stores") and dataset._stores:
+		root = dataset._stores[0].root
+	elif hasattr(dataset, "root"):
+		root = dataset.root
+	else:
+		root = dataset
 	meta = root.get("metadata") if hasattr(root, "get") else None
 
-	sample_names = getattr(dataset, "sample_names", root.attrs.get("sample_names", None))
+	if hasattr(dataset, "sample_names"):
+		sample_names = dataset.sample_names
+	else:
+		sample_names = root.attrs.get("sample_names", None)
 	completed_mask = getattr(dataset, "completed_mask", None)
+	key_global_indices: np.ndarray | None = None
 	if completed_mask is None and meta is not None and "completed" in meta:
 		completed_mask = meta["completed"][:].astype(bool)
 
@@ -269,13 +350,40 @@ def _select_samples(
 		None,
 	)
 	if first_chrom is None:
-		# New layout: chromosomes live under coverage/ group — wrap with _RootView
-		if "coverage" in root:
+		if "coverage" in root and not isinstance(root["coverage"], _zarr.Group):
+			# Old layout: root["coverage"]["chr1"]
 			root = _RootView(root)
 			first_chrom = next(iter(root.keys()), None)
+		else:
+			# Current QuantNado layout: root[chrom] is a Group containing keyed arrays
+			_effective_key = array_key or "coverage"
+			first_chrom = next(
+				(k for k in root.keys() if k != "metadata" and isinstance(root[k], _zarr.Group)),
+				None,
+			)
+			if first_chrom is not None:
+				# Override sample_names with per-key sample list BEFORE wrapping
+				if array_key is not None:
+					_key_to_samples = dict(root.attrs.get("key_to_samples", {}))
+					if array_key in _key_to_samples:
+						_key_sample_names = list(_key_to_samples[array_key])
+						# Remap completed_mask to only the samples stored under this key
+						if sample_names is not None and completed_mask is not None:
+							_glob_idx = {s: i for i, s in enumerate(sample_names)}
+							_key_glob = np.array(
+								[_glob_idx[s] for s in _key_sample_names if s in _glob_idx],
+								dtype=np.int64,
+							)
+							key_global_indices = _key_glob
+							if len(_key_glob) == len(_key_sample_names):
+								completed_mask = completed_mask[_key_glob]
+							else:
+								completed_mask = np.ones(len(_key_sample_names), dtype=bool)
+						sample_names = _key_sample_names
+				root = _CombinedZarrView(root, _effective_key)
 		if first_chrom is None:
 			raise ValueError("No chromosome data found in dataset")
-	total_samples = root[first_chrom].shape[_RootView.samples_axis if isinstance(root, _RootView) else 0]
+	total_samples = root[first_chrom].shape[getattr(root, "samples_axis", 1)]
 
 	if completed_mask is None:
 		completed_mask = np.ones(total_samples, dtype=bool)
@@ -288,6 +396,14 @@ def _select_samples(
 		)
 	else:
 		sample_indices = np.asarray(sample_indices, dtype=np.int64)
+		# Explicit indices are in the global dataset order; remap them to the
+		# modality-specific sample order when array_key narrows the sample set.
+		if key_global_indices is not None:
+			global_to_local = {int(global_idx): local_idx for local_idx, global_idx in enumerate(key_global_indices)}
+			sample_indices = np.array(
+				[global_to_local[i] for i in sample_indices if int(i) in global_to_local],
+				dtype=np.int64,
+			)
 		# Apply completion filter to explicitly provided sample indices
 		if not include_incomplete:
 			sample_indices = sample_indices[completed_mask[sample_indices]]
@@ -933,6 +1049,7 @@ def extract_byranges_signal(
 	bin_agg: ReductionMethod | str = ReductionMethod.MEAN,
 	include_incomplete: bool = False,
 	sample_indices: np.ndarray | None = None,
+	array_key: str | None = None,
 	strand_aware: bool = False,
 	force_strand: str | None = None,
 ) -> xr.DataArray:
@@ -1037,7 +1154,9 @@ def extract_byranges_signal(
 	ranges_df, start_col, end_col, contig_col = _resolve_ranges(
 		ranges_df, intervals_path, feature_type, gtf_path, start_col, end_col, contig_col
 	)
-	sample_indices, sample_labels, root = _select_samples(dataset, include_incomplete, sample_indices)
+	sample_indices, sample_labels, root = _select_samples(
+		dataset, include_incomplete, sample_indices, array_key=array_key
+	)
 
 	# Log chromosome overlap
 	ranges_contigs = set(ranges_df[contig_col].unique())
@@ -1055,7 +1174,7 @@ def extract_byranges_signal(
 	# Determine global extraction width.
 	# If bin_size is provided, drop remainder bases (exact multiple of bin_size only).
 	if _total_width is None:
-		contig_lengths = {k: (root.chrom_len(k) if isinstance(root, _RootView) else int(root[k].shape[1])) for k in root.keys() if k != "metadata"}
+		contig_lengths = {k: (root.chrom_len(k) if hasattr(root, "chrom_len") else int(root[k].shape[0])) for k in root.keys() if k != "metadata"}
 		contig_len = ranges_df[contig_col].map(contig_lengths)
 		starts_all = np.asarray(ranges_df[start_col], dtype=np.int64)
 		ends_all = np.asarray(ranges_df[end_col], dtype=np.int64)
@@ -1117,7 +1236,7 @@ def extract_byranges_signal(
 		)
 		# Get chromosome length from zarr shape without loading data
 		_ref_akey = (f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev") if use_forced_strand else contig
-		arr_len = root.chrom_len(_ref_akey) if isinstance(root, _RootView) else int(root[_ref_akey].shape[1])
+		arr_len = root.chrom_len(_ref_akey) if hasattr(root, "chrom_len") else int(root[_ref_akey].shape[0])
 
 		clipped_starts = np.maximum(starts, 0)
 		clipped_ends = np.minimum(ends, arr_len)
@@ -1356,6 +1475,7 @@ def reduce_byranges_signal(
 	include_incomplete: bool = False,
 	sample_indices: np.ndarray | None = None,
 	strand_mode: int = 0,
+	array_key: str | None = None,
 ) -> xr.Dataset:
 	"""
 	Summarize per-chromosome Zarr arrays over genomic ranges using efficient reduction.
@@ -1429,7 +1549,7 @@ def reduce_byranges_signal(
 	ranges_df, start_col, end_col, contig_col = _resolve_ranges(
 		ranges_df, intervals_path, feature_type, gtf_path, start_col, end_col, contig_col
 	)
-	sample_indices, sample_labels, root = _select_samples(dataset, include_incomplete, sample_indices)
+	sample_indices, sample_labels, root = _select_samples(dataset, include_incomplete, sample_indices, array_key=array_key)
 
 	# Log chromosome overlap between ranges and dataset
 	ranges_contigs = set(ranges_df[contig_col].unique())
@@ -1491,7 +1611,7 @@ def reduce_byranges_signal(
 			names = np.asarray(sg[name_col], dtype=object) if name_col is not None else None
 
 			# Chromosome length from zarr shape; no need to load data yet
-			arr_len = root.chrom_len(akey) if isinstance(root, _RootView) else int(root[akey].shape[1])
+			arr_len = root.chrom_len(akey) if hasattr(root, "chrom_len") else int(root[akey].shape[0])
 
 			# Clip coordinates to valid range
 			starts = starts.clip(min=0)

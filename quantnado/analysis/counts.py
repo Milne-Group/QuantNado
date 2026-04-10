@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from collections.abc import Sequence
 
 from ..dataset.metadata import FeatureType
 from .features import extract_feature_ranges, load_gtf
@@ -22,8 +23,9 @@ def count_features(
     feature_id_col: str | list[str] | None = None,
     aggregate_by: str | None = None,
     strand: str | int | None = None,
-    assay: str | None = None,
-    samples: list[str] | None = None,
+    assay: str | Sequence[str] | None = None,
+    samples: str | Sequence[str] | None = None,
+    modality: str | Sequence[str] | None = None,
     filter_chromosomes: bool = True,
     integerize: bool = True,
     fillna_value: float | int | None = 0,
@@ -163,22 +165,60 @@ def count_features(
             resolved_ranges["strand"] == strand
         ].reset_index(drop=True)
 
-    # Convert sample names to indices if provided
-    sample_indices = None
+    # Resolve samples up front so assay semantics match the dataset wrappers.
+    all_samples = (
+        getattr(dataset, "sample_names", None)
+        or getattr(dataset, "samples", None)
+    )
+    assay_per_sample = (
+        dataset._get_assay_per_sample()
+        if assay is not None and hasattr(dataset, "_get_assay_per_sample")
+        else None
+    )
+
+    if isinstance(samples, str):
+        samples = [samples]
+    if isinstance(assay, str):
+        assay_values = {assay.upper()}
+    elif assay is not None:
+        assay_values = {str(a).upper() for a in assay}
+    else:
+        assay_values = None
+
+    if isinstance(modality, str):
+        resolved_modality = modality
+    elif modality is not None:
+        modality_values = [str(m) for m in modality]
+        if len(modality_values) != 1:
+            raise ValueError("count_features accepts exactly one modality; pass a single string or a single-item list.")
+        resolved_modality = modality_values[0]
+    else:
+        resolved_modality = None
+
+    resolved_samples = None
     if samples is not None:
-        all_samples = (
-            getattr(dataset, "samples", None) or 
-            getattr(dataset, "sample_names", None)
-        )
         if all_samples is None:
             raise ValueError("Dataset does not expose sample names; cannot filter by samples")
+        resolved_samples = [s for s in samples if s in all_samples]
+        if not resolved_samples:
+            raise ValueError(f"No samples matched. Available: {all_samples}")
+    elif assay_values is not None:
+        if all_samples is None or assay_per_sample is None:
+            raise ValueError("Dataset does not expose assay metadata; cannot filter by assay")
+        resolved_samples = [
+            s for s, a in zip(all_samples, assay_per_sample)
+            if str(a).upper() in assay_values
+        ]
+        if not resolved_samples:
+            raise ValueError(f"No samples found for assay='{assay}'. Available: {sorted(set(assay_per_sample))}")
+
+    # Convert sample names to indices if provided
+    sample_indices = None
+    if resolved_samples is not None:
         sample_indices = np.array(
-            [i for i, s in enumerate(all_samples) if s in samples],
+            [i for i, s in enumerate(all_samples) if s in resolved_samples],
             dtype=int
         )
-        if len(sample_indices) == 0:
-            raise ValueError(f"No samples matched. Available: {all_samples}")
-
 
     reduced = reduce_byranges_signal(
         dataset,
@@ -192,6 +232,7 @@ def count_features(
         sample_indices=sample_indices,
         include_incomplete=include_incomplete,
         strand_mode=_strand_mode,
+        array_key=resolved_modality,
     )
 
     aligned_ranges = resolved_ranges
@@ -204,20 +245,6 @@ def count_features(
     sample_labels = [str(s) for s in counts_da["sample"].values]
     counts_df = counts_da.to_pandas()
     counts_df.columns = sample_labels
-
-    if assay is not None:
-        assay_map = None
-        for source in (dataset, reduced):
-            if source is None:
-                continue
-            maybe = getattr(source, "attrs", {}).get("assay_by_sample") if hasattr(source, "attrs") else None
-            if maybe is not None and len(maybe) == len(sample_labels):
-                assay_map = pd.Series(maybe, index=sample_labels)
-                break
-        if assay_map is None:
-            raise ValueError("assay filter requested but no assay_by_sample attribute available")
-        keep = assay_map[assay_map == assay].index
-        counts_df = counts_df.loc[:, counts_df.columns.intersection(keep)]
 
     feature_metadata = pd.DataFrame(
         {

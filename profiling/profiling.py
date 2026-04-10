@@ -76,6 +76,7 @@ def profile_stores(metadata: pd.DataFrame) -> None:
                     bam_path=row.get("bam_path"),
                     methyl_path=row.get("methylation_path"),
                     variants_path=row.get("variant_path"),
+                    stranded=row.get("stranded", False),
                 )
             logger.info(f"✓ Successfully profiled {sample}")
         except Exception as e:
@@ -85,6 +86,7 @@ def profile_stores(metadata: pd.DataFrame) -> None:
 
 def profile_combine(samples_dir: Path, output_path: Path) -> QuantNadoDataset:
     log_file = OUT_DIR / "profile_combine_stores.log"
+    print("Profiling QuantNadoDataset.combine...")
     with _profiled(log_file):
         combined = QuantNadoDataset.combine(src=samples_dir, output=output_path, overwrite=True)
     print(f"✓ Done: combined {len(combined.sample_names)} samples")

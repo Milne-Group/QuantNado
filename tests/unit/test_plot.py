@@ -14,6 +14,7 @@ import xarray as xr
 from quantnado.analysis.plot import (
     _prep_extract,
     _resolve_palette,
+    heatmap,
     locus_plot,
     metaplot,
     tornadoplot,
@@ -127,6 +128,13 @@ class TestPrepExtract:
         result, _, _ = _prep_extract(da, flip_minus_strand=False)
         np.testing.assert_array_equal(result.values, original)
 
+    def test_no_double_flip_when_already_flipped(self):
+        da = _make_extract(n_intervals=2, with_strand=True)
+        original = da.values.copy()
+        da.attrs["strand_flipped"] = True
+        result, _, _ = _prep_extract(da, flip_minus_strand=True)
+        np.testing.assert_array_equal(result.values, original)
+
 
 # ---------------------------------------------------------------------------
 # metaplot
@@ -209,6 +217,12 @@ class TestMetaplot:
 
     def test_strand_flip_in_metaplot(self):
         da = _make_extract(n_intervals=2, with_strand=True)
+        ax = metaplot(da, flip_minus_strand=True)
+        assert ax is not None
+
+    def test_metaplot_no_double_flip_when_already_flipped(self):
+        da = _make_extract(n_intervals=2, with_strand=True)
+        da.attrs["strand_flipped"] = True
         ax = metaplot(da, flip_minus_strand=True)
         assert ax is not None
 
@@ -305,6 +319,58 @@ class TestTornadoplot:
         da = _make_extract()
         axes = tornadoplot(da, vmin=0.0, vmax=1.0)
         assert axes is not None
+
+
+# ---------------------------------------------------------------------------
+# heatmap
+# ---------------------------------------------------------------------------
+
+
+class TestHeatmap:
+    def test_single_sample_no_crash(self):
+        da = xr.DataArray(
+            np.arange(4, dtype=float).reshape(4, 1),
+            dims=("ranges", "sample"),
+            coords={"sample": ["s1"]},
+        )
+        g = heatmap(da, log_transform=False)
+        assert g is not None
+
+    def test_single_sample_zero_variance_no_crash(self):
+        da = xr.DataArray(
+            np.ones((4, 1), dtype=float),
+            dims=("ranges", "sample"),
+            coords={"sample": ["s1"]},
+        )
+        g = heatmap(da, log_transform=False)
+        assert g is not None
+
+    def test_exclude_zeros_drops_all_zero_rows(self):
+        da = xr.DataArray(
+            np.array([[0.0, 0.0], [1.0, 2.0], [0.0, 0.0], [3.0, 4.0]]),
+            dims=("ranges", "sample"),
+            coords={"sample": ["s1", "s2"]},
+        )
+        g = heatmap(da, log_transform=False, exclude_zeros=True)
+        assert g.data.shape[0] == 2
+
+    def test_zscore_rows(self):
+        da = xr.DataArray(
+            np.array([[1.0, 2.0], [3.0, 5.0], [8.0, 13.0]]),
+            dims=("ranges", "sample"),
+            coords={"sample": ["s1", "s2"]},
+        )
+        g = heatmap(da, log_transform=False, zscore=0)
+        assert g is not None
+
+    def test_invalid_zscore_raises(self):
+        da = xr.DataArray(
+            np.array([[1.0, 2.0], [3.0, 4.0]]),
+            dims=("ranges", "sample"),
+            coords={"sample": ["s1", "s2"]},
+        )
+        with pytest.raises(ValueError, match="zscore"):
+            heatmap(da, log_transform=False, zscore=2)
 
 
 # ---------------------------------------------------------------------------
