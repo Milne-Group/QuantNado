@@ -124,6 +124,7 @@ class QuantNadoDataset:
         self._combined = False
         self._genes_df: pd.DataFrame | None = None
         self._exons_df: pd.DataFrame | None = None
+        self._subset_samples: list[str] | None = None
 
         if self.path.is_dir() and not str(self.path).endswith(".zarr"):
             # Directory of per-sample zarrs
@@ -172,6 +173,8 @@ class QuantNadoDataset:
     @property
     def sample_names(self) -> list[str]:
         if self._combined:
+            if self._subset_samples is not None:
+                return self._subset_samples
             names = self._combined_root.attrs.get("sample_names", [])
             return [str(s) for s in names]
         # Per-sample: all sample names across all stores (MCC may contribute multiple)
@@ -222,7 +225,15 @@ class QuantNadoDataset:
         if self._combined:
             meta = self._combined_root.get("metadata")
             if meta is not None and "completed" in meta:
-                return meta["completed"][:].astype(bool)
+                full_mask = meta["completed"][:].astype(bool)
+                if self._subset_samples is not None:
+                    full_names = [str(s) for s in self._combined_root.attrs.get("sample_names", [])]
+                    name_to_idx = {s: i for i, s in enumerate(full_names)}
+                    return np.array(
+                        [full_mask[name_to_idx[s]] for s in self._subset_samples if s in name_to_idx],
+                        dtype=bool,
+                    )
+                return full_mask
             return np.ones(len(self.sample_names), dtype=bool)
         return np.array([s.completed for s in self._stores], dtype=bool)
 
@@ -232,7 +243,12 @@ class QuantNadoDataset:
             meta = self._combined_root.get("metadata")
             if meta is not None and "assay" in meta:
                 raw = meta["assay"][:]
-                return [s.decode() if isinstance(s, bytes) else str(s) for s in raw]
+                all_assays = [s.decode() if isinstance(s, bytes) else str(s) for s in raw]
+                if self._subset_samples is not None:
+                    full_names = [str(s) for s in self._combined_root.attrs.get("sample_names", [])]
+                    name_to_idx = {s: i for i, s in enumerate(full_names)}
+                    return [all_assays[name_to_idx[s]] for s in self._subset_samples if s in name_to_idx]
+                return all_assays
             return [""] * len(self.sample_names)
         result = []
         for store in self._stores:
@@ -241,6 +257,59 @@ class QuantNadoDataset:
             else:
                 result.append(store.assay.upper())
         return result
+
+    # ------------------------------------------------------------------
+    # Subset
+    # ------------------------------------------------------------------
+
+    def subset(
+        self,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+    ) -> "QuantNadoDataset":
+        """Return a new QuantNadoDataset restricted to the specified assay/samples.
+
+        No data is copied — the returned object shares the same zarr handles.
+        Use this to avoid repeating ``assay=`` or ``samples=`` on every call::
+
+            rna = qn.subset(assay="RNA")
+            reduced = rna.reduce(intervals_path="promoters.bed")
+            normalised = rna.normalise(reduced, method="cpm")
+
+        Parameters
+        ----------
+        assay:
+            One or more assay types (e.g. ``"RNA"``, ``["ATAC", "ChIP"]``).
+        samples:
+            Explicit sample name(s) — takes precedence over *assay*.
+
+        Returns
+        -------
+        QuantNadoDataset
+            A lightweight view over the same stores, filtered to the resolved samples.
+        """
+        resolved = self._resolve_samples(assay=assay, samples=samples)
+
+        new: QuantNadoDataset = object.__new__(QuantNadoDataset)
+        new.path = self.path
+        new._combined = self._combined
+        new._combined_root = self._combined_root
+        new._genes_df = self._genes_df
+        new._exons_df = self._exons_df
+
+        if self._combined:
+            new._stores = []
+            new._subset_samples = resolved
+        else:
+            resolved_set = set(resolved)
+            new._stores = [
+                s for s in self._stores
+                if s.sample in resolved_set
+                or any(f"{s.sample}_{vp}" in resolved_set for vp in s.viewpoints)
+            ]
+            new._subset_samples = None
+
+        return new
 
     # ------------------------------------------------------------------
     # Gene annotation
@@ -450,8 +519,6 @@ class QuantNadoDataset:
                 available = sorted(set(ds.coords["assay"].values))
                 raise ValueError(f"Assay '{assay}' not found. Available: {available}")
             ds = ds.isel(sample=assay_mask)
-            # Drop data vars that have no non-NaN data for this assay's samples
-            ds = ds[[v for v in ds.data_vars if not ds[v].isnull().all()]]
 
         return ds
 
@@ -522,7 +589,13 @@ class QuantNadoDataset:
         meta = root.get("metadata")
         if meta is not None and "assay" in meta:
             raw = meta["assay"][:]
-            assay_coord = np.array([s.decode() if isinstance(s, bytes) else str(s) for s in raw])
+            assay_coord_full = np.array([s.decode() if isinstance(s, bytes) else str(s) for s in raw])
+            full_names = [str(s) for s in root.attrs.get("sample_names", [])]
+            if full_names and len(full_names) != len(all_samples):
+                name_to_idx = {s: i for i, s in enumerate(full_names)}
+                assay_coord = np.array([assay_coord_full[name_to_idx[s]] for s in all_samples if s in name_to_idx])
+            else:
+                assay_coord = assay_coord_full
         else:
             assay_coord = np.array([""] * len(all_samples))
 
@@ -1403,3 +1476,327 @@ class QuantNadoDataset:
             sample_names = [sample_names]
         modalities = self._resolve_modalities(modality, allow_multiple=True)
         return locus_plot(locus, sample_names=sample_names, modality=modalities, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Plotnado integration
+    # ------------------------------------------------------------------
+
+    def _primary_array_key_for_sample(self, sample_name: str) -> "str | None":
+        """Return the zarr array key that contains data for *sample_name*.
+
+        Uses ``key_to_samples`` (combined store) or per-sample store metadata
+        so that ``extract_region`` returns the correct data variable for ChIP /
+        CUT&TAG / MCC samples rather than the first alphabetical key.
+        """
+        if self._combined:
+            key_to_samples: dict = dict(
+                self._combined_root.attrs.get("key_to_samples", {})  # type: ignore[union-attr]
+            )
+            for key, names in key_to_samples.items():
+                if sample_name in names:
+                    return key
+            return None
+        for store in self._stores:
+            if store.sample == sample_name or (
+                store.viewpoints and any(
+                    f"{store.sample}_{vp}" == sample_name for vp in store.viewpoints
+                )
+            ):
+                for k in store.array_keys():
+                    if k not in _PLOTNADO_COVERAGE_SKIP:
+                        return k
+        return None
+
+    def extract_region(
+        self,
+        region: str,
+        samples=None,
+        array_key: "str | None" = None,
+    ) -> "xr.DataArray":
+        """Extract a genomic region as an ``xr.DataArray`` for plotnado coverage tracks.
+
+        Parameters
+        ----------
+        region:
+            Genomic region string, e.g. ``"chr1:1000000-1001000"``.
+        samples:
+            Sample name(s) to include. ``None`` returns all samples.
+        array_key:
+            Explicit zarr array key (e.g. ``"atac"``, ``"chip_h3k27ac"``).
+            When omitted, the key that owns the requested sample is used.
+        """
+        chrom, start, end = _parse_plotnado_region(region)
+        ds = self.sel(chrom, start, end, samples=samples)
+        if array_key is not None:
+            return ds[array_key]
+
+        # When a single sample is requested, look up its owning key directly
+        # so ChIP / CUT&TAG samples don't fall back to the first alphabetical key.
+        if samples is not None:
+            requested = [samples] if isinstance(samples, str) else list(samples)
+            if len(requested) == 1:
+                key = self._primary_array_key_for_sample(requested[0])
+                if key is not None and key in ds:
+                    return ds[key]
+
+        for key in ds.data_vars:
+            if key not in _PLOTNADO_COVERAGE_SKIP:
+                return ds[key]
+        keys = list(ds.data_vars)
+        if keys:
+            return ds[keys[0]]
+        raise KeyError("No array data found in this region")
+
+    @property
+    def coverage(self) -> "_PlotnadoCoverageAdapter":
+        """Sub-store adapter for plotnado stranded coverage tracks (RNA)."""
+        return _PlotnadoCoverageAdapter(self)
+
+    @property
+    def methylation(self) -> "_PlotnadoMethylAdapter":
+        """Sub-store adapter for plotnado methylation tracks."""
+        return _PlotnadoMethylAdapter(self)
+
+    @property
+    def variants(self) -> "_PlotnadoVariantsAdapter":
+        """Sub-store adapter for plotnado variant tracks."""
+        return _PlotnadoVariantsAdapter(self)
+
+    def normalised(
+        self,
+        method: str = "cpm",
+        library_sizes: "pd.Series | dict | None" = None,
+    ) -> "NormalisedQuantNadoDataset":
+        """Return a normalised view for use with plotnado tracks.
+
+        The returned object implements the same plotnado interface as
+        ``QuantNadoDataset`` (``extract_region``, ``.coverage``,
+        ``.methylation``, ``.variants``) but divides coverage signal by
+        the per-sample library-size factor before returning.
+
+        Methylation (``methyl_pct``) and variant (``AF``, ``GT``) arrays
+        are passed through unchanged — they are already on absolute scales.
+
+        Parameters
+        ----------
+        method:
+            Normalisation method. Currently only ``"cpm"`` is supported for
+            per-position signal.
+        library_sizes:
+            Total mapped reads per sample. Auto-read from store metadata when
+            omitted.
+
+        Examples
+        --------
+        >>> qn_cpm = qn.normalised("cpm")
+        >>> gf.quantnado_coverage("ATAC-SEM-1", quantnado=qn_cpm)
+        >>> gf.quantnado_stranded_coverage("RNA-RCHACV-1", quantnado=qn_cpm)
+        """
+        return NormalisedQuantNadoDataset(self, method=method, library_sizes=library_sizes)
+
+
+# ---------------------------------------------------------------------------
+# Plotnado sub-store adapters (used by QuantNadoDataset.coverage / .methylation / .variants)
+# ---------------------------------------------------------------------------
+
+_PLOTNADO_COVERAGE_SKIP = frozenset(
+    {"rna_fwd", "rna_rev", "methyl_pct", "n_methylated", "n_total", "GT", "AF", "DP", "MQ"}
+)
+_PLOTNADO_METHYL_ALIASES = {"methylation_pct": "methyl_pct"}
+_PLOTNADO_VARIANT_ALIASES = {"genotype": "GT", "allele_frequency": "AF"}
+# plotnado allele-depth variables → synthesised from AF (ref=1-AF, alt=AF)
+_PLOTNADO_VARIANT_SYNTH = {"allele_depth_ref", "allele_depth_alt"}
+
+
+def _parse_plotnado_region(region: str) -> "tuple[str, int, int]":
+    """Parse ``'chr1:1000000-1001000'`` → ``(chr1, 1000000, 1001000)``."""
+    chrom, coords = region.split(":")
+    start, end = map(int, coords.replace(",", "").split("-"))
+    return chrom, start, end
+
+
+class _PlotnadoCoverageAdapter:
+    """Returned by ``QuantNadoDataset.coverage``; satisfies plotnado stranded-coverage track API."""
+
+    def __init__(self, dataset: QuantNadoDataset) -> None:
+        self._ds = dataset
+
+    def extract_region(
+        self, region: str, samples=None, strand: "str | None" = None
+    ) -> "xr.DataArray":
+        chrom, start, end = _parse_plotnado_region(region)
+        ds = self._ds.sel(chrom, start, end, samples=samples)
+        if strand == "+":
+            return ds["rna_fwd"]
+        if strand == "-":
+            return ds["rna_rev"]
+        for key in ds.data_vars:
+            if key not in _PLOTNADO_COVERAGE_SKIP:
+                return ds[key]
+        raise KeyError(f"No coverage array found; available: {list(ds.data_vars)}")
+
+
+class _PlotnadoMethylAdapter:
+    """Returned by ``QuantNadoDataset.methylation``; satisfies plotnado methylation track API."""
+
+    def __init__(self, dataset: QuantNadoDataset) -> None:
+        self._ds = dataset
+
+    def extract_region(
+        self, region: str, variable: str = "methyl_pct", samples=None
+    ) -> "xr.DataArray":
+        chrom, start, end = _parse_plotnado_region(region)
+        ds = self._ds.sel(chrom, start, end, samples=samples)
+        key = _PLOTNADO_METHYL_ALIASES.get(variable, variable)
+        if key not in ds:
+            raise KeyError(f"'{key}' not found; available: {list(ds.data_vars)}")
+        return ds[key]
+
+
+class _PlotnadoVariantsAdapter:
+    """Returned by ``QuantNadoDataset.variants``; satisfies plotnado variant track API.
+
+    QuantNado stores allele frequency (``AF``) directly rather than separate
+    ref/alt depth arrays.  When plotnado requests ``allele_depth_ref`` or
+    ``allele_depth_alt`` we synthesise them from ``AF`` so that plotnado's
+    internal ``af = alt / (ref + alt)`` calculation recovers the original value:
+
+    * ``allele_depth_ref`` → ``1 - AF``
+    * ``allele_depth_alt`` → ``AF``
+    """
+
+    def __init__(self, dataset: QuantNadoDataset) -> None:
+        self._ds = dataset
+
+    def extract_region(
+        self, region: str, variable: str = "AF", samples=None
+    ) -> "xr.DataArray":
+        chrom, start, end = _parse_plotnado_region(region)
+        ds = self._ds.sel(chrom, start, end, samples=samples)
+        if variable in _PLOTNADO_VARIANT_SYNTH:
+            if "AF" in ds:
+                af = ds["AF"].astype(float)
+            elif "GT" in ds:
+                # AF not stored — derive from genotype: het→0.5, hom-alt→1.0, else→0.0
+                gt = ds["GT"]
+                af = xr.where(gt == 2, 1.0, xr.where(gt == 1, 0.5, 0.0)).astype(float)
+            else:
+                raise KeyError(
+                    "Neither 'AF' nor 'GT' found for variant track; "
+                    f"available: {list(ds.data_vars)}"
+                )
+            return (1.0 - af) if variable == "allele_depth_ref" else af
+        key = _PLOTNADO_VARIANT_ALIASES.get(variable, variable)
+        if key not in ds:
+            raise KeyError(f"'{key}' not found; available: {list(ds.data_vars)}")
+        return ds[key]
+
+
+# ---------------------------------------------------------------------------
+# NormalisedQuantNadoDataset — plotnado-compatible wrapper with CPM scaling
+# ---------------------------------------------------------------------------
+
+
+class NormalisedQuantNadoDataset:
+    """A plotnado-compatible view of a :class:`QuantNadoDataset` with normalised coverage.
+
+    Created via :meth:`QuantNadoDataset.normalised`.  All attribute access is
+    forwarded to the underlying dataset except for the four plotnado integration
+    methods (``extract_region``, ``.coverage``, ``.methylation``, ``.variants``),
+    which apply per-sample CPM scaling to coverage signal before returning.
+
+    Methylation (``methyl_pct``) and variant (``AF`` / ``GT``) arrays are not
+    rescaled — they are already on absolute scales.
+    """
+
+    def __init__(
+        self,
+        dataset: QuantNadoDataset,
+        method: str = "cpm",
+        library_sizes: "pd.Series | dict | None" = None,
+    ) -> None:
+        self._inner = dataset
+        self._method = method.lower()
+        if self._method != "cpm":
+            raise ValueError(
+                f"Only 'cpm' is supported for per-position plotnado signal; got {method!r}."
+            )
+        if library_sizes is not None:
+            if isinstance(library_sizes, dict):
+                library_sizes = pd.Series(library_sizes, name="library_size")
+            self._lib_sizes: pd.Series = library_sizes.astype(float)
+        else:
+            from .normalise import get_library_sizes
+            self._lib_sizes = get_library_sizes(dataset)
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    def _cpm_scale(self, da_arr: xr.DataArray) -> xr.DataArray:
+        """Divide a (sample, position) DataArray by per-sample CPM scale factors."""
+        if "sample" not in da_arr.dims:
+            return da_arr
+        sample_labels = list(da_arr.coords["sample"].values)
+        available = set(self._lib_sizes.index)
+        scales = np.array(
+            [
+                self._lib_sizes[s] / 1e6
+                if s in available and not np.isnan(self._lib_sizes[s])
+                else 1.0
+                for s in sample_labels
+            ],
+            dtype=np.float64,
+        )
+        arr = da_arr.data
+        if not np.issubdtype(getattr(arr, "dtype", np.float32), np.floating):
+            arr = arr.astype(np.float32)
+        sample_axis = list(da_arr.dims).index("sample")
+        reshape = tuple(len(sample_labels) if i == sample_axis else 1 for i in range(arr.ndim))
+        if isinstance(arr, da.Array):
+            scale_vec = da.from_array(scales, chunks=-1).reshape(reshape)
+        else:
+            scale_vec = scales.reshape(reshape)
+        return da_arr.copy(data=arr / scale_vec).assign_attrs(
+            {**da_arr.attrs, "normalised": self._method}
+        )
+
+    # ------------------------------------------------------------------
+    # Plotnado integration (overrides QuantNadoDataset implementations)
+    # ------------------------------------------------------------------
+
+    def extract_region(
+        self,
+        region: str,
+        samples=None,
+        array_key: "str | None" = None,
+    ) -> xr.DataArray:
+        result = self._inner.extract_region(region, samples=samples, array_key=array_key)
+        return self._cpm_scale(result)
+
+    @property
+    def coverage(self) -> "_NormalisedCoverageAdapter":
+        return _NormalisedCoverageAdapter(self._inner.coverage, self._cpm_scale)
+
+    @property
+    def methylation(self) -> _PlotnadoMethylAdapter:
+        """Methylation is already a percentage — no scaling applied."""
+        return self._inner.methylation
+
+    @property
+    def variants(self) -> _PlotnadoVariantsAdapter:
+        """Variant AF / GT are already on absolute scales — no scaling applied."""
+        return self._inner.variants
+
+
+class _NormalisedCoverageAdapter:
+    """Wraps ``_PlotnadoCoverageAdapter`` and applies CPM scaling to its output."""
+
+    def __init__(self, adapter: _PlotnadoCoverageAdapter, scale_fn) -> None:
+        self._adapter = adapter
+        self._scale_fn = scale_fn
+
+    def extract_region(
+        self, region: str, samples=None, strand: "str | None" = None
+    ) -> xr.DataArray:
+        result = self._adapter.extract_region(region, samples=samples, strand=strand)
+        return self._scale_fn(result)

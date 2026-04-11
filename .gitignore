@@ -26,5 +26,4 @@ local/
 CLAUDE.md
 example.ipynb
 mkdocs.yml
-profiling_output/
-old_tests/
+profiling/output/

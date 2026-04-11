@@ -138,7 +138,9 @@ def _library_sizes_from_qnd(dataset) -> pd.Series:
                 "Rebuild from per-sample stores or pass library_sizes explicitly."
             )
         reads = meta["total_reads"][:].astype(float)
-        return pd.Series(reads, index=dataset.sample_names, name="library_size")
+        full_names = [str(s) for s in dataset._combined_root.attrs.get("sample_names", [])]
+        full_series = pd.Series(reads, index=full_names, name="library_size")
+        return full_series.reindex(dataset.sample_names)
 
     sizes: dict[str, float] = {}
     for store in dataset._stores:
@@ -161,9 +163,13 @@ def _mean_read_lengths_from_qnd(dataset) -> pd.Series:
                 "Rebuild from per-sample stores or pass mean_read_lengths explicitly."
             )
         lengths = meta["mean_read_length"][:].astype(float)
+        full_names = [str(s) for s in dataset._combined_root.attrs.get("sample_names", [])]
+        full_series = pd.Series(lengths, index=full_names, name="mean_read_length")
+        result = full_series.reindex(dataset.sample_names)
+        # NaN out incomplete samples
         completed = dataset.completed_mask
-        lengths[~completed] = np.nan
-        return pd.Series(lengths, index=dataset.sample_names, name="mean_read_length")
+        result.values[~completed] = np.nan
+        return result
 
     lengths_dict: dict[str, float] = {}
     for store in dataset._stores:
