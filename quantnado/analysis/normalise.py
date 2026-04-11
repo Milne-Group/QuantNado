@@ -409,21 +409,27 @@ def _normalise_xr_dataset(
     feature_lengths: pd.Series | np.ndarray | None = None,
     mean_read_lengths: pd.Series | None = None,
 ) -> xr.Dataset:
+    signal_vars = [v for v in ("coverage", "rna_fwd", "rna_rev") if v in data.data_vars]
+
+    if signal_vars:
+        result = data.copy()
+        for var_name in signal_vars:
+            normed = _normalise_xr_dataarray(
+                data[var_name],
+                method=method,
+                lib_sizes=lib_sizes,
+                mean_read_lengths=mean_read_lengths,
+            )
+            out_name = method if var_name == "coverage" else f"{var_name}_{method}"
+            result[out_name] = normed
+        result.attrs = {**data.attrs, "normalised": method}
+        logger.info(
+            f"Added {method.upper()} variable(s) to xr.Dataset for {', '.join(signal_vars)}."
+        )
+        return result
+
     sample_labels = list(data["sample"].values)
     scale = _scale_per_sample(lib_sizes, sample_labels)  # (n_samples,)
-
-    if "coverage" in data.data_vars:
-        coverage_norm = _normalise_xr_dataarray(
-            data["coverage"],
-            method=method,
-            lib_sizes=lib_sizes,
-            mean_read_lengths=mean_read_lengths,
-        )
-        result = data.copy()
-        result[method] = coverage_norm
-        result.attrs = {**data.attrs, "normalised": method}
-        logger.info(f"Added {method.upper()} variable to xr.Dataset from coverage.")
-        return result
 
     vars_to_norm = [v for v in data.data_vars if v != "count"]
 

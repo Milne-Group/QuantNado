@@ -63,6 +63,20 @@ def _make_xr_coverage_dataset(n_positions=10):
     )
 
 
+def _make_xr_rna_dataset(n_positions=10):
+    rng = np.random.default_rng(4)
+    fwd = rng.random((3, n_positions)).astype(np.float32)
+    rev = rng.random((3, n_positions)).astype(np.float32)
+    return xr.Dataset(
+        {
+            "rna_fwd": (["sample", "position"], fwd),
+            "rna_rev": (["sample", "position"], rev),
+        },
+        coords={"sample": SAMPLES, "position": np.arange(n_positions)},
+        attrs={"bin_size": 1},
+    )
+
+
 def _make_xr_dataarray(n_intervals=4, n_positions=10):
     """xr.DataArray similar to extract() output, dims (interval, position, sample)."""
     rng = np.random.default_rng(2)
@@ -299,6 +313,20 @@ class TestNormaliseXrDataset:
         result = normalise(ds, library_sizes=LIB_SIZES, method="rpkm")
         assert "coverage" in result.data_vars
         assert "rpkm" in result.data_vars
+
+    def test_rna_dataset_adds_strand_specific_cpm_variables(self):
+        ds = _make_xr_rna_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="cpm")
+        assert "rna_fwd" in result.data_vars
+        assert "rna_rev" in result.data_vars
+        assert "rna_fwd_cpm" in result.data_vars
+        assert "rna_rev_cpm" in result.data_vars
+
+    def test_rna_dataset_adds_strand_specific_rpkm_variables(self):
+        ds = _make_xr_rna_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="rpkm")
+        assert "rna_fwd_rpkm" in result.data_vars
+        assert "rna_rev_rpkm" in result.data_vars
 
 
 # ---------------------------------------------------------------------------

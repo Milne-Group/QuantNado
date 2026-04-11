@@ -7,10 +7,7 @@ import shutil
 import tracemalloc
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
-from matplotlib.lines import Line2D
 from loguru import logger
 
 import quantnado as qn
@@ -74,7 +71,9 @@ def build_metadata(output_path: Path) -> pd.DataFrame:
     return metadata
 
 
-def profile_stores(metadata: pd.DataFrame, output_path: Path, overwrite: bool = False, test: bool = False) -> None:
+def profile_stores(
+    metadata: pd.DataFrame, output_path: Path, overwrite: bool = False, test: bool = False
+) -> None:
     """
     Profiles the creation of individual sample stores by running qn.create_dataset within a cProfile context and logging to files.
     If a store already exists for a sample and overwrite=False, that sample will be skipped.
@@ -92,10 +91,9 @@ def profile_stores(metadata: pd.DataFrame, output_path: Path, overwrite: bool = 
         store_path = output_path / f"{sample}.zarr"
 
         if store_path.exists() and not overwrite:
-            print(f"Skipping {sample} (store already exists)")
+            print(f"✓ {sample}")
             continue
 
-        print(f"Profiling {sample}...")
         shutil.rmtree(store_path, ignore_errors=True)
 
         try:
@@ -205,6 +203,10 @@ def parse_logs(
         )
 
         if not reads_df.empty or not variants_df.empty:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            from matplotlib.lines import Line2D
+
             fig, ax = plt.subplots(figsize=(6, 4))
 
             if not reads_df.empty:
@@ -250,9 +252,7 @@ def parse_logs(
                         )
                     )
                     labels.append("SNP")
-                ax.legend(
-                    handles, labels, title="Assay", loc="upper left", bbox_to_anchor=(1.2, 1)
-                )
+                ax.legend(handles, labels, title="Assay", loc="upper left", bbox_to_anchor=(1.2, 1))
             fig.tight_layout()
             plt.show()
         else:
@@ -266,8 +266,6 @@ def parse_logs(
 
 
 if __name__ == "__main__":
-    
-
     output_path = Path("profiling/output")
     output_path.mkdir(parents=True, exist_ok=True)
 

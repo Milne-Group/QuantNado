@@ -28,8 +28,6 @@ from loguru import logger
 
 from quantnado.analysis.core import QuantNadoDataset
 from quantnado.analysis.normalise import normalise as _normalise
-from quantnado.analysis.pca import run_pca as _run_pca
-from quantnado.analysis.plot import correlate, heatmap, locus_plot, metaplot, tornadoplot
 from quantnado.dataset.metadata import AnchorPoint, FeatureType, ReductionMethod
 
 
@@ -366,14 +364,14 @@ class QuantNado:
 
     def normalise(
         self,
-        data: "xr.Dataset | xr.DataArray | pd.DataFrame",
+        data: "xr.Dataset | xr.DataArray | pd.DataFrame | None" = None,
         *,
         method: str = "cpm",
         assay: str | Sequence[str] | None = None,
         samples: str | Sequence[str] | None = None,
         library_sizes: "pd.Series | dict | None" = None,
         feature_lengths: "pd.Series | Any | None" = None,
-    ) -> "xr.Dataset | xr.DataArray | pd.DataFrame":
+    ) -> "xr.Dataset | xr.DataArray | pd.DataFrame | Any":
         """Normalise coverage signal or feature counts. See :meth:`QuantNadoDataset.normalise`."""
         return self._dataset.normalise(
             data, method=method, assay=assay, samples=samples,

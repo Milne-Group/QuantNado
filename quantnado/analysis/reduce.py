@@ -350,6 +350,7 @@ def _select_samples(
 		sample_names = root.attrs.get("sample_names", None)
 	completed_mask = getattr(dataset, "completed_mask", None)
 	key_global_indices: np.ndarray | None = None
+	row_indices: np.ndarray | None = None
 	if completed_mask is None and meta is not None and "completed" in meta:
 		completed_mask = meta["completed"][:].astype(bool)
 
@@ -378,18 +379,21 @@ def _select_samples(
 						_key_sample_names = list(_key_to_samples[array_key])
 						# Remap completed_mask to only the samples stored under this key
 						if sample_names is not None and completed_mask is not None:
-							_glob_idx = {s: i for i, s in enumerate(sample_names)}
-							_key_glob = np.array(
-								[_glob_idx[s] for s in _key_sample_names if s in _glob_idx],
+							_subset_idx = {s: i for i, s in enumerate(sample_names)}
+							_matched_names = [s for s in _key_sample_names if s in _subset_idx]
+							row_indices = np.array(
+								[i for i, s in enumerate(_key_sample_names) if s in _subset_idx],
 								dtype=np.int64,
 							)
-							key_global_indices = _key_glob
-							if len(_key_glob) == len(_key_sample_names):
-								completed_mask = completed_mask[_key_glob]
-							else:
-								completed_mask = np.ones(len(_key_sample_names), dtype=bool)
-						sample_names = _key_sample_names
-				root = _CombinedZarrView(root, _effective_key)
+							key_global_indices = np.array(
+								[_subset_idx[s] for s in _matched_names],
+								dtype=np.int64,
+							)
+							completed_mask = completed_mask[key_global_indices]
+							sample_names = _matched_names
+						else:
+							sample_names = _key_sample_names
+				root = _CombinedZarrView(root, _effective_key, row_indices=row_indices)
 		if first_chrom is None:
 			raise ValueError("No chromosome data found in dataset")
 	total_samples = root[first_chrom].shape[getattr(root, "samples_axis", 1)]

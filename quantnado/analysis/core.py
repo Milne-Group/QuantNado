@@ -23,8 +23,6 @@ import xarray as xr
 import zarr
 from loguru import logger
 
-from .features import load_gtf
-
 
 # Keys that are zarr infrastructure — excluded when listing chromosomes / assays
 _META_KEYS = frozenset({"metadata"})
@@ -324,9 +322,11 @@ class QuantNadoDataset:
         gtf_path:
             Path to a GTF or GTF.gz file (e.g. hg38.gtf.gz).
         """
+        from .features import load_gtf
+
         gtf = load_gtf(
             str(gtf_path),
-            feature_types=["gene", "transcript", "exon"],
+            feature_types=["gene", "exon"],
             usecols=["gene_id", "gene_name", "transcript_id", "gene_type", "gene_biotype", "exon_number"],
         )
         df = pd.DataFrame(gtf)
@@ -334,7 +334,12 @@ class QuantNadoDataset:
         self._exons_df = df[df["feature"] == "exon"].reset_index(drop=True)
         if self._genes_df.empty:
             logger.warning("No 'gene' features found in GTF; falling back to 'transcript'")
-            self._genes_df = df[df["feature"] == "transcript"].reset_index(drop=True)
+            transcript_gtf = load_gtf(
+                str(gtf_path),
+                feature_types=["transcript"],
+                usecols=["gene_id", "gene_name", "transcript_id", "gene_type", "gene_biotype"],
+            )
+            self._genes_df = pd.DataFrame(transcript_gtf).reset_index(drop=True)
         logger.info(f"Loaded annotation: {len(self._genes_df):,} genes from {gtf_path}")
 
     def gene_info(self, name: str) -> dict:
@@ -1236,7 +1241,7 @@ class QuantNadoDataset:
 
     def normalise(
         self,
-        data,
+        data=None,
         method: str = "cpm",
         assay: "str | Sequence[str] | None" = None,
         samples: "str | Sequence[str] | None" = None,
@@ -1261,6 +1266,14 @@ class QuantNadoDataset:
             Required for ``"rpkm"`` / ``"tpm"`` on DataFrames.
         """
         from .normalise import normalise as _normalise
+
+        if data is None:
+            return NormalisedQuantNadoDataset(
+                self,
+                method=method,
+                library_sizes=library_sizes,
+                feature_lengths=feature_lengths,
+            )
 
         if assay is not None or samples is not None:
             resolved = self._resolve_samples(assay=assay, samples=samples)
@@ -1470,7 +1483,7 @@ class QuantNadoDataset:
         self,
         locus,
         sample_names,
-        modality,
+        modality=None,
         assay: "str | Sequence[str] | None" = None,
         **kwargs,
     ):
@@ -1483,7 +1496,20 @@ class QuantNadoDataset:
 
         if isinstance(sample_names, str):
             sample_names = [sample_names]
-        modalities = self._resolve_modalities(modality, allow_multiple=True)
+        else:
+            sample_names = list(sample_names)
+
+        if modality is None:
+            assay_by_sample = dict(zip(self.sample_names, self._get_assay_per_sample()))
+            modalities = [
+                "stranded_coverage" if assay_by_sample.get(sample_name, "").upper() == "RNA"
+                else "methylation" if assay_by_sample.get(sample_name, "").upper() == "METH"
+                else "variant" if assay_by_sample.get(sample_name, "").upper() == "SNP"
+                else "coverage"
+                for sample_name in sample_names
+            ]
+        else:
+            modalities = self._resolve_modalities(modality, allow_multiple=True)
         return locus_plot(locus, sample_names=sample_names, modality=modalities, **kwargs)
 
     # ------------------------------------------------------------------
@@ -1576,32 +1602,8 @@ class QuantNadoDataset:
         method: str = "cpm",
         library_sizes: "pd.Series | dict | None" = None,
     ) -> "NormalisedQuantNadoDataset":
-        """Return a normalised view for use with plotnado tracks.
-
-        The returned object implements the same plotnado interface as
-        ``QuantNadoDataset`` (``extract_region``, ``.coverage``,
-        ``.methylation``, ``.variants``) but divides coverage signal by
-        the per-sample library-size factor before returning.
-
-        Methylation (``methyl_pct``) and variant (``AF``, ``GT``) arrays
-        are passed through unchanged — they are already on absolute scales.
-
-        Parameters
-        ----------
-        method:
-            Normalisation method. Currently only ``"cpm"`` is supported for
-            per-position signal.
-        library_sizes:
-            Total mapped reads per sample. Auto-read from store metadata when
-            omitted.
-
-        Examples
-        --------
-        >>> qn_cpm = qn.normalised("cpm")
-        >>> gf.quantnado_coverage("ATAC-SEM-1", quantnado=qn_cpm)
-        >>> gf.quantnado_stranded_coverage("RNA-RCHACV-1", quantnado=qn_cpm)
-        """
-        return NormalisedQuantNadoDataset(self, method=method, library_sizes=library_sizes)
+        """Compatibility alias for :meth:`normalise` with ``data=None``."""
+        return self.normalise(method=method, library_sizes=library_sizes)
 
 
 # ---------------------------------------------------------------------------
@@ -1707,29 +1709,17 @@ class _PlotnadoVariantsAdapter:
 
 
 class NormalisedQuantNadoDataset:
-    """A plotnado-compatible view of a :class:`QuantNadoDataset` with normalised coverage.
-
-    Created via :meth:`QuantNadoDataset.normalised`.  All attribute access is
-    forwarded to the underlying dataset except for the four plotnado integration
-    methods (``extract_region``, ``.coverage``, ``.methylation``, ``.variants``),
-    which apply per-sample CPM scaling to coverage signal before returning.
-
-    Methylation (``methyl_pct``) and variant (``AF`` / ``GT``) arrays are not
-    rescaled — they are already on absolute scales.
-    """
+    """A dataset-level normalised view of a :class:`QuantNadoDataset`."""
 
     def __init__(
         self,
         dataset: QuantNadoDataset,
         method: str = "cpm",
         library_sizes: "pd.Series | dict | None" = None,
+        feature_lengths=None,
     ) -> None:
         self._inner = dataset
         self._method = method.lower()
-        if self._method != "cpm":
-            raise ValueError(
-                f"Only 'cpm' is supported for per-position plotnado signal; got {method!r}."
-            )
         if library_sizes is not None:
             if isinstance(library_sizes, dict):
                 library_sizes = pd.Series(library_sizes, name="library_size")
@@ -1737,37 +1727,34 @@ class NormalisedQuantNadoDataset:
         else:
             from .normalise import get_library_sizes
             self._lib_sizes = get_library_sizes(dataset)
+        self._feature_lengths = feature_lengths
 
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
 
-    def _cpm_scale(self, da_arr: xr.DataArray) -> xr.DataArray:
-        """Divide a (sample, position) DataArray by per-sample CPM scale factors."""
-        if "sample" not in da_arr.dims:
-            return da_arr
-        sample_labels = list(da_arr.coords["sample"].values)
-        available = set(self._lib_sizes.index)
-        scales = np.array(
-            [
-                self._lib_sizes[s] / 1e6
-                if s in available and not np.isnan(self._lib_sizes[s])
-                else 1.0
-                for s in sample_labels
-            ],
-            dtype=np.float64,
+    def _normalise_data(self, data):
+        return self._inner.normalise(
+            data,
+            method=self._method,
+            library_sizes=self._lib_sizes,
+            feature_lengths=self._feature_lengths,
         )
-        arr = da_arr.data
-        if not np.issubdtype(getattr(arr, "dtype", np.float32), np.floating):
-            arr = arr.astype(np.float32)
-        sample_axis = list(da_arr.dims).index("sample")
-        reshape = tuple(len(sample_labels) if i == sample_axis else 1 for i in range(arr.ndim))
-        if isinstance(arr, da.Array):
-            scale_vec = da.from_array(scales, chunks=-1).reshape(reshape)
-        else:
-            scale_vec = scales.reshape(reshape)
-        return da_arr.copy(data=arr / scale_vec).assign_attrs(
-            {**da_arr.attrs, "normalised": self._method}
+
+    def subset(
+        self,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+    ) -> "NormalisedQuantNadoDataset":
+        return NormalisedQuantNadoDataset(
+            self._inner.subset(assay=assay, samples=samples),
+            method=self._method,
+            library_sizes=self._lib_sizes,
+            feature_lengths=self._feature_lengths,
         )
+
+    def sel(self, *args, **kwargs):
+        ds = self._inner.sel(*args, **kwargs)
+        return self._normalise_data(ds)
 
     # ------------------------------------------------------------------
     # Plotnado integration (overrides QuantNadoDataset implementations)
@@ -1780,11 +1767,11 @@ class NormalisedQuantNadoDataset:
         array_key: "str | None" = None,
     ) -> xr.DataArray:
         result = self._inner.extract_region(region, samples=samples, array_key=array_key)
-        return self._cpm_scale(result)
+        return self._normalise_data(result)
 
     @property
     def coverage(self) -> "_NormalisedCoverageAdapter":
-        return _NormalisedCoverageAdapter(self._inner.coverage, self._cpm_scale)
+        return _NormalisedCoverageAdapter(self._inner.coverage, self._normalise_data)
 
     @property
     def methylation(self) -> _PlotnadoMethylAdapter:
@@ -1798,7 +1785,7 @@ class NormalisedQuantNadoDataset:
 
 
 class _NormalisedCoverageAdapter:
-    """Wraps ``_PlotnadoCoverageAdapter`` and applies CPM scaling to its output."""
+    """Wraps ``_PlotnadoCoverageAdapter`` and applies normalisation to its output."""
 
     def __init__(self, adapter: _PlotnadoCoverageAdapter, scale_fn) -> None:
         self._adapter = adapter
