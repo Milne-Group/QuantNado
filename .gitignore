@@ -1,5 +1,10 @@
+.claude/
 .coverage
 .DS_Store
+.pytest_cache
+.ruff_cache
+.uv-cache
+.venv
 .vscode
 .vscode/
 *__pycache__/
@@ -7,23 +12,20 @@
 *.log
 *.zarr
 */_version.py
+/data/
 202*
 build/
-/data/
-.venv
+CLAUDE.md
+example.ipynb
+local/
+logs/
+mkdocs.yml
+multiomics_run/
+profiling/
+site/
+sps*
+test_output/
 
 # Allow test data BAM files
 !tests/data/
 !tests/data/**
-
-multiomics_run/
-logs/
-site/
-sps*
-
-test_output/
-local/
-CLAUDE.md
-example.ipynb
-mkdocs.yml
-profiling/output/

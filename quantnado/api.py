@@ -327,6 +327,10 @@ class QuantNado:
     def groups(self):
         return self._dataset.groups
 
+    @property
+    def available_peak_methods(self) -> list[str]:
+        return self._dataset.available_peak_methods
+
     def group_by(
         self,
         by: str = "assay",

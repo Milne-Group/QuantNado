@@ -1212,19 +1212,20 @@ class QuantNadoDataset:
     def call_peaks(
         self,
         output_dir: "str | Path",
-        method: "str | None" = None,
-        assay: "str | None" = None,
+        method: "str | Sequence[str] | None" = None,
+        assay: "str | Sequence[str] | None" = None,
         **kwargs,
-    ) -> "dict[str, Path]":
+    ) -> "dict[str, Path] | dict[str, dict[str, Path]]":
         """Call peaks for all completed samples in the dataset.
 
         Parameters
         ----------
         output_dir : str or Path
             Directory where per-sample BED files are written.
-        method : {"quantile", "seacr", "lanceotron"}, optional
-            Peak-calling algorithm.  Auto-selected from the biological assay
-            type when omitted:
+        method : {"quantile", "seacr", "lanceotron"} or sequence, optional
+            Peak-calling algorithm. Pass one method or a list of methods.
+            When omitted, one method is auto-selected from the biological assay
+            type:
 
             * ATAC or unknown → ``"quantile"``
             * CUT&TAG / CUT&RUN → ``"seacr"``
@@ -1244,13 +1245,17 @@ class QuantNadoDataset:
 
         Returns
         -------
-        dict[str, Path]
-            Sample name → path to the output BED file.
+        dict[str, Path] or dict[str, dict[str, Path]]
+            For one method: sample name → path to the output BED file.
+            For multiple methods: method name → (sample name → path).
 
         Examples
         --------
+        >>> qn.available_peak_methods
+        ['quantile', 'seacr', 'lanceotron']
         >>> beds = qn.subset(assay="ATAC").call_peaks("peaks/atac/")
         >>> beds = qn.subset(assay="CUT&TAG").call_peaks("peaks/cat/", method="seacr")
+        >>> beds_by_method = qn.call_peaks("peaks/", method=["quantile", "lanceotron"], assay=["ATAC", "CHIP"])
         """
         from pathlib import Path as _Path
         from ..peak_calling.call_quantile_peaks import call_quantile_peaks_from_zarr
@@ -1258,17 +1263,18 @@ class QuantNadoDataset:
         from ..peak_calling.call_lanceotron_peaks import call_lanceotron_peaks_from_zarr
 
         output_dir = _Path(output_dir)
+        methods = [method] if isinstance(method, str) or method is None else [str(m) for m in method]
 
         # Auto-select calling method from biological assay types
         if method is None:
             bio_assays = {a.upper() for a in self.assays}
             if bio_assays & {"CUT&TAG", "CUTTAG", "CAT", "CUT&RUN", "CUTRUN"}:
-                method = "seacr"
+                methods = ["seacr"]
             elif bio_assays & {"CHIP"}:
-                method = "lanceotron"
+                methods = ["lanceotron"]
             else:
-                method = "quantile"
-            logger.info(f"Auto-selected peak-calling method '{method}' for assays {sorted(bio_assays)}")
+                methods = ["quantile"]
+            logger.info(f"Auto-selected peak-calling method '{methods[0]}' for assays {sorted(bio_assays)}")
 
         def _resolve_peak_tasks(
             assay_value: "str | Sequence[str] | None",
@@ -1345,23 +1351,34 @@ class QuantNadoDataset:
             "seacr":       call_seacr_peaks_from_zarr,
             "lanceotron":  call_lanceotron_peaks_from_zarr,
         }
-        if method not in _dispatch:
+        unknown = [m for m in methods if m not in _dispatch]
+        if unknown:
             raise ValueError(
-                f"Unknown method {method!r}. Choose from: {sorted(_dispatch)}"
+                f"Unknown method(s) {unknown!r}. Choose from: {sorted(_dispatch)}"
             )
 
         tasks = _resolve_peak_tasks(assay)
-        bed_paths: list[str] = []
         multi_key = len(tasks) > 1
-        for array_key, selected_samples, label in tasks:
-            key_output_dir = output_dir / label if multi_key else output_dir
-            bed_paths.extend(
-                _dispatch[method](
-                    self.path, key_output_dir, assay=array_key, samples=selected_samples, **kwargs
+        multi_method = len(methods) > 1
+        results: dict[str, dict[str, Path]] = {}
+        for selected_method in methods:
+            bed_paths: list[str] = []
+            for array_key, selected_samples, label in tasks:
+                base_output_dir = output_dir / selected_method if multi_method else output_dir
+                key_output_dir = base_output_dir / label if multi_key else base_output_dir
+                bed_paths.extend(
+                    _dispatch[selected_method](
+                        self.path, key_output_dir, assay=array_key, samples=selected_samples, **kwargs
+                    )
                 )
-            )
+            results[selected_method] = {_Path(p).stem: _Path(p) for p in bed_paths}
 
-        return {_Path(p).stem: _Path(p) for p in bed_paths}
+        return results[methods[0]] if len(methods) == 1 else results
+
+    @property
+    def available_peak_methods(self) -> list[str]:
+        """Peak-calling methods supported by :meth:`call_peaks`."""
+        return ["quantile", "seacr", "lanceotron"]
 
     def peak_overlap(
         self,

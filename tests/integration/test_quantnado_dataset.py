@@ -249,4 +249,5 @@ class TestCombine:
         combined_path = tmp_path / "combined.zarr"
         combined = QuantNadoDataset.combine(ds_dir, combined_path)
         result = combined.sel(chrom="chr1")
-        assert result["atac"].shape == (2, 100)
+        assert combined.array_keys == ["coverage"]
+        assert result["coverage"].shape == (2, 100)
