@@ -10,6 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+from matplotlib.lines import Line2D
 from loguru import logger
 
 import quantnado as qn
@@ -23,6 +24,14 @@ MCC_ROW = {
     "sample_id": "MCC-OCI-AML3",
     "bam_path": "tests/data/OCI-AML3-control-1-1-A_subsample.bam",
 }
+
+
+def _path_size_mb(path: Path) -> float:
+    if path.is_file():
+        return path.stat().st_size / 1e6
+    if path.is_dir():
+        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file()) / 1e6
+    return 0.0
 
 
 @contextlib.contextmanager
@@ -121,7 +130,14 @@ def profile_combine(
     """
     if output_path.exists() and not overwrite:
         print(f"Loading existing combined dataset from {output_path}...")
-        return QuantNadoDataset(output_path)
+        try:
+            return QuantNadoDataset(output_path)
+        except ValueError as exc:
+            logger.warning(
+                f"Existing combined dataset at {output_path} is invalid or incomplete; "
+                f"rebuilding it. Original error: {exc}"
+            )
+            shutil.rmtree(output_path, ignore_errors=True)
     print("Profiling QuantNadoDataset.combine...")
     with _profiled(OUT_DIR / "profile_combine_stores.log"):
         combined = QuantNadoDataset.combine(src=samples_dir, output=output_path)
@@ -129,16 +145,24 @@ def profile_combine(
     return combined
 
 
-def parse_logs(metadata: pd.DataFrame, output_dir: Path) -> dict:
-    logfiles = set(log_file.stem for log_file in output_dir.glob("profile_store_*.log"))
+def parse_logs(metadata: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
+    logfile_names = {log_file.name for log_file in output_dir.glob("profile_store_*.log")}
     profile_df = metadata[["sample_id", "assay"]].drop_duplicates().copy()
+    records = []
 
     for sample_id in metadata.sample_id.unique():
         log_file_name = f"profile_store_{sample_id}.log"
-        if log_file_name not in logfiles:
+        if log_file_name not in logfile_names:
             logger.warning(f"Log file for sample_id {sample_id} not found: {log_file_name}")
             continue
+
         record = {"sample_id": sample_id}
+        store_path = SAMPLES_DIR / f"{sample_id}.zarr"
+        if store_path.exists():
+            record["store_size_mb"] = _path_size_mb(store_path)
+        else:
+            logger.warning(f"Store for sample_id {sample_id} not found: {store_path.name}")
+
         with open(output_dir / log_file_name, "r") as f:
             for line in f:
                 if m := re.search(r"in (\d+\.\d+) seconds", line):
@@ -146,23 +170,84 @@ def parse_logs(metadata: pd.DataFrame, output_dir: Path) -> dict:
                 if m := re.search(r"([\d,]+) mapped reads", line):
                     record["mapped_reads"] = float(m.group(1).replace(",", "")) / 1e6
                 if m := re.search(r"([\d,]+) variants", line):
-                    record["variants"] = float(m.group(1).replace(",", ""))
+                    record["variants"] = float(m.group(1).replace(",", "")) / 1e6
                 if m := re.search(r"Peak memory: (\d+\.\d+) GB", line):
                     record["peak_memory"] = float(m.group(1))
 
-        profile_df = profile_df.merge(pd.DataFrame([record]), on="sample_id", how="left")
+        records.append(record)
 
-    plt.figure(figsize=(5.5, 4))
-    sns.scatterplot(data=profile_df, x="seconds", y="mapped_reads", hue="assay", s=50)
-    plt.xlabel("Seconds")
-    plt.ylabel("Mapped Reads (Millions)")
-    plt.title("QuantNado Store Profiling")
-    max_sec = profile_df["seconds"].max()
-    plt.xticks(range(0, int(max_sec + 60), 60))
-    plt.grid(True, which="both", ls="--", lw=0.5)
-    plt.legend(title="Assay", loc="upper left", bbox_to_anchor=(1, 1))
-    plt.tight_layout()
-    plt.show()
+    if records:
+        profile_df = profile_df.merge(pd.DataFrame(records), on="sample_id", how="left")
+
+    if "seconds" in profile_df.columns:
+        reads_df = (
+            profile_df.dropna(subset=["seconds", "mapped_reads"])
+            if "mapped_reads" in profile_df.columns
+            else pd.DataFrame()
+        )
+        variants_df = (
+            profile_df.dropna(subset=["seconds", "variants"])
+            if "variants" in profile_df.columns
+            else pd.DataFrame()
+        )
+
+        if not reads_df.empty or not variants_df.empty:
+            fig, ax = plt.subplots(figsize=(6, 4))
+
+            if not reads_df.empty:
+                sns.scatterplot(
+                    data=reads_df, x="seconds", y="mapped_reads", hue="assay", s=50, ax=ax
+                )
+
+            ax.set_xlabel("Seconds")
+            ax.set_ylabel("Mapped Reads (Millions)")
+            ax.set_title("QuantNado Store Profiling")
+            max_sec = profile_df["seconds"].dropna().max()
+            ax.set_xticks(range(0, int(max_sec + 60), 60))
+            ax.grid(True, which="both", ls="--", lw=0.5)
+
+            if not variants_df.empty:
+                ax2 = ax.twinx()
+                variants_df = variants_df.sort_values("seconds")
+                ax2.scatter(
+                    variants_df["seconds"],
+                    variants_df["variants"],
+                    color="black",
+                    s=50,
+                    zorder=3,
+                )
+                ax2.set_ylabel("Variants (Millions)")
+                ax2.tick_params(axis="y", colors="0.25")
+                ax2.spines["right"].set_color("0.4")
+
+            if ax.get_legend() is not None:
+                handles, labels = ax.get_legend_handles_labels()
+                if not variants_df.empty:
+                    handles.append(
+                        Line2D(
+                            [0],
+                            [0],
+                            marker="o",
+                            linestyle="None",
+                            color="black",
+                            markerfacecolor="black",
+                            markersize=7,
+                            label="SNP",
+                        )
+                    )
+                    labels.append("SNP")
+                ax.legend(
+                    handles, labels, title="Assay", loc="upper left", bbox_to_anchor=(1.2, 1)
+                )
+            fig.tight_layout()
+            plt.show()
+        else:
+            logger.warning(
+                "No parsed log rows contained plottable profiling metrics; skipping plot."
+            )
+    else:
+        logger.warning("No profiling metrics were parsed; skipping plot.")
+
     return profile_df
 
 
