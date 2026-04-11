@@ -18,6 +18,7 @@ quantnado --version
 
 - `create-dataset` is metadata-driven
 - outputs are written as one `.zarr` store per sample
+- test-mode builds can use either the default chromosome trio or repeated `--test-chrom` values
 - `call-peaks` works from QuantNado zarr inputs, not from bigWig directories
 
 ## Typical Workflow

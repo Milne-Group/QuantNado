@@ -58,7 +58,8 @@ SNP_1,SNP,,,/data/SNP_1.vcf.gz,
 - `--overwrite / --no-overwrite`: replace existing stores
 - `--chunk-len INTEGER`: override position-axis chunk length
 - `--construction-compression TEXT`: one of `default`, `fast`, or `none`
-- `--test`: restrict processing to `chr21`, `chr22`, and `chrY`
+- `--test`: use the default test chromosomes (`chr9`, `chr13`, `chr21`)
+- `--test-chrom TEXT`: chromosome to keep in test mode; repeat to pass multiple chromosomes
 - `--log-file PATH`: log destination
 - `--verbose`, `-v`: debug logging
 
@@ -89,6 +90,16 @@ quantnado create-dataset \
   --metadata samples.csv \
   --output-dir dataset \
   --construction-compression fast
+```
+
+Use an explicit test chromosome list:
+
+```bash
+quantnado create-dataset \
+  --metadata samples.csv \
+  --output-dir dataset \
+  --test-chrom chr21 \
+  --test-chrom chr9
 ```
 
 ## Output

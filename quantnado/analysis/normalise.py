@@ -580,5 +580,5 @@ def _normalise_xr_dataarray(
             normed_arr = normed_arr / rl_vec
 
     result = data.copy(data=normed_arr).assign_attrs({**data.attrs, "normalised": method})
-    logger.info(f"Normalised xr.DataArray to {method.upper()}.")
+    logger.debug(f"Normalised xr.DataArray to {method.upper()}.")
     return result

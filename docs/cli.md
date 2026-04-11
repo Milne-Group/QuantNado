@@ -35,6 +35,7 @@ Most important options:
 - `--construction-compression`
 - `--filter-chromosomes / --no-filter-chromosomes`
 - `--test`
+- `--test-chrom`
 
 ## `quantnado call-peaks`
 

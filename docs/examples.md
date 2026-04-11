@@ -30,7 +30,24 @@ qn = QuantNado.open("dataset/")
 print(qn.sample_names)
 print(qn.assays)
 print(qn.array_keys)
+print(qn.info)
 ```
+
+## Cache Sample Groups
+
+```python
+qn.group_by(
+    ip="ip",
+    treatment={"control": ["control"], "treated": ["treated"]},
+    replicate={"rep1": ["rep1"], "rep2": ["rep2"]},
+    spikein={"spikein": ["spikein", "rx"]},
+    match="contains",
+)
+
+print(qn.info)
+```
+
+With `match="contains"`, one label can match multiple substrings. Here the single `spikein` label groups both `spikein` and `rx` sample names.
 
 ## Reduce Promoter Signal
 
@@ -44,17 +61,29 @@ promoter_signal = qn.reduce(
 
 This returns an `xr.Dataset`; `promoter_signal["mean"]` is usually the matrix you pass into PCA or clustering.
 
-## RNA Counting
+## RNA Signal Quantification
+
+```python
+signal_matrix, feature_meta = qn.quantify_signal(
+    gtf_file="genes.gtf",
+    feature_type="gene",
+    assay="RNA",
+    modality="coverage",
+)
+```
+
+This returns a feature-by-sample matrix plus aligned feature metadata from stored QuantNado signal.
+
+If you want the explicit counting API, use:
 
 ```python
 counts, features = qn.count_features(
     gtf_file="genes.gtf",
     feature_type="gene",
+    engine="signal",
     assay="RNA",
 )
 ```
-
-This returns a count matrix plus an aligned feature metadata table.
 
 ## PCA and QC
 
