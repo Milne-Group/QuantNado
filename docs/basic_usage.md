@@ -236,4 +236,4 @@ from quantnado import metadata_from_seqnado
 metadata = metadata_from_seqnado("my_seqnado_project", output_dir=".")
 ```
 
-This writes a `quantnado_metadata.csv` that can be fed into `quantnado create-dataset`.
+This writes a `quantnado_metadata.csv` that is still useful for bookkeeping or batch scripting, but the main CLI now creates stores one sample at a time with `quantnado dataset create`.

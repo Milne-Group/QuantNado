@@ -2,21 +2,15 @@
 
 ## What does QuantNado create now?
 
-QuantNado currently creates one `.zarr` store per sample from a metadata CSV/TSV. You can then open the directory directly or combine those stores into a single multi-sample `.zarr`.
+QuantNado currently creates one `.zarr` store per sample with `quantnado dataset create`. You can then open the directory directly or combine those stores into a single multi-sample `.zarr`.
 
-## What columns are required in the metadata file?
+## Which inputs are required for `dataset create`?
 
-Always:
-
-- `sample`
-- `assay`
-
-Depending on assay:
-
-- BAM-based assays use `bam`
-- `METH` uses `bam` and `methyl`
-- `SNP` uses `vcf`
-- `ChIP` and `CUT&TAG` can also use `ip`
+- BAM-based assays use `--bamfile`
+- `METH` uses `--bamfile` and `--methylation_file`
+- `SNP` uses `--vcf_file`
+- `ChIP` and `CUT&TAG` can also use `--ip`
+- `RNA` can also use `--stranded`
 
 ## Which assays are supported?
 
@@ -45,10 +39,10 @@ Most analysis methods accept both.
 
 ## How do I combine per-sample stores?
 
-```python
-from quantnado import QuantNado
-
-combined = QuantNado.combine("dataset/", "dataset/combined.zarr")
+```bash
+quantnado dataset combine \
+  --stores dataset/ATAC_1.zarr dataset/RNA_1.zarr dataset/METH_1.zarr \
+  --output dataset/combined.zarr
 ```
 
 ## How do I count RNA features?

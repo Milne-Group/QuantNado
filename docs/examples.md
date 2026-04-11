@@ -2,22 +2,22 @@
 
 These examples mirror the current API and CLI.
 
-## Build a Dataset from Metadata
+## Build Per-Sample Stores
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --chromsizes hg38.chrom.sizes
-```
 
-Example metadata:
-
-```csv
-sample,assay,bam,methyl,vcf,ip
-ATAC_1,ATAC,/data/ATAC_1.bam,,,
-H3K27ac_1,ChIP,/data/H3K27ac_1.bam,,,H3K27ac
-RNA_1,RNA,/data/RNA_1.bam,,,
+quantnado dataset create \
+  --sample H3K27ac_1 \
+  --assay ChIP \
+  --bamfile /data/H3K27ac_1.bam \
+  --ip H3K27ac \
+  --output-dir dataset
 ```
 
 ## Open and Inspect
@@ -117,10 +117,10 @@ These plotting helpers expect the `xr.DataArray` returned by `extract()`.
 
 ## Combine Stores
 
-```python
-from quantnado import QuantNado
-
-combined = QuantNado.combine("dataset/", "dataset/combined.zarr")
+```bash
+quantnado dataset combine \
+  --stores dataset/ATAC_1.zarr dataset/H3K27ac_1.zarr dataset/RNA_1.zarr \
+  --output dataset/combined.zarr
 ```
 
 ## SeqNado Helper

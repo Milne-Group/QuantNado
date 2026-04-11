@@ -58,8 +58,10 @@ And the assay-specific input columns required for each row:
 If the target store already exists and you want to replace it:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --overwrite
 ```
@@ -110,9 +112,9 @@ Start by loosening thresholds or checking the chosen assay key:
 
 ```bash
 quantnado call-peaks \
-  --zarr dataset \
+  --zarr dataset/combined.zarr \
   --method quantile \
-  --assay atac \
+  --assay ATAC \
   --quantile 0.95 \
   --output-dir peaks
 ```
@@ -140,8 +142,10 @@ Things to check:
 Useful flags:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --construction-compression fast \
   --chunk-len 131072

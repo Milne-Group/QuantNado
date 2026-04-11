@@ -1,36 +1,33 @@
-# `create-dataset`
+# `dataset create`
 
-Create one QuantNado `.zarr` store per sample from a metadata CSV or TSV.
+Create one QuantNado `.zarr` store per sample from direct assay inputs.
 
 ## Usage
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample RNA_1 \
+  --assay RNA \
+  --bamfile /data/RNA_1.bam \
+  --stranded R \
   --output-dir dataset
 ```
 
 ## Required Options
 
-- `--metadata`, `-m`: metadata CSV/TSV
+- `--sample`: sample name
+- `--assay`: assay type
 - `--output-dir`, `-o`: directory for per-sample stores
 
-## Metadata Format
+## Input Options by Assay
 
-Required columns:
+- BAM-based assays (`ATAC`, `ChIP`, `RNA`, `CUT&TAG`, `MCC`) use `--bamfile`
+- `METH` uses `--bamfile` and `--methylation_file`
+- `SNP` uses `--vcf_file`
+- `ChIP` and `CUT&TAG` can also use `--ip`
+- `RNA` can also use `--stranded`
 
-- `sample`
-- `assay`
-
-Optional columns:
-
-- `bam`
-- `methyl`
-- `vcf`
-- `ip`
-- `chromsizes`
-
-Supported assay values:
+## Supported Assays
 
 - `ATAC`
 - `ChIP`
@@ -40,22 +37,16 @@ Supported assay values:
 - `SNP`
 - `MCC`
 
-Example:
-
-```csv
-sample,assay,bam,methyl,vcf,ip
-ATAC_1,ATAC,/data/ATAC_1.bam,,,
-H3K27ac_1,ChIP,/data/H3K27ac_1.bam,,,H3K27ac
-RNA_1,RNA,/data/RNA_1.bam,,,
-METH_1,METH,/data/METH_1.bam,/data/METH_1.bedGraph,,
-SNP_1,SNP,,,/data/SNP_1.vcf.gz,
-```
-
 ## Options
 
-- `--chromsizes PATH`: fallback `.chrom.sizes` file for rows that do not provide one
+- `--bamfile`: BAM file for BAM-based assays and `METH`
+- `--vcf_file`: VCF file for `SNP`
+- `--methylation_file`: methylation bedGraph/TSV for `METH`
+- `--ip`: target label for `ChIP` / `CUT&TAG`
+- `--stranded`: RNA strandedness (`R`, `F`, `1`, `2`, `U`)
+- `--chromsizes PATH`: fallback `.chrom.sizes` file
 - `--filter-chromosomes / --no-filter-chromosomes`: keep only canonical chromosomes
-- `--overwrite / --no-overwrite`: replace existing stores
+- `--overwrite / --no-overwrite`: replace an existing store
 - `--chunk-len INTEGER`: override position-axis chunk length
 - `--construction-compression TEXT`: one of `default`, `fast`, or `none`
 - `--test`: use the default test chromosomes (`chr9`, `chr13`, `chr21`)
@@ -65,46 +56,51 @@ SNP_1,SNP,,,/data/SNP_1.vcf.gz,
 
 ## Examples
 
-Basic run:
+ATAC:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset
 ```
 
-Use explicit chromsizes and overwrite existing stores:
+ChIP:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
-  --output-dir dataset \
-  --chromsizes hg38.chrom.sizes \
-  --overwrite
+quantnado dataset create \
+  --sample H3K27ac_1 \
+  --assay ChIP \
+  --bamfile /data/H3K27ac_1.bam \
+  --ip H3K27ac \
+  --output-dir dataset
 ```
 
-Use a different build-time compression profile:
+METH:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
-  --output-dir dataset \
-  --construction-compression fast
+quantnado dataset create \
+  --sample METH_1 \
+  --assay METH \
+  --bamfile /data/METH_1.bam \
+  --methylation_file /data/METH_1.bedGraph \
+  --output-dir dataset
 ```
 
-Use an explicit test chromosome list:
+SNP:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
-  --output-dir dataset \
-  --test-chrom chr21 \
-  --test-chrom chr9
+quantnado dataset create \
+  --sample SNP_1 \
+  --assay SNP \
+  --vcf_file /data/SNP_1.vcf.gz \
+  --output-dir dataset
 ```
 
 ## Output
 
-For a metadata row with `sample=ATAC_1`, QuantNado writes:
+For `--sample ATAC_1`, QuantNado writes:
 
 ```text
 dataset/ATAC_1.zarr

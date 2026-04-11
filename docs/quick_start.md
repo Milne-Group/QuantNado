@@ -1,6 +1,6 @@
 # Quick Start
 
-This guide walks through the current QuantNado workflow: metadata table in, per-sample stores out, unified analysis API on top.
+This guide walks through the current QuantNado workflow: per-sample inputs in, per-sample stores out, optional combined dataset, unified analysis API on top.
 
 ## Prerequisites
 
@@ -8,39 +8,45 @@ This guide walks through the current QuantNado workflow: metadata table in, per-
 - Indexed BAM files for BAM-based assays
 - Optional methylation bedGraph files and VCF.gz files
 
-## 1. Create a Metadata Table
-
-```csv
-sample,assay,bam,methyl,vcf,ip
-ATAC_1,ATAC,/data/ATAC_1.bam,,,
-H3K27ac_1,ChIP,/data/H3K27ac_1.bam,,,H3K27ac
-RNA_1,RNA,/data/RNA_1.bam,,,
-METH_1,METH,/data/METH_1.bam,/data/METH_1.bedGraph,,
-SNP_1,SNP,,,/data/SNP_1.vcf.gz,
-```
-
-Required columns:
-
-- `sample`
-- `assay`
-
-Input columns depend on assay:
-
-- BAM-based assays use `bam`
-- `METH` uses `bam` and `methyl`
-- `SNP` uses `vcf`
-- `ChIP` and `CUT&TAG` can also use `ip`
-
-## 2. Build the Dataset
+## 1. Create Per-Sample Stores
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --chromsizes hg38.chrom.sizes
+
+quantnado dataset create \
+  --sample H3K27ac_1 \
+  --assay ChIP \
+  --bamfile /data/H3K27ac_1.bam \
+  --ip H3K27ac \
+  --output-dir dataset
+
+quantnado dataset create \
+  --sample RNA_1 \
+  --assay RNA \
+  --bamfile /data/RNA_1.bam \
+  --stranded R \
+  --output-dir dataset
+
+quantnado dataset create \
+  --sample METH_1 \
+  --assay METH \
+  --bamfile /data/METH_1.bam \
+  --methylation_file /data/METH_1.bedGraph \
+  --output-dir dataset
+
+quantnado dataset create \
+  --sample SNP_1 \
+  --assay SNP \
+  --vcf_file /data/SNP_1.vcf.gz \
+  --output-dir dataset
 ```
 
-This creates one `.zarr` store per metadata row:
+This creates one `.zarr` store per sample:
 
 ```text
 dataset/
@@ -54,8 +60,10 @@ dataset/
 For quick test builds, use either:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --test
 ```
@@ -63,12 +71,24 @@ quantnado create-dataset \
 or an explicit chromosome list:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --test-chrom chr21 \
   --test-chrom chr9
 ```
+
+## 2. Optionally Combine Stores
+
+```bash
+quantnado dataset combine \
+  --stores dataset/ATAC_1.zarr dataset/H3K27ac_1.zarr dataset/RNA_1.zarr dataset/METH_1.zarr dataset/SNP_1.zarr \
+  --output dataset/combined.zarr
+```
+
+You can open either `dataset/` or `dataset/combined.zarr`.
 
 ## 3. Open the Dataset in Python
 
@@ -162,16 +182,6 @@ qn.tornadoplot(binned, modality="coverage", title="ATAC promoter heatmap")
 ```
 
 `extract()` returns an `xr.DataArray` with dimensions `(interval, bin, sample)`.
-
-## 8. Optionally Combine Stores
-
-```python
-from quantnado import QuantNado
-
-combined = QuantNado.combine("dataset/", "dataset/combined.zarr")
-```
-
-You can then open `dataset/combined.zarr` with the same API.
 
 ## Next Steps
 

@@ -22,22 +22,35 @@ Requires Python 3.12 or 3.13.
 
 ## Quick Start
 
-### 1. Create per-sample stores from a metadata table
-
-```csv
-sample,assay,bam,methyl,vcf,ip
-ATAC_1,ATAC,/data/ATAC_1.bam,,,
-H3K27ac_1,ChIP,/data/H3K27ac_1.bam,,,H3K27ac
-RNA_1,RNA,/data/RNA_1.bam,,,
-METH_1,METH,/data/METH_1.bam,/data/METH_1.bedGraph,,
-SNP_1,SNP,,,/data/SNP_1.vcf.gz,
-```
+### 1. Create per-sample stores
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --chromsizes hg38.chrom.sizes
+
+quantnado dataset create \
+  --sample H3K27ac_1 \
+  --assay ChIP \
+  --bamfile /data/H3K27ac_1.bam \
+  --ip H3K27ac \
+  --output-dir dataset
+
+quantnado dataset create \
+  --sample METH_1 \
+  --assay METH \
+  --bamfile /data/METH_1.bam \
+  --methylation_file /data/METH_1.bedGraph \
+  --output-dir dataset
+
+quantnado dataset create \
+  --sample SNP_1 \
+  --assay SNP \
+  --vcf_file /data/SNP_1.vcf.gz \
+  --output-dir dataset
 ```
 
 This writes one `.zarr` store per sample into `dataset/`.
@@ -45,8 +58,10 @@ This writes one `.zarr` store per sample into `dataset/`.
 For quick test builds, you can either use the default test chromosomes:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --test
 ```
@@ -54,8 +69,10 @@ quantnado create-dataset \
 or provide an explicit list:
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
+quantnado dataset create \
+  --sample ATAC_1 \
+  --assay ATAC \
+  --bamfile /data/ATAC_1.bam \
   --output-dir dataset \
   --test-chrom chr21 \
   --test-chrom chr9
@@ -109,10 +126,10 @@ pca_obj, pca_result = qn.pca(promoters["mean"], n_components=10)
 
 ### 4. Optionally combine stores
 
-```python
-from quantnado import QuantNado
-
-combined = QuantNado.combine("dataset/", "dataset/combined.zarr")
+```bash
+quantnado dataset combine \
+  --stores dataset/ATAC_1.zarr dataset/H3K27ac_1.zarr dataset/METH_1.zarr dataset/SNP_1.zarr \
+  --output dataset/combined.zarr
 ```
 
 You can open either `dataset/` or `dataset/combined.zarr` with the same API.
@@ -121,18 +138,30 @@ You can open either `dataset/` or `dataset/combined.zarr` with the same API.
 
 QuantNado installs a `quantnado` command with two main workflows.
 
-### `create-dataset`
+### `dataset create`
 
-Creates per-sample Zarr stores from a metadata CSV/TSV.
+Creates one per-sample Zarr store from direct assay inputs.
 
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
-  --output-dir dataset \
-  --overwrite
+quantnado dataset create \
+  --sample RNA_1 \
+  --assay RNA \
+  --bamfile /data/RNA_1.bam \
+  --stranded R \
+  --output-dir dataset
 ```
 
 Supported assays: `ATAC`, `ChIP`, `RNA`, `CUT&TAG`, `METH`, `SNP`, `MCC`.
+
+### `dataset combine`
+
+Combines per-sample stores into one multi-sample store.
+
+```bash
+quantnado dataset combine \
+  --stores dataset/ATAC_1.zarr dataset/RNA_1.zarr dataset/METH_1.zarr \
+  --output dataset/combined.zarr
+```
 
 ### `call-peaks`
 

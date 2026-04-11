@@ -10,6 +10,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Optional
 
 import pandas as pd
@@ -24,6 +26,13 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+
+dataset_app = typer.Typer(
+    help="Create and combine QuantNado datasets.",
+    add_completion=False,
+    no_args_is_help=True,
+)
+app.add_typer(dataset_app, name="dataset")
 
 
 @app.callback(invoke_without_command=True)
@@ -64,13 +73,280 @@ def _parse_stranded_value(value) -> str | None:
     )
 
 
+def _create_store_impl(
+    *,
+    sample: str,
+    assay: str,
+    output_dir: Path,
+    bamfile: Optional[Path],
+    vcf_file: Optional[Path],
+    methylation_file: Optional[Path],
+    ip: Optional[str],
+    chromsizes: Optional[Path],
+    stranded: Optional[str],
+    filter_chromosomes: bool,
+    overwrite: bool,
+    chunk_len: Optional[int],
+    construction_compression: str,
+    test: bool,
+    test_chrom: list[str] | None,
+    log_file: Path,
+    verbose: bool,
+) -> None:
+    _setup_logging(log_file, verbose)
+
+    assay = assay.upper()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    store_path = output_dir / f"{sample}.zarr"
+
+    if store_path.exists() and not overwrite:
+        logger.info(f"Skipping existing store: {store_path.name}")
+        return
+
+    try:
+        if assay == "METH":
+            from quantnado.dataset.store_methyl import MethylStore
+
+            if bamfile is None:
+                raise ValueError("METH requires --bamfile")
+            if methylation_file is None:
+                raise ValueError("METH requires --methylation-file")
+
+            MethylStore.from_files(
+                bam_path=str(bamfile),
+                methyl_path=str(methylation_file),
+                store_path=store_path,
+                sample=sample,
+                chromsizes=chromsizes,
+                chunk_len=chunk_len,
+                construction_compression=construction_compression,
+                overwrite=overwrite,
+                filter_chromosomes=filter_chromosomes,
+                test=test or bool(test_chrom),
+                test_chromosomes=test_chrom or None,
+            )
+        elif assay == "SNP":
+            from quantnado.dataset.store_variants import VariantStore
+
+            if vcf_file is None:
+                raise ValueError("SNP requires --vcf-file")
+
+            VariantStore.from_vcf(
+                vcf_path=str(vcf_file),
+                store_path=store_path,
+                sample=sample,
+                chromsizes=chromsizes,
+                chunk_len=chunk_len,
+                construction_compression=construction_compression,
+                overwrite=overwrite,
+                filter_chromosomes=filter_chromosomes,
+                test=test or bool(test_chrom),
+                test_chromosomes=test_chrom or None,
+            )
+        else:
+            from quantnado.dataset.store_bam import BamStore
+
+            if bamfile is None:
+                raise ValueError(f"{assay} requires --bamfile")
+
+            normalised_stranded = _parse_stranded_value(stranded) if assay == "RNA" else None
+            BamStore.from_bam_files(
+                bam_path=str(bamfile),
+                store_path=store_path,
+                assay=assay,
+                sample=sample,
+                ip=ip or None,
+                chromsizes=chromsizes,
+                stranded=normalised_stranded,
+                chunk_len=chunk_len,
+                construction_compression=construction_compression,
+                overwrite=overwrite,
+                filter_chromosomes=filter_chromosomes,
+                test=test or bool(test_chrom),
+                test_chromosomes=test_chrom or None,
+            )
+        logger.success(f"Wrote {store_path.name}")
+    except typer.Exit:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to process sample '{sample}': {e}")
+        logger.debug(traceback.format_exc())
+        raise typer.Exit(code=1)
+
+
+def _create_dataset_from_metadata_impl(
+    metadata: Path,
+    output_dir: Path,
+    chromsizes: Optional[Path],
+    filter_chromosomes: bool,
+    overwrite: bool,
+    chunk_len: Optional[int],
+    construction_compression: str,
+    test: bool,
+    test_chrom: list[str] | None,
+    log_file: Path,
+    verbose: bool,
+) -> None:
+    """Create per-sample zarr stores from a metadata CSV/TSV."""
+    _setup_logging(log_file, verbose)
+
+    sep = "\t" if metadata.suffix in (".tsv", ".txt") else ","
+    try:
+        df = pd.read_csv(metadata, sep=sep)
+    except Exception as e:
+        logger.error(f"Could not read metadata file {metadata}: {e}")
+        raise typer.Exit(code=1)
+
+    required_cols = {"sample", "assay"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        logger.error(f"Metadata is missing required columns: {missing}")
+        raise typer.Exit(code=1)
+
+    errors: list[str] = []
+
+    for _, row in df.iterrows():
+        sample = str(row["sample"])
+        assay = str(row.get("assay", "")).upper()
+        row_chromsizes = row.get("chromsizes", None)
+        effective_chromsizes = (
+            Path(str(row_chromsizes).strip())
+            if row_chromsizes and str(row_chromsizes).strip()
+            else chromsizes
+        )
+
+        try:
+            _create_store_impl(
+                sample=sample,
+                assay=assay,
+                output_dir=output_dir,
+                bamfile=Path(str(row.get("bam", "")).strip()) if str(row.get("bam", "")).strip() else None,
+                vcf_file=Path(str(row.get("vcf", "")).strip()) if str(row.get("vcf", "")).strip() else None,
+                methylation_file=Path(str(row.get("methyl", "")).strip()) if str(row.get("methyl", "")).strip() else None,
+                ip=str(row.get("ip", "") or "") or None,
+                chromsizes=effective_chromsizes,
+                stranded=str(row.get("stranded", "")).strip() or None,
+                filter_chromosomes=filter_chromosomes,
+                overwrite=overwrite,
+                chunk_len=chunk_len,
+                construction_compression=construction_compression,
+                test=test,
+                test_chrom=test_chrom,
+                log_file=log_file,
+                verbose=verbose,
+            )
+        except typer.Exit:
+            errors.append(sample)
+
+    if errors:
+        logger.warning(f"Failed samples: {errors}")
+        raise typer.Exit(code=1)
+    logger.success(f"All samples written to {output_dir}")
+
+
 # ======================================================================
-# quantnado create-dataset
+# quantnado dataset create
 # ======================================================================
 
 
-@app.command("create-dataset")
+@dataset_app.command("create")
 def create_dataset(
+    sample: str = typer.Option(..., "--sample", help="Sample name for the output store."),
+    assay: str = typer.Option(
+        ...,
+        "--assay",
+        help="Assay type: ATAC, ChIP, RNA, CUT&TAG, METH, SNP, or MCC.",
+    ),
+    output_dir: Path = typer.Option(
+        ..., "--output-dir", "-o", help="Directory to write the sample .zarr store into."
+    ),
+    bamfile: Optional[Path] = typer.Option(
+        None,
+        "--bamfile",
+        "--bam-file",
+        help="BAM file for BAM-based assays and METH.",
+    ),
+    vcf_file: Optional[Path] = typer.Option(
+        None,
+        "--vcf_file",
+        "--vcf-file",
+        help="VCF file for SNP assays.",
+    ),
+    methylation_file: Optional[Path] = typer.Option(
+        None,
+        "--methylation_file",
+        "--methylation-file",
+        help="Methylation bedGraph/TSV for METH assays.",
+    ),
+    ip: Optional[str] = typer.Option(
+        None,
+        "--ip",
+        help="IP / target label for ChIP or CUT&TAG samples.",
+    ),
+    stranded: Optional[str] = typer.Option(
+        None,
+        "--stranded",
+        help="RNA strandedness: R/F/1/2/U.",
+    ),
+    chromsizes: Optional[Path] = typer.Option(
+        None,
+        "--chromsizes",
+        help="Path to .chrom.sizes file. If omitted, inferred from BAM headers or VCF ##contig lines.",
+    ),
+    filter_chromosomes: bool = typer.Option(
+        True,
+        "--filter-chromosomes/--no-filter-chromosomes",
+        help="Keep only canonical chromosomes (chr* without underscore).",
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite/--no-overwrite", help="Overwrite existing stores."
+    ),
+    chunk_len: Optional[int] = typer.Option(
+        None, "--chunk-len", help="Override position-axis chunk length."
+    ),
+    construction_compression: str = typer.Option(
+        "default",
+        "--construction-compression",
+        help="Build-time compression: default, fast, or none.",
+        case_sensitive=False,
+    ),
+    test: bool = typer.Option(
+        False, "--test", help="Restrict to test chromosomes (default: chr9/chr13/chr21)."
+    ),
+    test_chrom: list[str] = typer.Option(
+        None,
+        "--test-chrom",
+        help="Chromosome to keep in test mode. Repeat to pass multiple chromosomes.",
+    ),
+    log_file: Path = typer.Option(
+        Path("quantnado_create.log"), "--log-file", help="Path to log file."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
+):
+    """Create one per-sample zarr store from direct input files."""
+    _create_store_impl(
+        sample=sample,
+        assay=assay,
+        output_dir=output_dir,
+        bamfile=bamfile,
+        vcf_file=vcf_file,
+        methylation_file=methylation_file,
+        ip=ip,
+        chromsizes=chromsizes,
+        stranded=stranded,
+        filter_chromosomes=filter_chromosomes,
+        overwrite=overwrite,
+        chunk_len=chunk_len,
+        construction_compression=construction_compression,
+        test=test,
+        test_chrom=test_chrom,
+        log_file=log_file,
+        verbose=verbose,
+    )
+
+
+@app.command("create-dataset", hidden=True)
+def create_dataset_legacy(
     metadata: Path = typer.Option(
         ...,
         "--metadata",
@@ -119,132 +395,86 @@ def create_dataset(
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
 ):
-    """Create per-sample zarr stores from a metadata CSV/TSV.
+    """Backward-compatible alias for `quantnado dataset create`."""
+    _create_dataset_from_metadata_impl(
+        metadata=metadata,
+        output_dir=output_dir,
+        chromsizes=chromsizes,
+        filter_chromosomes=filter_chromosomes,
+        overwrite=overwrite,
+        chunk_len=chunk_len,
+        construction_compression=construction_compression,
+        test=test,
+        test_chrom=test_chrom,
+        log_file=log_file,
+        verbose=verbose,
+    )
 
-    The metadata file maps each sample to its input file(s) and assay type.
-    One .zarr store is written per row to output-dir.
 
-    \b
-    Example metadata CSV:
-      sample,assay,bam,ip
-      ATAC-1,ATAC,ATAC-1.bam,
-      ChIP-H3K27ac,ChIP,H3K27ac.bam,H3K27ac
-      RNA-1,RNA,RNA-1.bam,
-      METH-1,METH,METH-1.bam,METH-1.bedGraph
-      SNP-1,SNP,,SNP-1.vcf.gz
-    """
+@dataset_app.command(
+    "combine",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": False},
+)
+def combine_dataset(
+    ctx: typer.Context,
+    stores: Path = typer.Option(
+        ...,
+        "--stores",
+        help="One or more per-sample QuantNado .zarr stores after a single --stores flag.",
+    ),
+    output: Path = typer.Option(
+        ...,
+        "--output",
+        "-o",
+        help="Path to the combined multi-sample .zarr store.",
+    ),
+    overwrite: bool = typer.Option(
+        True,
+        "--overwrite/--no-overwrite",
+        help="Overwrite the output store if it already exists.",
+    ),
+    log_file: Path = typer.Option(
+        Path("quantnado_combine.log"), "--log-file", help="Path to log file."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
+):
+    """Combine per-sample zarr stores into a single multi-sample store."""
     _setup_logging(log_file, verbose)
-    import pandas as pd
-    from quantnado.dataset.metadata import array_key
+    from quantnado.analysis.core import QuantNadoDataset
 
-    sep = "\t" if metadata.suffix in (".tsv", ".txt") else ","
+    def _combine_from_source(source: Path) -> None:
+        QuantNadoDataset.combine(src=source, output=output, overwrite=overwrite)
+
     try:
-        df = pd.read_csv(metadata, sep=sep)
+        store_paths = [stores] + [Path(arg) for arg in ctx.args]
+
+        if len(store_paths) == 1 and store_paths[0].is_dir() and store_paths[0].suffix != ".zarr":
+            _combine_from_source(store_paths[0])
+        else:
+            with tempfile.TemporaryDirectory(prefix="quantnado-combine-") as tmp:
+                tmpdir = Path(tmp)
+                seen: set[str] = set()
+                for idx, store in enumerate(store_paths):
+                    if not store.exists():
+                        raise FileNotFoundError(f"Store does not exist: {store}")
+                    name = store.name
+                    if name in seen:
+                        stem = store.stem or f"store_{idx+1}"
+                        name = f"{stem}_{idx+1}.zarr"
+                    seen.add(name)
+                    target = tmpdir / name
+                    try:
+                        os.symlink(store.resolve(), target, target_is_directory=True)
+                    except Exception:
+                        shutil.copytree(store, target)
+                _combine_from_source(tmpdir)
+        logger.success(f"Combined dataset written to {output}")
+    except typer.Exit:
+        raise
     except Exception as e:
-        logger.error(f"Could not read metadata file {metadata}: {e}")
+        logger.error(f"Dataset combine failed: {type(e).__name__}: {e}")
+        logger.debug(traceback.format_exc())
         raise typer.Exit(code=1)
-
-    required_cols = {"sample", "assay"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        logger.error(f"Metadata is missing required columns: {missing}")
-        raise typer.Exit(code=1)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    errors: list[str] = []
-
-    for _, row in df.iterrows():
-        sample = str(row["sample"])
-        assay = str(row.get("assay", "")).upper()
-        ip = str(row.get("ip", "") or "")
-        bam_path = str(row.get("bam", "") or "").strip()
-        methyl_path = str(row.get("methyl", "") or "").strip()
-        vcf_path = str(row.get("vcf", "") or "").strip()
-        row_chromsizes = row.get("chromsizes", None)
-        effective_chromsizes = (
-            str(row_chromsizes).strip()
-            if row_chromsizes and str(row_chromsizes).strip()
-            else chromsizes
-        )
-
-        store_path = output_dir / f"{sample}.zarr"
-        if store_path.exists() and not overwrite:
-            logger.info(f"Skipping existing store: {store_path.name}")
-            continue
-
-        try:
-            if assay == "METH":
-                from quantnado.dataset.store_methyl import MethylStore
-                if not bam_path:
-                    raise ValueError("METH rows require a 'bam' column")
-                if not methyl_path:
-                    raise ValueError("METH rows require a 'methyl' column")
-                MethylStore.from_files(
-                    bam_path=bam_path,
-                    methyl_path=methyl_path,
-                    store_path=store_path,
-                    sample=sample,
-                    chromsizes=effective_chromsizes,
-                    chunk_len=chunk_len,
-                    construction_compression=construction_compression,
-                    overwrite=overwrite,
-                    filter_chromosomes=filter_chromosomes,
-                    test=test or bool(test_chrom),
-                    test_chromosomes=test_chrom or None,
-                )
-            elif assay == "SNP":
-                from quantnado.dataset.store_variants import VariantStore
-                if not vcf_path:
-                    raise ValueError("SNP rows require a 'vcf' column")
-                VariantStore.from_vcf(
-                    vcf_path=vcf_path,
-                    store_path=store_path,
-                    sample=sample,
-                    chromsizes=effective_chromsizes,
-                    chunk_len=chunk_len,
-                    construction_compression=construction_compression,
-                    overwrite=overwrite,
-                    filter_chromosomes=filter_chromosomes,
-                    test=test or bool(test_chrom),
-                    test_chromosomes=test_chrom or None,
-                )
-            else:
-                # BAM-based: ATAC, ChIP, CUT&TAG, RNA, MCC
-                from quantnado.dataset.store_bam import BamStore
-                if not bam_path:
-                    raise ValueError(f"{assay} rows require a 'bam' column")
-                stranded = (
-                    _parse_stranded_value(row.get("stranded", None))
-                    if assay.upper() == "RNA"
-                    else None
-                )
-                is_mcc = assay.upper() == "MCC"
-                BamStore.from_bam_files(
-                    bam_path=bam_path,
-                    store_path=store_path,
-                    assay=assay,
-                    sample=sample,
-                    ip=ip or None,
-                    chromsizes=effective_chromsizes,
-                    stranded=stranded,
-                    is_mcc=is_mcc,
-                    chunk_len=chunk_len,
-                    construction_compression=construction_compression,
-                    overwrite=overwrite,
-                    filter_chromosomes=filter_chromosomes,
-                    test=test or bool(test_chrom),
-                    test_chromosomes=test_chrom or None,
-                )
-            logger.success(f"Wrote {store_path.name}")
-        except Exception as e:
-            logger.error(f"Failed to process sample '{sample}': {e}")
-            logger.debug(traceback.format_exc())
-            errors.append(sample)
-
-    if errors:
-        logger.warning(f"Failed samples: {errors}")
-        raise typer.Exit(code=1)
-    logger.success(f"All samples written to {output_dir}")
 
 
 # ======================================================================

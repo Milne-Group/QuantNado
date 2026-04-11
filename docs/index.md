@@ -6,10 +6,9 @@ QuantNado converts BAM-, bedGraph-, and VCF-derived assays into Zarr-backed stor
 
 ## Current Workflow
 
-1. Prepare a metadata CSV/TSV describing your samples and assay types.
-2. Run `quantnado create-dataset` to build one `.zarr` store per sample.
+1. Run `quantnado dataset create` once per sample to build per-sample `.zarr` stores.
+2. Optionally run `quantnado dataset combine` to merge those stores into a single multi-sample `.zarr`.
 3. Open the dataset with `QuantNado.open(...)` or `QuantNadoDataset(...)`.
-4. Optionally combine per-sample stores into a single multi-sample `.zarr`.
 
 ## Supported Assays
 
@@ -23,30 +22,30 @@ QuantNado converts BAM-, bedGraph-, and VCF-derived assays into Zarr-backed stor
 
 ## Minimal Example
 
-### Metadata
-
-samples.csv with the following:
-
-|assay|sample_id|ip|bam_path|stranded|methylation_path|variant_path|
-|---|---|---|---|---|---|---|
-|ATAC |Sample-1||/data/ATAC-Sample-1.bam||||
-|ChIP |Sample-1_H3K27ac|H3K27ac|/data/Sample-1_H3K27ac.bam||||
-|MCC  |Sample-1||/data/MCC-Sample-1.bam||||
-|METH |Sample-1||/data/METH-Sample-1.bam||/data/METH-Sample-1.bedGraph||
-|RNA  |Sample-1||/data/RNA-Sample-1.bam|R|||
-|SNP  |Sample-1||/data/SNP-Sample-1.bam|||/data/SNP-Sample-1.vcf.gz|
-
 ```bash
-quantnado create-dataset \
-  --metadata samples.csv \
-  --output-dir dataset.zarr \
+quantnado dataset create \
+  --sample Sample-1 \
+  --assay ATAC \
+  --bamfile /data/ATAC-Sample-1.bam \
+  --output-dir dataset \
   --chromsizes hg38.chrom.sizes
+
+quantnado dataset create \
+  --sample Sample-1_H3K27ac \
+  --assay ChIP \
+  --bamfile /data/Sample-1_H3K27ac.bam \
+  --ip H3K27ac \
+  --output-dir dataset
+
+quantnado dataset combine \
+  --stores dataset/Sample-1.zarr dataset/Sample-1_H3K27ac.zarr \
+  --output dataset/combined.zarr
 ```
 
 ```python
 from quantnado import QuantNado
 
-qn = QuantNado.open("dataset.zarr")
+qn = QuantNado.open("dataset/combined.zarr")
 
 region = qn.sel("chr21", 36_000_000, 36_010_000)
 signal = qn.reduce("promoters.bed", reduction="mean", modality="coverage")
