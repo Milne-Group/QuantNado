@@ -13,6 +13,16 @@ if TYPE_CHECKING:
 
 __all__ = ["metaplot", "tornadoplot", "locus_plot", "heatmap", "correlate"]
 
+
+class _AxesList(list):
+    """List-like container with a compact notebook/REPL representation."""
+
+    def __repr__(self) -> str:
+        return f"<QuantNadoAxesList n={len(self)}>"
+
+    def _repr_pretty_(self, p, cycle) -> None:
+        p.text(repr(self))
+
 # Sensible per-modality defaults that metaplot / tornadoplot apply when
 # ``modality`` is provided.  Explicit kwargs passed by the caller always win.
 _MODALITY_DEFAULTS: "dict[str, dict]" = {
@@ -73,6 +83,7 @@ def metaplot(
     figsize: "tuple[float, float]" = (8, 4),
     ax: "plt.Axes | None" = None,
     filepath: "str | Path | None" = None,
+    device: str = "cpu",
 ) -> "plt.Axes":
     """
     Plot a metagene profile from the output of ``qn.extract()``.
@@ -148,12 +159,15 @@ def metaplot(
     --------
     >>> binned = qn.extract(
     ...     feature_type="promoter",
-    ...     gtf_path="genes.gtf",
-    ...     fixed_width=2000,
+    ...     GTF_FILE="genes.gtf",
+    ...     assay="ATAC",
+    ...     modality="coverage",
+    ...     upstream=1000,
+    ...     downstream=1000,
     ...     anchor="start",
     ...     bin_size=50,
     ... )
-    >>> ax = metaplot(binned, title="Promoter metagene")
+    >>> ax = metaplot(binned, modality="coverage", title="Promoter metagene")
     >>> ax = metaplot(
     ...     binned,
     ...     groups={"control": ["s1", "s2"], "treated": ["s3", "s4"]},
@@ -187,7 +201,7 @@ def metaplot(
         data = data.compute()
 
     # Flip minus-strand intervals so all profiles run 5'→3'
-    if flip_minus_strand and "strand" in data.coords:
+    if flip_minus_strand and "strand" in data.coords and not data.attrs.get("strand_flipped", False):
         strands = data.coords["strand"].values
         minus_mask = strands == "-"
         if minus_mask.any():
@@ -205,7 +219,7 @@ def metaplot(
         _pdim_rev = next((d for d in data_rev.dims if d in ("relative_position", "bin")), None)
         if _pdim_rev and data_rev.dims != ("interval", _pdim_rev, "sample"):
             data_rev = data_rev.transpose("interval", _pdim_rev, "sample")
-        if flip_minus_strand and "strand" in data_rev.coords:
+        if flip_minus_strand and "strand" in data_rev.coords and not data_rev.attrs.get("strand_flipped", False):
             _strands_rev = data_rev.coords["strand"].values
             _minus_rev = _strands_rev == "-"
             if _minus_rev.any():
@@ -265,11 +279,40 @@ def metaplot(
 
         colors = _resolve_palette(palette, len(sample_labels), labels=sample_labels)
         n_intervals = data.sizes["interval"]
-        mean_profile = data.mean(dim="interval")  # (position, sample)
-        std_profile = data.std(dim="interval")    # (position, sample)
-        if data_rev is not None:
-            mean_profile_rev = data_rev.mean(dim="interval")
-            std_profile_rev = data_rev.std(dim="interval")
+        if device != "cpu":
+            try:
+                import torch
+                _data_np = data.values if not hasattr(data.data, "compute") else data.compute().values
+                _t = torch.from_numpy(_data_np.astype(np.float32)).to(device)
+                _interval_dim = list(data.dims).index("interval")
+                _mean_np = _t.mean(dim=_interval_dim).cpu().numpy()
+                _std_np = _t.std(dim=_interval_dim).cpu().numpy()
+                _remaining_dims = [d for d in data.dims if d != "interval"]
+                _remaining_coords = {d: data.coords[d] for d in _remaining_dims if d in data.coords}
+                mean_profile = xr.DataArray(_mean_np, dims=_remaining_dims, coords=_remaining_coords)
+                std_profile = xr.DataArray(_std_np, dims=_remaining_dims, coords=_remaining_coords)
+                if data_rev is not None:
+                    _data_rev_np = data_rev.values if not hasattr(data_rev.data, "compute") else data_rev.compute().values
+                    _t_rev = torch.from_numpy(_data_rev_np.astype(np.float32)).to(device)
+                    _interval_dim_rev = list(data_rev.dims).index("interval")
+                    _mean_rev_np = _t_rev.mean(dim=_interval_dim_rev).cpu().numpy()
+                    _std_rev_np = _t_rev.std(dim=_interval_dim_rev).cpu().numpy()
+                    _remaining_dims_rev = [d for d in data_rev.dims if d != "interval"]
+                    _remaining_coords_rev = {d: data_rev.coords[d] for d in _remaining_dims_rev if d in data_rev.coords}
+                    mean_profile_rev = xr.DataArray(_mean_rev_np, dims=_remaining_dims_rev, coords=_remaining_coords_rev)
+                    std_profile_rev = xr.DataArray(_std_rev_np, dims=_remaining_dims_rev, coords=_remaining_coords_rev)
+            except Exception:
+                mean_profile = data.mean(dim="interval")
+                std_profile = data.std(dim="interval")
+                if data_rev is not None:
+                    mean_profile_rev = data_rev.mean(dim="interval")
+                    std_profile_rev = data_rev.std(dim="interval")
+        else:
+            mean_profile = data.mean(dim="interval")  # (position, sample)
+            std_profile = data.std(dim="interval")    # (position, sample)
+            if data_rev is not None:
+                mean_profile_rev = data_rev.mean(dim="interval")
+                std_profile_rev = data_rev.std(dim="interval")
 
         for sample, color in zip(sample_labels, colors):
             y = mean_profile.sel(sample=sample).values
@@ -306,6 +349,16 @@ def metaplot(
             label=reference_label,
         )
 
+    # Set xlim so the full window is shown, including the right edge of the last bin.
+    # Bin coords are left-edges, so the true range extends one bin-step beyond x[-1].
+    _upstream = data.attrs.get("upstream")
+    _downstream = data.attrs.get("downstream")
+    if _upstream is not None and _downstream is not None:
+        ax.set_xlim(-_upstream, _downstream)
+    elif len(x) > 1:
+        step = abs(float(x[1] - x[0]))
+        ax.set_xlim(x[0], x[-1] + step)
+
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -331,7 +384,7 @@ def _prep_extract(data: xr.DataArray, flip_minus_strand: bool) -> "tuple[xr.Data
         data = data.transpose("interval", position_dim, "sample")
     if hasattr(data, "chunks"):
         data = data.compute()
-    if flip_minus_strand and "strand" in data.coords:
+    if flip_minus_strand and "strand" in data.coords and not data.attrs.get("strand_flipped", False):
         strands = data.coords["strand"].values
         minus_mask = strands == "-"
         if minus_mask.any():
@@ -595,7 +648,7 @@ def tornadoplot(
     if filepath is not None:
         fig.savefig(filepath, bbox_inches="tight")
 
-    return axes
+    return _AxesList(axes)
 
 
 def locus_plot(
@@ -609,6 +662,7 @@ def locus_plot(
     methylation: "xr.DataArray | None" = None,
     allele_depth_ref: "xr.DataArray | None" = None,
     allele_depth_alt: "xr.DataArray | None" = None,
+    allele_freq: "xr.DataArray | None" = None,
     genotype: "xr.DataArray | None" = None,
     palette: "str | list | dict | None" = None,
     title: "str | None" = None,
@@ -652,10 +706,16 @@ def locus_plot(
         Required when any entry in ``modality`` is ``"methylation"``.
     allele_depth_ref : DataArray, optional
         Reference allele depth with dims ``(sample, position)`` (sparse variant sites).
-        Required when any entry in ``modality`` is ``"variant"``.
+        Used together with ``allele_depth_alt`` to compute allele frequency.
     allele_depth_alt : DataArray, optional
         Alternate allele depth with dims ``(sample, position)`` (sparse variant sites).
-        Required when any entry in ``modality`` is ``"variant"``.
+        Used together with ``allele_depth_ref`` to compute allele frequency.
+    allele_freq : DataArray, optional
+        Pre-computed allele frequency with dims ``(sample, position)``.
+        Use this when ``AF`` is stored directly (e.g. from a VCF FORMAT field).
+        Takes precedence over ``allele_depth_ref``/``allele_depth_alt`` when provided.
+        Required when any entry in ``modality`` is ``"variant"`` and
+        ``allele_depth_ref``/``allele_depth_alt`` are not provided.
     genotype : DataArray, optional
         Genotype DataArray with dims ``(sample, position)`` and encoding
         ``-1`` missing, ``0`` hom-ref, ``1`` het, ``2`` hom-alt.
@@ -776,36 +836,54 @@ def locus_plot(
             ax.set_ylim(0, 101)
 
         elif mod == "variant":
-            if allele_depth_ref is None or allele_depth_alt is None:
+            if allele_freq is not None:
+                # Direct AF path (e.g. from VCF AF FORMAT field)
+                af_arr = allele_freq.sel(sample=sample_name)
+                if hasattr(af_arr, "compute"):
+                    af_arr = af_arr.compute()
+                # Filter to positions with a called variant (AF > 0 and not NaN)
+                af_vals_full = af_arr.values.astype(float)
+                x_full = af_arr.coords["position"].values
+                variant_mask = (af_vals_full > 0) & np.isfinite(af_vals_full)
+                x = x_full[variant_mask]
+                af = af_vals_full[variant_mask]
+
+                gt_arr = None
+                if genotype is not None:
+                    gt_da = genotype.sel(sample=sample_name)
+                    if hasattr(gt_da, "compute"):
+                        gt_da = gt_da.compute()
+                    gt_arr = gt_da.values.astype(int)[variant_mask]
+            elif allele_depth_ref is not None and allele_depth_alt is not None:
+                ref_arr = allele_depth_ref.sel(sample=sample_name)
+                alt_arr = allele_depth_alt.sel(sample=sample_name)
+                if hasattr(ref_arr, "compute"):
+                    ref_arr = ref_arr.compute()
+                if hasattr(alt_arr, "compute"):
+                    alt_arr = alt_arr.compute()
+
+                gt_arr = None
+                if genotype is not None:
+                    gt_da = genotype.sel(sample=sample_name)
+                    if hasattr(gt_da, "compute"):
+                        gt_da = gt_da.compute()
+                    gt_arr = gt_da.reindex(position=ref_arr.coords["position"], fill_value=-1).values.astype(int)
+
+                x = ref_arr.coords["position"].values
+                ref_vals = ref_arr.values.astype(float)
+                alt_vals = alt_arr.values.astype(float)
+
+                total = ref_vals + alt_vals
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    af = np.where(total > 0, alt_vals / total, np.nan)
+            else:
                 raise ValueError(
-                    f"modality='variant' for sample '{sample_name}' requires "
-                    "both allele_depth_ref and allele_depth_alt."
+                    f"modality='variant' for sample '{sample_name}' requires either "
+                    "'allele_freq' or both 'allele_depth_ref' and 'allele_depth_alt'."
                 )
 
-            ref_arr = allele_depth_ref.sel(sample=sample_name)
-            alt_arr = allele_depth_alt.sel(sample=sample_name)
-            if hasattr(ref_arr, "compute"):
-                ref_arr = ref_arr.compute()
-            if hasattr(alt_arr, "compute"):
-                alt_arr = alt_arr.compute()
-
-            gt_arr = None
-            if genotype is not None:
-                gt_arr = genotype.sel(sample=sample_name)
-                if hasattr(gt_arr, "compute"):
-                    gt_arr = gt_arr.compute()
-                gt_arr = gt_arr.reindex(position=ref_arr.coords["position"], fill_value=-1)
-
-            x = ref_arr.coords["position"].values
-            ref_vals = ref_arr.values.astype(float)
-            alt_vals = alt_arr.values.astype(float)
-
-            total = ref_vals + alt_vals
-            with np.errstate(invalid="ignore", divide="ignore"):
-                af = np.where(total > 0, alt_vals / total, np.nan)
-
             if gt_arr is not None:
-                gt_vals = gt_arr.values.astype(int)
+                gt_vals = gt_arr if isinstance(gt_arr, np.ndarray) else gt_arr.values.astype(int)
             else:
                 # Fallback: approximate genotype from allele frequency
                 gt_vals = np.full(af.shape, -1, dtype=int)
@@ -858,7 +936,7 @@ def locus_plot(
     if filepath is not None:
         fig.savefig(filepath, bbox_inches="tight", dpi=150)
 
-    return axes
+    return _AxesList(axes)
 
 
 # ---------------------------------------------------------------------------
@@ -927,7 +1005,9 @@ def heatmap(
     *,
     variable: "str | None" = None,
     samples: "list[str] | None" = None,
+    exclude_zeros: bool = False,
     log_transform: bool = True,
+    zscore: "int | None" = None,
     cmap: str = "mako",
     figsize: "tuple[float, float]" = (6, 6),
     title: str = "Signal heatmap",
@@ -953,9 +1033,14 @@ def heatmap(
         (e.g. ``"mean"``, ``"sum"``). Defaults to ``"mean"`` if present.
     samples : list of str, optional
         Subset of samples to include. Defaults to all samples.
+    exclude_zeros : bool, default False
+        If True, drop rows whose values are zero across all samples before plotting.
     log_transform : bool, default True
         Apply ``log1p`` before plotting. Recommended for count/coverage data
         with a heavy-tailed distribution.
+    zscore : {0, 1, None}, optional
+        Standardize the matrix before plotting. ``0`` z-scores rows (features),
+        ``1`` z-scores columns (samples), and ``None`` disables z-scoring.
     cmap : str, default "mako"
         Matplotlib / seaborn colormap name.
     figsize : tuple, default (6, 6)
@@ -971,25 +1056,40 @@ def heatmap(
 
     Examples
     --------
-    >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+    >>> signal = qn.reduce(intervals_path="promoters.bed", reduction="mean", modality="coverage")
     >>> g = qn.heatmap(signal, variable="mean", title="Promoter signal")
 
-    >>> counts, _ = ds.count_features(gtf_file="genes.gtf")
-    >>> g = qn.heatmap(counts, log_transform=True, title="Gene counts")
+    >>> counts, _ = qn.count_features(gtf_file="genes.gtf", assay="RNA")
+    >>> g = qn.heatmap(counts, log_transform=True, title="RNA feature counts")
     """
     import seaborn as sns
 
     mat, sample_labels = _extract_signal_matrix(data, variable, samples)
 
+    if exclude_zeros:
+        keep_rows = np.any(np.nan_to_num(mat, nan=0.0) != 0, axis=1)
+        mat = mat[keep_rows]
+
     if log_transform:
         mat = np.log1p(mat)
 
-    # Drop zero-variance columns (uninformative samples)
-    col_var = mat.var(axis=0)
+    if mat.ndim != 2 or mat.shape[0] == 0 or mat.shape[1] == 0:
+        raise ValueError("heatmap requires a non-empty 2D feature-by-sample matrix")
+    if zscore not in (None, 0, 1):
+        raise ValueError("zscore must be one of None, 0, or 1")
+
+    # Drop zero-variance columns when at least one informative sample remains.
+    # For single-sample or all-constant inputs, keep the matrix and disable clustering.
+    col_var = np.nanvar(mat, axis=0)
     keep = col_var > 0
-    if not keep.all():
+    if keep.any() and not keep.all():
         sample_labels = [s for s, k in zip(sample_labels, keep) if k]
         mat = mat[:, keep]
+
+    row_var = np.nanvar(mat, axis=1) if mat.shape[0] else np.array([])
+    col_var = np.nanvar(mat, axis=0) if mat.shape[1] else np.array([])
+    row_cluster = mat.shape[0] > 1 and np.any(row_var > 0)
+    col_cluster = mat.shape[1] > 1 and np.any(col_var > 0)
 
     g = sns.clustermap(
         mat,
@@ -997,8 +1097,9 @@ def heatmap(
         yticklabels=False,
         xticklabels=sample_labels,
         figsize=figsize,
-        col_cluster=True,
-        row_cluster=True,
+        col_cluster=col_cluster,
+        row_cluster=row_cluster,
+        z_score=zscore,
         cbar_kws={"label": "log1p(signal)" if log_transform else "signal"},
         cbar_pos=(1.0, 0.5, 0.02, 0.2),
         dendrogram_ratio=0.1,
@@ -1028,9 +1129,10 @@ def correlate(
     figsize: "tuple[float, float]" = (6, 6),
     title: str = "Sample–sample correlation",
     filepath: "str | Path | None" = None,
+    device: str = "cpu",
 ) -> "tuple[pd.DataFrame, Any]":
     """
-    Compute and plot a sample–sample correlation matrix.
+    Compute and plot a sample-sample correlation matrix.
 
     Parameters
     ----------
@@ -1058,15 +1160,15 @@ def correlate(
     Returns
     -------
     corr_df : pd.DataFrame
-        Correlation matrix (samples × samples).
+        Correlation matrix (samples x samples).
     g : seaborn.matrix.ClusterGrid
 
     Examples
     --------
-    >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+    >>> signal = qn.reduce(intervals_path="promoters.bed", reduction="mean", modality="coverage")
     >>> corr_df, g = qn.correlate(signal, title="Promoter signal correlation")
 
-    >>> counts, _ = ds.count_features(gtf_file="genes.gtf")
+    >>> counts, _ = qn.count_features(gtf_file="genes.gtf", assay="RNA")
     >>> corr_df, g = qn.correlate(counts, method="spearman")
     """
     import seaborn as sns
@@ -1080,15 +1182,38 @@ def correlate(
     if log_transform:
         mat = np.log1p(mat)
 
-    # Drop zero-variance columns before correlating
-    col_var = mat.var(axis=0)
+    # Drop rows (features/ranges) that are NaN in any sample — NaN means arise from
+    # sparse regions where count < min_count (by design in reduce()).  Keeping NaN rows
+    # causes mat.var(axis=0) to return NaN for every sample, which would filter ALL
+    # samples via the zero-variance check below.
+    nan_rows = np.any(~np.isfinite(mat), axis=1)
+    if nan_rows.any():
+        mat = mat[~nan_rows]
+
+    # Drop zero-variance columns (samples with constant signal after NaN removal).
+    col_var = np.nanvar(mat, axis=0)
     keep = col_var > 0
     if not keep.all():
         sample_labels = [s for s, k in zip(sample_labels, keep) if k]
         mat = mat[:, keep]
 
+    if len(sample_labels) < 2:
+        raise ValueError(
+            f"Too few samples with variable signal to compute a correlation matrix "
+            f"(got {len(sample_labels)} after filtering constant/empty columns). "
+            "Check that your data has coverage across the requested regions."
+        )
+
     if method == "pearson":
-        corr = np.corrcoef(mat.T)
+        if device != "cpu":
+            try:
+                import torch
+                t = torch.from_numpy(mat.astype(np.float32)).to(device)
+                corr = torch.corrcoef(t.T).cpu().numpy()
+            except Exception:
+                corr = np.corrcoef(mat.T)
+        else:
+            corr = np.corrcoef(mat.T)
     else:
         corr, _ = spearmanr(mat)
         if corr.ndim == 0:  # single sample edge case
@@ -1096,6 +1221,8 @@ def correlate(
 
     corr_df = pd.DataFrame(corr, index=sample_labels, columns=sample_labels)
 
+    n_samples = len(sample_labels)
+    cluster = n_samples > 1
     g = sns.clustermap(
         corr_df,
         xticklabels=sample_labels,
@@ -1110,6 +1237,8 @@ def correlate(
         dendrogram_ratio=0.1,
         annot=annotate,
         fmt=".2f" if annotate else "",
+        row_cluster=cluster,
+        col_cluster=cluster,
     )
     g.figure.suptitle(title, y=1.02)
 

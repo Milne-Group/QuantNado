@@ -6,6 +6,8 @@ import pandas as pd
 import pyranges1 as pr
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from quantnado.analysis.ranges import (
     default_position_mask,
     get_fixed_windows,

@@ -1,4 +1,4 @@
-"""Normalisation of genomic signal from QuantNado stores.
+"""Normalisation of genomic signal from QuantNado datasets.
 
 Works on the outputs of ``reduce()``, ``extract()``, and ``count_features()``.
 
@@ -15,7 +15,7 @@ Examples
 >>> signal = ds.reduce(intervals_path="promoters.bed")
 >>> normalised = normalise(signal, ds, method="cpm")
 
->>> binned = ds.extract(feature_type="transcript", gtf_path="genes.gtf", bin_size=50)
+>>> binned = ds.extract(feature_type="transcript", GTF_FILE="genes.gtf", modality="coverage", bin_size=50)
 >>> normalised = normalise(binned, ds, method="cpm")
 
 >>> counts, features = ds.count_features(gtf_file="genes.gtf")
@@ -38,6 +38,49 @@ from loguru import logger
 # Library size retrieval
 # ---------------------------------------------------------------------------
 
+def get_mean_read_lengths(dataset) -> pd.Series:
+    """
+    Return mean read length per sample as a ``pd.Series`` indexed by sample name.
+
+    Reads ``metadata/mean_read_length`` from the underlying Zarr store (written during
+    BAM construction from up to 10 000 sampled reads).  Raises ``RuntimeError`` for
+    older stores that pre-date this field.
+
+    Parameters
+    ----------
+    dataset : QuantNadoDataset | QuantNado | BamStore
+
+    Returns
+    -------
+    pd.Series
+        Mean read lengths in base-pairs, indexed by sample name.
+
+    Raises
+    ------
+    RuntimeError
+        If the store does not contain ``mean_read_length`` metadata.
+    """
+    from .core import QuantNadoDataset
+
+    if isinstance(dataset, QuantNadoDataset):
+        return _mean_read_lengths_from_qnd(dataset)
+
+    bam_store = _resolve_bam_store(dataset)
+
+    meta = bam_store.meta
+    if "mean_read_length" not in meta:
+        raise RuntimeError(
+            "This store does not contain 'mean_read_length' metadata (it was built before "
+            "read-length tracking was added). Either rebuild the store from BAM files, "
+            "or pass mean_read_lengths explicitly to normalise()."
+        )
+
+    lengths = meta["mean_read_length"][:].astype(np.float64)
+    completed = bam_store.completed_mask
+    lengths[~completed] = np.nan
+    return pd.Series(lengths, index=bam_store.sample_names, name="mean_read_length")
+
+
 def get_library_sizes(dataset) -> pd.Series:
     """
     Return total mapped reads per sample as a ``pd.Series`` indexed by sample name.
@@ -48,8 +91,8 @@ def get_library_sizes(dataset) -> pd.Series:
 
     Parameters
     ----------
-    dataset : QuantNado | BamStore | MultiomicsStore
-        Any QuantNado object with a coverage store attached.
+    dataset : QuantNadoDataset | BamStore
+        Any current QuantNado analysis object with coverage metadata available.
 
     Returns
     -------
@@ -61,34 +104,95 @@ def get_library_sizes(dataset) -> pd.Series:
     RuntimeError
         If the store does not contain ``total_reads`` metadata.
     """
-    bam_store = _resolve_bam_store(dataset)
+    from .core import QuantNadoDataset
 
-    meta = bam_store.meta
+    if isinstance(dataset, QuantNadoDataset):
+        return _library_sizes_from_qnd(dataset)
+
+    # Legacy BamStore path (has .meta + .sample_names)
+    if hasattr(dataset, "coverage") and dataset.coverage is not None:
+        dataset = dataset.coverage
+    if not (hasattr(dataset, "meta") and hasattr(dataset, "sample_names")):
+        raise TypeError(
+            f"Cannot resolve library sizes from {type(dataset).__name__}. "
+            "Pass a QuantNadoDataset or BamStore."
+        )
+    meta = dataset.meta
     if "total_reads" not in meta:
         raise RuntimeError(
-            "This store does not contain 'total_reads' metadata (it was built before "
-            "library-size tracking was added). Either rebuild the store from BAM files, "
-            "or pass library_sizes explicitly to normalise()."
+            "This store does not contain 'total_reads' metadata. "
+            "Rebuild from BAM files or pass library_sizes explicitly."
         )
+    reads = meta["total_reads"][:].astype(float)
+    reads[~dataset.completed_mask] = np.nan
+    return pd.Series(reads, index=dataset.sample_names, name="library_size")
 
-    reads = meta["total_reads"][:].astype(np.int64)
-    completed = bam_store.completed_mask
-    reads_float = reads.astype(float)
-    reads_float[~completed] = np.nan
-    return pd.Series(reads_float, index=bam_store.sample_names, name="library_size")
+
+def _library_sizes_from_qnd(dataset) -> pd.Series:
+    """Extract library sizes from a QuantNadoDataset."""
+    if dataset._combined:
+        meta = dataset._combined_root.get("metadata")
+        if meta is None or "total_reads" not in meta:
+            raise RuntimeError(
+                "Combined store does not contain 'total_reads' metadata. "
+                "Rebuild from per-sample stores or pass library_sizes explicitly."
+            )
+        reads = meta["total_reads"][:].astype(float)
+        full_names = [str(s) for s in dataset._combined_root.attrs.get("sample_names", [])]
+        full_series = pd.Series(reads, index=full_names, name="library_size")
+        return full_series.reindex(dataset.sample_names)
+
+    sizes: dict[str, float] = {}
+    for store in dataset._stores:
+        reads = float(store.total_reads) if store.total_reads else np.nan
+        if store.viewpoints:
+            for vp in store.viewpoints:
+                sizes[f"{store.sample}_{vp}"] = reads
+        else:
+            sizes[store.sample] = reads
+    return pd.Series(sizes, name="library_size")
+
+
+def _mean_read_lengths_from_qnd(dataset) -> pd.Series:
+    """Extract mean read lengths from a QuantNadoDataset."""
+    if dataset._combined:
+        meta = dataset._combined_root.get("metadata")
+        if meta is None or "mean_read_length" not in meta:
+            raise RuntimeError(
+                "Combined store does not contain 'mean_read_length' metadata. "
+                "Rebuild from per-sample stores or pass mean_read_lengths explicitly."
+            )
+        lengths = meta["mean_read_length"][:].astype(float)
+        full_names = [str(s) for s in dataset._combined_root.attrs.get("sample_names", [])]
+        full_series = pd.Series(lengths, index=full_names, name="mean_read_length")
+        result = full_series.reindex(dataset.sample_names)
+        # NaN out incomplete samples
+        completed = dataset.completed_mask
+        return result.where(completed, np.nan)
+
+    lengths_dict: dict[str, float] = {}
+    for store in dataset._stores:
+        if store.mean_read_length and not np.isnan(store.mean_read_length):
+            mrl = float(store.mean_read_length)
+        else:
+            mrl = np.nan
+        if store.viewpoints:
+            for vp in store.viewpoints:
+                lengths_dict[f"{store.sample}_{vp}"] = mrl
+        else:
+            lengths_dict[store.sample] = mrl
+    return pd.Series(lengths_dict, name="mean_read_length")
 
 
 def _resolve_bam_store(dataset):
-    """Extract a BamStore from any QuantNado-family object."""
-    # QuantNado API facade
+    """Extract a BamStore from any QuantNado-family object (legacy helper)."""
     if hasattr(dataset, "coverage") and dataset.coverage is not None:
         return dataset.coverage
-    # BamStore directly (has meta + sample_names)
     if hasattr(dataset, "meta") and hasattr(dataset, "sample_names"):
         return dataset
     raise TypeError(
         f"Cannot resolve a BamStore from {type(dataset).__name__}. "
-        "Pass a QuantNado, BamStore, or MultiomicsStore."
+        "Pass a QuantNadoDataset, QuantNado, or BamStore."
     )
 
 
@@ -103,6 +207,8 @@ def normalise(
     method: str = "cpm",
     library_sizes: pd.Series | dict | None = None,
     feature_lengths: pd.Series | np.ndarray | None = None,
+    mean_read_lengths: pd.Series | dict | None = None,
+    device: str = "cpu",
 ) -> xr.Dataset | xr.DataArray | pd.DataFrame:
     """
     Normalise coverage signal or feature counts.
@@ -111,7 +217,7 @@ def normalise(
     ----------
     data : xr.Dataset | xr.DataArray | pd.DataFrame
         Output of ``reduce()``, ``extract()``, or ``count_features()``.
-    dataset : QuantNado | BamStore | MultiomicsStore, optional
+    dataset : QuantNadoDataset | QuantNado | BamStore, optional
         Source dataset used to look up library sizes automatically.
         Not required when ``library_sizes`` is provided explicitly, or for
         ``method="tpm"`` (which is self-normalising).
@@ -146,7 +252,7 @@ def normalise(
     >>> cpm_signal = normalise(signal, ds, method="cpm")
 
     >>> # Normalise a binned extract() output (e.g. for metaplots)
-    >>> binned = ds.extract(feature_type="transcript", gtf_path="genes.gtf", bin_size=50)
+    >>> binned = ds.extract(feature_type="transcript", GTF_FILE="genes.gtf", modality="coverage", bin_size=50)
     >>> cpm_binned = normalise(binned, ds, method="cpm")
 
     >>> # Normalise count matrix for DESeq2 pre-inspection or plotting
@@ -164,12 +270,34 @@ def normalise(
     if method in {"cpm", "rpkm"}:
         lib_sizes = _resolve_library_sizes(dataset, library_sizes)
 
+    # Auto-resolve mean_read_lengths for DataArray RPKM
+    if isinstance(data, xr.DataArray) and method == "rpkm" and mean_read_lengths is None and dataset is not None:
+        try:
+            mean_read_lengths = get_mean_read_lengths(dataset)
+        except (RuntimeError, AttributeError):
+            pass  # falls back to bin_size with a warning in _normalise_xr_dataarray
+
+    if isinstance(mean_read_lengths, dict):
+        mean_read_lengths = pd.Series(mean_read_lengths, name="mean_read_length")
+
+    if isinstance(data, xr.Dataset) and method == "rpkm" and mean_read_lengths is None and dataset is not None:
+        try:
+            mean_read_lengths = get_mean_read_lengths(dataset)
+        except (RuntimeError, AttributeError):
+            pass
+
     if isinstance(data, pd.DataFrame):
-        return _normalise_dataframe(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths)
+        return _normalise_dataframe(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths, device=device)
     if isinstance(data, xr.Dataset):
-        return _normalise_xr_dataset(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths)
+        return _normalise_xr_dataset(
+            data,
+            method=method,
+            lib_sizes=lib_sizes,
+            feature_lengths=feature_lengths,
+            mean_read_lengths=mean_read_lengths,
+        )
     if isinstance(data, xr.DataArray):
-        return _normalise_xr_dataarray(data, method=method, lib_sizes=lib_sizes)
+        return _normalise_xr_dataarray(data, method=method, lib_sizes=lib_sizes, mean_read_lengths=mean_read_lengths, device=device)
 
     raise TypeError(
         f"data must be xr.Dataset, xr.DataArray, or pd.DataFrame, got {type(data).__name__}"
@@ -208,6 +336,7 @@ def _normalise_dataframe(
     method: str,
     lib_sizes: pd.Series | None,
     feature_lengths: pd.Series | np.ndarray | None,
+    device: str = "cpu",
 ) -> pd.DataFrame:
     sample_labels = list(data.columns)
 
@@ -230,6 +359,17 @@ def _normalise_dataframe(
     scale_series = pd.Series(scale, index=sample_labels)
 
     if method == "cpm":
+        if device != "cpu" and data.shape[0] > 10_000:
+            try:
+                import torch
+                mat_t = torch.from_numpy(data.to_numpy(dtype=float)).to(device)
+                scale_t = torch.from_numpy(scale_series.to_numpy(dtype=float)).to(device)
+                result_np = (mat_t / scale_t.unsqueeze(0)).cpu().numpy()
+                result = pd.DataFrame(result_np, index=data.index, columns=data.columns)
+                logger.info("Normalised DataFrame to CPM.")
+                return result
+            except Exception:
+                pass
         result = data.div(scale_series, axis=1)
         logger.info("Normalised DataFrame to CPM.")
         return result
@@ -243,6 +383,18 @@ def _normalise_dataframe(
             f"feature_lengths length ({lengths_kb.shape[0]}) does not match "
             f"data rows ({data.shape[0]})."
         )
+    if device != "cpu" and data.shape[0] > 10_000:
+        try:
+            import torch
+            mat_t = torch.from_numpy(data.to_numpy(dtype=float)).to(device)
+            scale_t = torch.from_numpy(scale_series.to_numpy(dtype=float)).to(device)
+            lengths_t = torch.from_numpy(lengths_kb).to(device)
+            result_np = ((mat_t / scale_t.unsqueeze(0)) / lengths_t.unsqueeze(1)).cpu().numpy()
+            result = pd.DataFrame(result_np, index=data.index, columns=data.columns)
+            logger.info("Normalised DataFrame to RPKM.")
+            return result
+        except Exception:
+            pass
     result = data.div(scale_series, axis=1).div(lengths_kb, axis=0)
     logger.info("Normalised DataFrame to RPKM.")
     return result
@@ -255,24 +407,44 @@ def _normalise_xr_dataset(
     method: str,
     lib_sizes: pd.Series,
     feature_lengths: pd.Series | np.ndarray | None = None,
+    mean_read_lengths: pd.Series | None = None,
 ) -> xr.Dataset:
+    signal_vars = [v for v in ("coverage", "rna_fwd", "rna_rev") if v in data.data_vars]
+
+    if signal_vars:
+        result = data.copy()
+        for var_name in signal_vars:
+            normed = _normalise_xr_dataarray(
+                data[var_name],
+                method=method,
+                lib_sizes=lib_sizes,
+                mean_read_lengths=mean_read_lengths,
+            )
+            out_name = method if var_name == "coverage" else f"{var_name}_{method}"
+            result[out_name] = normed
+        result.attrs = {**data.attrs, "normalised": method}
+        logger.info(
+            f"Added {method.upper()} variable(s) to xr.Dataset for {', '.join(signal_vars)}."
+        )
+        return result
+
     sample_labels = list(data["sample"].values)
     scale = _scale_per_sample(lib_sizes, sample_labels)  # (n_samples,)
-    scale_da = da.from_array(scale, chunks=-1)[np.newaxis, :]  # (1, n_samples)
-
-    def _to_float_dask(var_name: str) -> da.Array:
-        arr = data[var_name].data
-        if not isinstance(arr, da.Array):
-            arr = da.from_array(arr)
-        if not np.issubdtype(arr.dtype, np.floating):
-            arr = arr.astype(np.float32)
-        return arr
 
     vars_to_norm = [v for v in data.data_vars if v != "count"]
 
     normed: dict[str, tuple] = {}
     for v in vars_to_norm:
-        normed[v] = (data[v].dims, _to_float_dask(v) / scale_da)
+        var = data[v]
+        arr = var.data
+        if not isinstance(arr, da.Array):
+            arr = da.from_array(arr if np.issubdtype(arr.dtype, np.floating) else arr.astype(np.float32))
+        elif not np.issubdtype(arr.dtype, np.floating):
+            arr = arr.astype(np.float32)
+        scale_da = da.from_array(scale, chunks=-1)
+        # Broadcast scale along sample axis (last axis assumed for reduce() output)
+        normed_arr = arr / scale_da[np.newaxis, :]
+        normed[v] = (var.dims, normed_arr)
 
     if method == "rpkm":
         # Try range_length coord first, fall back to feature_lengths arg
@@ -303,6 +475,8 @@ def _normalise_xr_dataarray(
     data: xr.DataArray,
     method: str,
     lib_sizes: pd.Series,
+    mean_read_lengths: pd.Series | None = None,
+    device: str = "cpu",
 ) -> xr.DataArray:
     """
     Normalise a per-position / binned xr.DataArray across the sample axis.
@@ -335,46 +509,76 @@ def _normalise_xr_dataarray(
     if scale.shape[0] != n_samples:
         raise ValueError(f"Scale length ({scale.shape[0]}) does not match number of samples ({n_samples}).")
     arr = data.data
-    if not isinstance(arr, da.Array):
-        arr = da.from_array(arr)
+    _is_dask = isinstance(arr, da.Array)
     if not np.issubdtype(arr.dtype, np.floating):
         arr = arr.astype(np.float32)
 
-    data_float = xr.DataArray(
-        arr,
-        dims=data.dims,
-        coords=data.coords,
-        attrs=data.attrs,
-    )
-    scale_xr = xr.DataArray(
-        da.from_array(scale.astype(np.float32), chunks=-1),
-        dims=("sample",),
-        coords={"sample": data["sample"].values},
-    )
+    # Find which axis is the sample axis and reshape scale for broadcasting
+    sample_axis_idx = list(data.dims).index("sample")
+    reshape_shape = tuple(n_samples if i == sample_axis_idx else 1 for i in range(arr.ndim))
 
-    normed = data_float / scale_xr
+    n_features = int(np.prod([data.sizes[d] for d in data.dims if d != "sample"]))
+    if device != "cpu" and n_features > 10_000:
+        try:
+            import torch
+            arr_np = arr.compute() if isinstance(arr, da.Array) else np.asarray(arr)
+            mat_t = torch.from_numpy(arr_np.astype(np.float32)).to(device)
+            scale_t = torch.from_numpy(scale.astype(np.float32)).to(device)
+            scale_reshaped = scale_t.reshape(reshape_shape)
+            normed_np = (mat_t / scale_reshaped).cpu().numpy()
+            normed_arr = normed_np
+            _is_dask = False
+        except Exception:
+            scale_vec = scale.reshape(reshape_shape) if not _is_dask else da.from_array(scale, chunks=-1).reshape(reshape_shape)
+            normed_arr = arr / scale_vec
+    else:
+        scale_vec = scale.reshape(reshape_shape) if not _is_dask else da.from_array(scale, chunks=-1).reshape(reshape_shape)
+        normed_arr = arr / scale_vec
 
     if method == "rpkm":
-        # Infer bin size in kb from the position/bin coordinate spacing.
-        # For 50bp bins: spacing = 50 → bin_size_kb = 0.05
-        # For per-position signal (no binning): spacing = 1bp → bin_size_kb = 0.001
-        pos_dim: str | None = next(
-            (d for d in data.dims if d in ("relative_position", "bin", "position")), None
-        )
-        if pos_dim is not None and data.sizes[pos_dim] > 1:
-            coords = data.coords[pos_dim].values
-            # coords might be non-numeric (but normally numeric); cast safely
-            try:
-                spacing = float(coords[1] - coords[0])
-                bin_size_kb = abs(spacing) / 1000.0
-            except Exception:
-                # fallback: assume 1 bp if we cannot compute spacing
-                bin_size_kb = 1.0 / 1000.0
+        # Resolve bin_size from attrs (set by extract()) or infer from coordinate spacing.
+        bin_size_bp = data.attrs.get("bin_size")
+        if bin_size_bp is None:
+            pos_dim = next((d for d in data.dims if d in ("relative_position", "bin", "position")), None)
+            if pos_dim is not None and data.sizes[pos_dim] > 1:
+                coords = data.coords[pos_dim].values
+                bin_size_bp = abs(float(coords[1] - coords[0]))
+            else:
+                bin_size_bp = 1.0  # assume 1bp
+        bin_size_bp = float(bin_size_bp)
+
+        # Effective feature length = min(bin_size, read_length):
+        #   - bin_size <= read_length (e.g. bin=1, L=150): long reads span the whole bin,
+        #     so mean_depth ≈ reads_in_bin → RPKM = CPM / bin_size_kb
+        #   - bin_size > read_length (e.g. bin=200, L=50): depth = N * L / B →
+        #     reads_in_bin = depth * B / L → RPKM = CPM / read_length_kb
+        if mean_read_lengths is not None:
+            missing = set(sample_labels) - set(mean_read_lengths.index)
+            if missing:
+                raise ValueError(f"mean_read_lengths missing for samples: {sorted(missing)}")
+            effective_lengths_kb = np.array(
+                [min(bin_size_bp, float(mean_read_lengths[s])) for s in sample_labels],
+                dtype=np.float64,
+            ) / 1000.0
         else:
-            bin_size_kb = 1.0 / 1000.0  # assume 1bp
+            effective_lengths_kb = np.full(len(sample_labels), bin_size_bp / 1000.0, dtype=np.float64)
 
-        normed = normed / bin_size_kb
+        if device != "cpu" and n_features > 10_000:
+            try:
+                import torch
+                normed_np = normed_arr if isinstance(normed_arr, np.ndarray) else (normed_arr.compute() if isinstance(normed_arr, da.Array) else np.asarray(normed_arr))
+                normed_t = torch.from_numpy(normed_np.astype(np.float32)).to(device)
+                rl_t = torch.from_numpy(effective_lengths_kb.astype(np.float32)).to(device)
+                rl_reshaped = rl_t.reshape(reshape_shape)
+                normed_arr = (normed_t / rl_reshaped).cpu().numpy()
+                _is_dask = False
+            except Exception:
+                rl_vec = effective_lengths_kb.reshape(reshape_shape) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(reshape_shape)
+                normed_arr = normed_arr / rl_vec
+        else:
+            rl_vec = effective_lengths_kb.reshape(reshape_shape) if not _is_dask else da.from_array(effective_lengths_kb, chunks=-1).reshape(reshape_shape)
+            normed_arr = normed_arr / rl_vec
 
-    result = normed.assign_attrs({**data.attrs, "normalised": method})
-    logger.info(f"Normalised xr.DataArray to {method.upper()}.")
+    result = data.copy(data=normed_arr).assign_attrs({**data.attrs, "normalised": method})
+    logger.debug(f"Normalised xr.DataArray to {method.upper()}.")
     return result

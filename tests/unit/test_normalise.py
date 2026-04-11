@@ -4,6 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+
+pytestmark = pytest.mark.unit
 import xarray as xr
 import dask.array as da
 
@@ -11,6 +13,7 @@ from quantnado.analysis.normalise import (
     _resolve_library_sizes,
     _scale_per_sample,
     get_library_sizes,
+    get_mean_read_lengths,
     normalise,
 )
 
@@ -48,6 +51,30 @@ def _make_xr_dataset(n_ranges=4, with_range_length=True):
     if with_range_length:
         ds = ds.assign_coords(range_length=("ranges", np.full(n_ranges, 1000)))
     return ds
+
+
+def _make_xr_coverage_dataset(n_positions=10):
+    rng = np.random.default_rng(3)
+    vals = rng.random((3, n_positions)).astype(np.float32)
+    return xr.Dataset(
+        {"coverage": (["sample", "position"], vals)},
+        coords={"sample": SAMPLES, "position": np.arange(n_positions)},
+        attrs={"bin_size": 1},
+    )
+
+
+def _make_xr_rna_dataset(n_positions=10):
+    rng = np.random.default_rng(4)
+    fwd = rng.random((3, n_positions)).astype(np.float32)
+    rev = rng.random((3, n_positions)).astype(np.float32)
+    return xr.Dataset(
+        {
+            "rna_fwd": (["sample", "position"], fwd),
+            "rna_rev": (["sample", "position"], rev),
+        },
+        coords={"sample": SAMPLES, "position": np.arange(n_positions)},
+        attrs={"bin_size": 1},
+    )
 
 
 def _make_xr_dataarray(n_intervals=4, n_positions=10):
@@ -267,6 +294,40 @@ class TestNormaliseXrDataset:
         with pytest.raises(ValueError, match="RPKM requires feature lengths"):
             normalise(ds, library_sizes=LIB_SIZES, method="rpkm")
 
+    def test_coverage_dataset_adds_cpm_variable(self):
+        ds = _make_xr_coverage_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="cpm")
+        assert "coverage" in result.data_vars
+        assert "cpm" in result.data_vars
+        np.testing.assert_array_equal(result["coverage"].values, ds["coverage"].values)
+
+    def test_coverage_dataset_cpm_values(self):
+        ds = _make_xr_coverage_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="cpm")
+        scale = np.array([1.0, 2.0, 4.0], dtype=np.float32)[:, np.newaxis]
+        expected = ds["coverage"].values / scale
+        np.testing.assert_allclose(result["cpm"].values, expected, rtol=1e-5)
+
+    def test_coverage_dataset_adds_rpkm_variable(self):
+        ds = _make_xr_coverage_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="rpkm")
+        assert "coverage" in result.data_vars
+        assert "rpkm" in result.data_vars
+
+    def test_rna_dataset_adds_strand_specific_cpm_variables(self):
+        ds = _make_xr_rna_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="cpm")
+        assert "rna_fwd" in result.data_vars
+        assert "rna_rev" in result.data_vars
+        assert "rna_fwd_cpm" in result.data_vars
+        assert "rna_rev_cpm" in result.data_vars
+
+    def test_rna_dataset_adds_strand_specific_rpkm_variables(self):
+        ds = _make_xr_rna_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="rpkm")
+        assert "rna_fwd_rpkm" in result.data_vars
+        assert "rna_rev_rpkm" in result.data_vars
+
 
 # ---------------------------------------------------------------------------
 # xr.DataArray normalisation (extract() output)
@@ -301,10 +362,16 @@ class TestNormaliseXrDataArray:
         result = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
         assert result.attrs.get("normalised") == "cpm"
 
-    def test_cpm_result_is_lazy(self):
+    def test_cpm_result_is_lazy_when_input_is_dask(self):
+        da_in = _make_xr_dataarray()
+        da_in_dask = da_in.copy(data=da.from_array(da_in.values))
+        result = normalise(da_in_dask, library_sizes=LIB_SIZES, method="cpm")
+        assert isinstance(result.data, da.Array)
+
+    def test_cpm_result_is_numpy_when_input_is_numpy(self):
         da_in = _make_xr_dataarray()
         result = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
-        assert isinstance(result.data, da.Array)
+        assert not isinstance(result.data, da.Array)
 
     def test_rpkm_returns_dataarray(self):
         da_in = _make_xr_dataarray()
@@ -312,19 +379,46 @@ class TestNormaliseXrDataArray:
         assert isinstance(result, xr.DataArray)
         assert result.shape == da_in.shape
 
-    def test_rpkm_divides_by_bin_size_kb(self):
-        """RPKM = CPM / bin_size_kb; bin spacing in _make_xr_dataarray is 40 (200-(-200)/(10-1))."""
+    def test_rpkm_without_read_lengths_uses_bin_size(self):
+        """Without mean_read_lengths, RPKM = CPM / bin_size_kb."""
         da_in = _make_xr_dataarray()
         cpm = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
         rpkm = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm")
-        # bin spacing: linspace(-200, 200, 10) → step ≈ 44.4; bin_size_kb = step/1000
         coords = da_in.coords["relative_position"].values
         bin_size_kb = abs(float(coords[1] - coords[0])) / 1000.0
         np.testing.assert_allclose(rpkm.values, cpm.values / bin_size_kb, rtol=1e-5)
 
-    def test_rpkm_result_is_lazy(self):
+    def test_rpkm_with_read_lengths_larger_than_bin_size_uses_bin_size_kb(self):
+        """When bin_size <= read_length (long reads span the bin), RPKM = CPM / bin_size_kb."""
+        # _make_xr_dataarray uses coords 0,1,...,9 so bin_size=1bp; read_length=150 >> bin_size
         da_in = _make_xr_dataarray()
-        result = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm")
+        read_lengths = pd.Series({"s1": 150.0, "s2": 150.0, "s3": 150.0}, name="mean_read_length")
+        cpm = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
+        rpkm = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm", mean_read_lengths=read_lengths)
+        # min(bin_size=1, read_length=150) = 1 → RPKM = CPM / 0.001
+        np.testing.assert_allclose(rpkm.values, cpm.values / 0.001, rtol=1e-5)
+
+    def test_rpkm_with_read_lengths_smaller_than_bin_size_uses_read_length_kb(self):
+        """When bin_size > read_length (reads shorter than bin), RPKM = CPM / read_length_kb."""
+        # Make a DataArray with bin coords spaced 200bp apart (bin_size=200)
+        rng = np.random.default_rng(99)
+        data = rng.random((4, 10, 3)).astype(np.float32)
+        da_in = xr.DataArray(
+            data,
+            dims=("interval", "bin", "sample"),
+            coords={"sample": SAMPLES, "bin": np.arange(10) * 200},
+            attrs={"bin_size": 200},
+        )
+        read_lengths = pd.Series({"s1": 50.0, "s2": 50.0, "s3": 50.0}, name="mean_read_length")
+        cpm = normalise(da_in, library_sizes=LIB_SIZES, method="cpm")
+        rpkm = normalise(da_in, library_sizes=LIB_SIZES, method="rpkm", mean_read_lengths=read_lengths)
+        # min(bin_size=200, read_length=50) = 50 → RPKM = CPM / 0.05
+        np.testing.assert_allclose(rpkm.values, cpm.values / 0.05, rtol=1e-5)
+
+    def test_rpkm_result_is_lazy_when_input_is_dask(self):
+        da_in = _make_xr_dataarray()
+        da_in_dask = da_in.copy(data=da.from_array(da_in.values))
+        result = normalise(da_in_dask, library_sizes=LIB_SIZES, method="rpkm")
         assert isinstance(result.data, da.Array)
 
     def test_tpm_raises(self):

@@ -46,7 +46,7 @@ def setup_logging(log_path: Path, verbose: bool):
     logger.remove()
     log_format = "{time:YYYY-MM-DD HH:mm:ss} [{level: <8}] {message}"
     logger.add(log_path, level="DEBUG", format=log_format, mode="w", colorize=False)
-    
+
     # Only colorize stderr if it's a TTY (interactive terminal)
     colorize_stderr = sys.stderr.isatty()
     logger.add(
@@ -187,10 +187,11 @@ def estimate_chunk_len(
     contig_lengths: Iterable[int] | None = None,
     total_positions: int | None = None,
     dtype_bytes: int = 2,
+    n_samples: int = 1,
     fs_is_network: bool | None = None,
     *,
     # tuning knobs (sane defaults)
-    local_target_bytes: int = 4 * 1024**2,      # 4 MB per chunk on local SSD
+    local_target_bytes: int = 128 * 1024**2,     # 128 MB per chunk on local SSD
     network_target_bytes: int = 128 * 1024**2,   # 128 MB per chunk on network/Ceph
     min_chunk_bytes: int = 64 * 1024,           # don't go smaller than 64 KB chunk
     round_to: int = 1024,                       # round chunk_len to multiple of this
@@ -234,8 +235,9 @@ def estimate_chunk_len(
     target_bytes = network_target_bytes if fs_is_network else local_target_bytes
     target_bytes = max(target_bytes, min_chunk_bytes)
 
-    # initial chunk_len in positions
-    chunk_len = max(1, int(target_bytes // max(1, dtype_bytes)))
+    # initial chunk_len in positions — divide by n_samples so the full
+    # (chunk_len, n_samples) chunk stays near the target size
+    chunk_len = max(1, int(target_bytes // max(1, dtype_bytes * max(1, n_samples))))
 
     # round chunk_len to a convenient boundary
     if round_to > 1:

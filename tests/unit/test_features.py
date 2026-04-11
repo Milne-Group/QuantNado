@@ -8,6 +8,8 @@ import pandas as pd
 import pyranges1 as pr
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from quantnado.analysis.features import (
     _parse_attributes,
     _to_pyranges,

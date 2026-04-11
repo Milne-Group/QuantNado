@@ -1,20 +1,41 @@
+"""VariantStore — per-sample Zarr store for VCF/SNP data.
+
+Store layout::
+
+    {SampleName}.zarr/
+    ├── {chrom}/
+    │   ├── GT   (1, chrom_len)  int8    — genotype: -1=missing, 0=hom_ref, 1=het, 2=hom_alt
+    │   ├── DP   (1, chrom_len)  uint16  — read depth
+    │   ├── AF   (1, chrom_len)  float32 — alt allele frequency (AD_alt / DP)
+    │   └── MQ   (1, chrom_len)  uint8   — mapping quality
+    ├── metadata/
+    │   ├── completed        bool    (1,)
+    │   ├── total_reads      int64   (1,)
+    │   ├── mean_read_length float32 (1,)
+    │   └── sparsity         float32 (1,)
+    └── root.attrs: assay="snp", sample, chromsizes, chunk_len
+
+VCF positions are 1-based; array indices are 0-based (position - 1).
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
-import shutil
 
 import numpy as np
-import pandas as pd
+import pysam
 import zarr
-from zarr.storage import LocalStore
-from zarr.codecs import BloscCodec
 from loguru import logger
-import xarray as xr
-import dask.array as da
+from zarr.storage import LocalStore
 
-from .core import BaseStore
-from .constants import DEFAULT_CHUNK_LEN
-from .store_bam import _compute_sample_hash, _to_str_list
+from .metadata import _parse_chromsizes, create_metadata_group
+from .store_bam import (
+    _delete_path,
+    _normalize_path,
+    _resolve_chunk_len,
+    _resolve_compressors,
+    DEFAULT_CONSTRUCTION_COMPRESSION,
+)
 
 # Genotype encoding
 GT_MISSING: np.int8 = np.int8(-1)
@@ -23,565 +44,347 @@ GT_HET: np.int8 = np.int8(1)
 GT_HOM_ALT: np.int8 = np.int8(2)
 
 
+# ---------------------------------------------------------------------------
+# VCF reading helpers
+# ---------------------------------------------------------------------------
+
+
 def _read_vcf(
     path: Path | str,
     filter_chromosomes: bool = True,
-) -> dict[str, pd.DataFrame]:
-    """
-    Read variants from a single-sample VCF/VCF.gz file.
-
-    Only the first sample in the VCF is used (the convention for per-sample VCFs).
-    Multi-allelic sites are simplified to the first alternate allele.
+    test: bool = False,
+    test_chromosomes: list[str] | tuple[str, ...] | None = None,
+) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, int]]:
+    """Read a single-sample VCF/VCF.gz with pysam (htslib).
 
     Returns
     -------
-    dict mapping chromosome name -> DataFrame with columns:
-        pos (int64, 1-based), ref (str), alt (str), qual (float32),
-        genotype (int8: -1 missing, 0 hom_ref, 1 het, 2 hom_alt),
-        ad_ref (int32), ad_alt (int32)
+    (chrom_data, header_chromsizes)
+        chrom_data  : dict[chrom -> dict[field -> 1D array]]
+                      fields: GT (int8), DP (uint16), AF (float32), MQ (uint8)
+                      pos is 1-based (matching VCF POS)
+        header_chromsizes : dict[chrom -> int] from ##contig header lines
     """
-    try:
-        import pysam
-    except ImportError as e:
-        raise ImportError("pysam is required to read VCF files: pip install pysam") from e
-
     path = Path(path)
-    records: list[dict] = []
+
+    if test or test_chromosomes:
+        allowed_chroms: set[str] | None = set(
+            _parse_chromsizes({}, test=test, test_chromosomes=test_chromosomes)
+        )
+    else:
+        allowed_chroms = None
 
     with pysam.VariantFile(str(path)) as vcf:
-        samples = list(vcf.header.samples)
-        if not samples:
-            raise ValueError(f"VCF has no samples: {path}")
-        sample_name = samples[0]
+        # Chromsizes from header contigs
+        header_chromsizes: dict[str, int] = {
+            c.name: c.length
+            for c in vcf.header.contigs.values()
+            if c.length is not None
+        }
 
-        for rec in vcf.fetch():
-            chrom = rec.chrom
-            if filter_chromosomes:
-                if not chrom.startswith("chr") or "_" in chrom:
-                    continue
+        # Chromosomes to process
+        if filter_chromosomes:
+            target_chroms = [
+                c for c in vcf.header.contigs
+                if c.startswith("chr") and "_" not in c
+            ]
+        else:
+            target_chroms = list(vcf.header.contigs)
 
-            alts = rec.alts or (".",)
-            alt = alts[0]
+        if allowed_chroms is not None:
+            target_chroms = [c for c in target_chroms if c in allowed_chroms]
 
-            samp = rec.samples[sample_name]
-            gt = samp.get("GT", (None, None))
-            if gt is None or None in gt:
-                gt_int = GT_MISSING
-            else:
-                n_alt = sum(1 for a in gt if a is not None and a > 0)
-                gt_int = np.int8(min(n_alt, 2))  # cap at 2
+        # Check if file is tabix-indexed (enables fast per-chrom fetch)
+        is_indexed = Path(str(path) + ".tbi").exists() or Path(str(path) + ".csi").exists()
 
-            ad = samp.get("AD", None)
-            ad_ref = int(ad[0]) if ad and len(ad) > 0 else 0
-            ad_alt = int(ad[1]) if ad and len(ad) > 1 else 0
+        chrom_data: dict[str, dict[str, np.ndarray]] = {}
 
-            records.append(
-                {
-                    "chrom": chrom,
-                    "pos": np.int64(rec.pos),  # 1-based
-                    "ref": str(rec.ref),
-                    "alt": str(alt),
-                    "qual": np.float32(rec.qual) if rec.qual is not None else np.float32(np.nan),
-                    "genotype": gt_int,
-                    "ad_ref": np.int32(ad_ref),
-                    "ad_alt": np.int32(ad_alt),
-                }
-            )
+        if is_indexed:
+            # Fast path: fetch per chromosome (skips irrelevant contigs entirely)
+            for chrom in target_chroms:
+                records = _collect_chrom_records(vcf, chrom, fetch=True)
+                if records:
+                    chrom_data[chrom] = _records_to_arrays(records)
+        else:
+            # Sequential scan: one pass, bucket by chromosome
+            buckets: dict[str, list] = {c: [] for c in target_chroms}
+            target_set = set(target_chroms)
+            for rec in vcf.fetch(contig=None):
+                c = rec.chrom
+                if c in target_set:
+                    buckets[c].append(_extract_record(rec))
+            for chrom, recs in buckets.items():
+                if recs:
+                    chrom_data[chrom] = _records_to_arrays(recs)
 
-    if not records:
-        return {}
-    df = pd.DataFrame(records)
-    return {chrom: grp.reset_index(drop=True) for chrom, grp in df.groupby("chrom")}
+    return chrom_data, header_chromsizes
 
 
-class VariantStore(BaseStore):
-    """
-    Zarr-backed SNP/variant store from per-sample VCF.gz files.
+def _extract_record(rec: "pysam.VariantRecord") -> tuple:
+    """Extract (pos_1based, gt, dp, af, mq) from a pysam VCF record."""
+    pos = rec.pos + 1  # pysam pos is 0-based; VCF POS is 1-based
 
-    Data is stored sparsely - only variant positions are retained.
-    Variant positions are unioned across all samples; positions not called
-    in a sample are filled with genotype ``-1`` (missing) and depths ``0``.
+    # GT from first sample
+    try:
+        sample = rec.samples[0]
+        alleles = sample.allele_indices  # tuple of ints, None=missing
+        if alleles is None or any(a is None for a in alleles):
+            gt = GT_MISSING
+        else:
+            gt = np.int8(min(sum(a > 0 for a in alleles), 2))
+    except (KeyError, IndexError):
+        gt = GT_MISSING
 
-    Per-chromosome zarr layout::
+    # DP
+    try:
+        dp_val = sample["DP"]
+        dp = np.uint16(max(0, min(dp_val, 65535))) if dp_val is not None and dp_val >= 0 else np.uint16(0)
+    except (KeyError, TypeError):
+        dp = np.uint16(0)
 
-        <chrom>/
-            positions        int64[n_variants]           1-based genomic positions
-            genotype         int8[n_samples, n_variants] -1 missing, 0 hom_ref, 1 het, 2 hom_alt
-            allele_depth_ref int32[n_samples, n_variants]
-            allele_depth_alt int32[n_samples, n_variants]
-            qual             float32[n_samples, n_variants]
+    # AF from AD (allele depths)
+    try:
+        ad = sample["AD"]
+        if ad is not None and len(ad) >= 2 and ad[0] is not None and ad[1] is not None:
+            ref_d = max(0, ad[0])
+            alt_d = max(0, ad[1])
+            total = ref_d + alt_d
+            af = np.float32(alt_d / total) if total > 0 else np.float32(np.nan)
+        else:
+            af = np.float32(np.nan)
+    except (KeyError, TypeError, IndexError):
+        af = np.float32(np.nan)
 
-    Alleles (ref/alt) are stored as lists in each chromosome group's attributes,
-    indexed by position order. Retrieve with :meth:`get_alleles`.
+    # MQ (INFO field)
+    try:
+        mq_val = rec.info["MQ"]
+        mq = np.uint8(min(max(0, int(mq_val)), 255)) if mq_val is not None else np.uint8(0)
+    except (KeyError, TypeError):
+        mq = np.uint8(0)
 
-    Example
-    -------
-    >>> store = VariantStore.from_vcf_files(
-    ...     vcf_files=["sample1.vcf.gz", "sample2.vcf.gz"],
-    ...     store_path="variants.zarr",
-    ... )
-    >>> xr_dict = store.to_xarray(variable="genotype")
-    >>> region = store.extract_region("chr21:5000000-6000000")
+    return pos, gt, dp, af, mq
+
+
+def _collect_chrom_records(vcf: "pysam.VariantFile", chrom: str, fetch: bool) -> list:
+    records = []
+    try:
+        it = vcf.fetch(chrom) if fetch else vcf.fetch(contig=None)
+        for rec in it:
+            if not fetch and rec.chrom != chrom:
+                continue
+            records.append(_extract_record(rec))
+    except (ValueError, KeyError):
+        pass
+    return records
+
+
+def _records_to_arrays(records: list) -> dict[str, np.ndarray]:
+    """Convert list of (pos, gt, dp, af, mq) tuples to dict of arrays."""
+    pos_arr = np.array([r[0] for r in records], dtype=np.int64)
+    gt_arr = np.array([r[1] for r in records], dtype=np.int8)
+    dp_arr = np.array([r[2] for r in records], dtype=np.uint16)
+    af_arr = np.array([r[3] for r in records], dtype=np.float32)
+    mq_arr = np.array([r[4] for r in records], dtype=np.uint8)
+    return {"pos": pos_arr, "GT": gt_arr, "DP": dp_arr, "AF": af_arr, "MQ": mq_arr}
+
+
+# ---------------------------------------------------------------------------
+# VariantStore
+# ---------------------------------------------------------------------------
+
+
+class VariantStore:
+    """Per-sample Zarr store for VCF/SNP data.
+
+    Stores dense ``(1, chrom_len)`` arrays for GT, DP, AF, MQ.
+    VCF positions (1-based) are mapped to 0-based array indices.
+
+    Use :meth:`from_vcf` to create or :meth:`open` to read.
     """
 
     def __init__(
         self,
         store_path: Path | str,
-        sample_names: list[str],
+        sample: str,
+        chromsizes: dict[str, int],
         *,
+        chunk_len: int,
+        compressors: list,
         overwrite: bool = True,
-        resume: bool = False,
-        read_only: bool = False,
     ) -> None:
-        self.path = Path(store_path)
-        self.store_path = self._normalize_path(self.path)
+        self.store_path = _normalize_path(store_path)
+        self.sample = sample
+        self.chromsizes = chromsizes
+        self.chromosomes = sorted(chromsizes.keys())
+        self.chunk_len = chunk_len
+        self.compressors = compressors
 
-        # Initialize BaseStore attributes
-        if self.store_path.exists() and not overwrite:
-            self.root = zarr.open_group(str(self.store_path), mode="r" if read_only else "r+")
-            self._init_common_attributes(sample_names)
-        else:
-            self.sample_names = [str(s) for s in sample_names]
-            self._setup_sample_lookup()
-            self.completed_mask_raw = np.zeros(len(self.sample_names), dtype=bool)
-            self._metadata_cache = None
+        if overwrite:
+            _delete_path(self.store_path)
 
-        self.n_samples = len(self.sample_names)
-        self.sample_hash = _compute_sample_hash(self.sample_names)
-        self.compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-        self.read_only = read_only
+        self.store_path.parent.mkdir(parents=True, exist_ok=True)
+        local_store = LocalStore(str(self.store_path))
+        self.root = zarr.group(store=local_store, overwrite=True, zarr_format=3)
+        self.meta = create_metadata_group(self.root, sample)
+        self._init_arrays()
+        self.root.attrs.update({
+            "assay": "snp",
+            "sample": sample,
+            "chromsizes": chromsizes,
+            "chunk_len": chunk_len,
+        })
 
-        if self.n_samples == 0:
-            raise ValueError("sample_names must not be empty")
-
-        if self.store_path.exists():
-            if overwrite:
-                if read_only:
-                    raise ValueError("Cannot overwrite store in read-only mode.")
-                logger.warning(f"Deleting existing store at: {self.store_path}")
-                if self.store_path.is_dir():
-                    shutil.rmtree(self.store_path)
-                else:
-                    self.store_path.unlink()
-                self._init_store()
-            elif resume:
-                self._load_existing()
-                self._validate_sample_names()
-            else:
-                raise FileExistsError(
-                    f"Store already exists at {self.store_path}; set overwrite=True or resume=True"
+    def _init_arrays(self) -> None:
+        for chrom, chrom_len in self.chromsizes.items():
+            grp = self.root.require_group(chrom)
+            specs = [
+                ("GT",  np.int8,    GT_MISSING),
+                ("DP",  np.uint16,  0),
+                ("AF",  np.float32, np.nan),
+                ("MQ",  np.uint8,   0),
+            ]
+            for key, dtype, fill in specs:
+                grp.require_array(
+                    key,
+                    shape=(1, chrom_len),
+                    chunks=(1, self.chunk_len),
+                    dtype=dtype,
+                    compressors=self.compressors,
+                    fill_value=fill,
+                    overwrite=True,
                 )
-        else:
-            if read_only:
-                raise FileNotFoundError(
-                    f"Store does not exist at {self.store_path} (read_only=True)"
-                )
-            self._init_store()
+
+    def _write_variants(self, chrom_data: dict[str, dict[str, np.ndarray]]) -> float:
+        """Scatter VCF data to dense arrays. Returns mean fraction of covered positions."""
+        covered_fracs = []
+        for chrom, chrom_len in self.chromsizes.items():
+            if chrom not in chrom_data:
+                continue
+            data = chrom_data[chrom]
+            pos_0based = (data["pos"] - 1).astype(np.int64)
+            valid = (pos_0based >= 0) & (pos_0based < chrom_len)
+            idx = pos_0based[valid]
+            grp = self.root[chrom]
+
+            gt_arr = np.full(chrom_len, GT_MISSING, dtype=np.int8)
+            gt_arr[idx] = data["GT"][valid]
+            grp["GT"][0, :] = gt_arr
+
+            dp_arr = np.zeros(chrom_len, dtype=np.uint16)
+            dp_arr[idx] = data["DP"][valid]
+            grp["DP"][0, :] = dp_arr
+
+            af_arr = np.full(chrom_len, np.nan, dtype=np.float32)
+            af_arr[idx] = data["AF"][valid]
+            grp["AF"][0, :] = af_arr
+
+            mq_arr = np.zeros(chrom_len, dtype=np.uint8)
+            mq_arr[idx] = data["MQ"][valid]
+            grp["MQ"][0, :] = mq_arr
+
+            covered_fracs.append(len(idx) / chrom_len)
+
+        return float(np.mean(covered_fracs)) if covered_fracs else 0.0
+
+    def _finalise(self, n_variants: int) -> None:
+        self.meta["completed"][0] = True
+        self.meta["total_reads"][0] = n_variants
+        zarr.consolidate_metadata(str(self.store_path))
+        logger.info(f"Completed {self.sample}: {n_variants:,} variants")
 
     @classmethod
     def open(cls, store_path: str | Path, read_only: bool = True) -> "VariantStore":
-        """Open an existing VariantStore for reading (default) or writing."""
-        store_path = cls._normalize_path(store_path)
+        store_path = _normalize_path(store_path)
         if not store_path.exists():
-            raise FileNotFoundError(f"Store does not exist at {store_path}")
-        group = zarr.open_group(str(store_path), mode="r" if read_only else "r+")
-        try:
-            stored_names = list(group.attrs["sample_names"])
-        except KeyError as e:
-            raise ValueError(f"Missing required attribute in store: {e}")
-        
-        return cls(
-            store_path=store_path,
-            sample_names=stored_names,
-            overwrite=False,
-            resume=True,
-            read_only=read_only,
-        )
-
-    @staticmethod
-    def _normalize_path(path: Path | str) -> Path:
-        path = Path(path)
-        if not str(path).endswith(".zarr"):
-            path = path.with_suffix(".zarr")
-        return path
-
-    def _check_writable(self) -> None:
-        if getattr(self, "read_only", False):
-            raise RuntimeError(
-                "Store is in read-only mode. Reopen with read_only=False to allow modifications."
-            )
-
-    def _init_store(self) -> None:
-        store = LocalStore(str(self.store_path))
-        self.root = zarr.group(store=store, overwrite=True, zarr_format=3)
-        self.meta = self.root.create_group("metadata")
-        self.meta.create_array(
-            name="completed",
-            shape=(self.n_samples,),
-            dtype=bool,
-            fill_value=False,
-            overwrite=True,
-        )
-        self.root.attrs.update(
-            {
-                "sample_names": self.sample_names,
-                "sample_names_hash": self.sample_hash,
-                "n_samples": self.n_samples,
-                "store_type": "variants",
-            }
-        )
-        logger.info(f"Initialized VariantStore at {self.store_path}")
-
-    def _load_existing(self) -> None:
-        store = LocalStore(str(self.store_path))
-        self.root = zarr.open_group(store=store, mode="a")
-        self.meta = self.root["metadata"]
-        logger.info(f"Resuming existing VariantStore at {self.store_path}")
-
-    def _validate_sample_names(self) -> None:
-        stored = self.root.attrs.get("sample_names")
-        if stored is None:
-            raise ValueError("Existing store missing sample_names attribute")
-        if [str(s) for s in stored] != self.sample_names:
-            raise ValueError("sample_names mismatch; refusing to resume to prevent corruption")
-
-    @property
-    def completed_mask(self) -> np.ndarray:
-        return self.meta["completed"][:].astype(bool)
-
-    @property
-    def chromosomes(self) -> list[str]:
-        return [k for k in self.root.keys() if k != "metadata"]
-
-    def _init_chrom_arrays(
-        self,
-        chrom: str,
-        positions: np.ndarray,
-        refs: list[str],
-        alts: list[str],
-    ) -> None:
-        """Create zarr arrays for a chromosome. ref/alt stored as group attrs."""
-        n_var = len(positions)
-        grp = self.root.require_group(chrom)
-
-        grp.create_array(
-            name="positions", shape=(n_var,), dtype=np.int64, fill_value=0, overwrite=True
-        )
-        grp["positions"][:] = positions
-
-        # Store ref/alt strings as JSON-serialisable lists in group attrs
-        grp.attrs["ref"] = refs
-        grp.attrs["alt"] = alts
-
-        chunk_len = min(DEFAULT_CHUNK_LEN, max(1, n_var))
-        for name, dtype, fill in [
-            ("genotype", np.int8, -1),
-            ("allele_depth_ref", np.int32, 0),
-            ("allele_depth_alt", np.int32, 0),
-            ("qual", np.float32, np.nan),
-        ]:
-            grp.create_array(
-                name=name,
-                shape=(self.n_samples, n_var),
-                chunks=(1, chunk_len),
-                dtype=dtype,
-                compressors=[self.compressor],
-                fill_value=fill,
-                overwrite=True,
-            )
+            raise FileNotFoundError(f"Store not found: {store_path}")
+        mode = "r" if read_only else "r+"
+        root = zarr.open_group(str(store_path), mode=mode)
+        obj = object.__new__(cls)
+        obj.store_path = store_path
+        obj.root = root
+        attrs = dict(root.attrs)
+        obj.sample = attrs.get("sample", "")
+        obj.chromsizes = {str(k): int(v) for k, v in attrs.get("chromsizes", {}).items()}
+        obj.chromosomes = sorted(obj.chromsizes.keys())
+        obj.chunk_len = int(attrs.get("chunk_len", 65536))
+        obj.meta = root.get("metadata")
+        return obj
 
     @classmethod
-    def from_vcf_files(
+    def from_vcf(
         cls,
-        vcf_files: list[str | Path],
+        vcf_path: str | Path,
         store_path: Path | str,
-        sample_names: list[str] | None = None,
-        metadata: pd.DataFrame | Path | str | None = None,
+        sample: str,
+        chromsizes: str | Path | dict[str, int] | None = None,
         *,
-        filter_chromosomes: bool = True,
+        chunk_len: int | None = None,
+        construction_compression: str = DEFAULT_CONSTRUCTION_COMPRESSION,
         overwrite: bool = True,
-        resume: bool = False,
-        sample_column: str = "sample_id",
+        filter_chromosomes: bool = True,
+        test: bool = False,
+        test_chromosomes: list[str] | tuple[str, ...] | None = None,
+        log_file: Path | None = None,
     ) -> "VariantStore":
-        """
-        Create a VariantStore from per-sample VCF.gz files.
-
-        Each file is treated as a single-sample VCF; the first sample in each
-        file is used. Variant positions are unioned across all samples per
-        chromosome; positions not called in a sample receive genotype ``-1``
-        (missing) and allele depths of ``0``.
+        """Create a per-sample VariantStore zarr from a single-sample VCF.
 
         Parameters
         ----------
-        vcf_files : list of str or Path
-            Paths to VCF/VCF.gz files (one per sample).
-        store_path : Path or str
-            Output Zarr store path.
-        sample_names : list of str, optional
-            Sample names aligned with ``vcf_files``. Defaults to the part of
-            the filename before the first ``.`` (e.g. ``snp.vcf.gz`` → ``snp``).
-        metadata : DataFrame, Path, or str, optional
-            Sample metadata CSV to attach.
-        filter_chromosomes : bool, default True
-            Keep only canonical chromosomes (chr* without underscores).
-        overwrite : bool, default True
-            Overwrite existing store.
-        resume : bool, default False
-            Resume an existing store.
-        sample_column : str, default "sample_id"
-            Column in metadata matching sample names.
+        vcf_path:
+            Path to annotated VCF (.vcf or .vcf.gz).
+        store_path:
+            Output .zarr directory.
+        sample:
+            Sample name.
+        chromsizes:
+            Path to .chrom.sizes, dict, or None to infer from VCF ##contig headers.
         """
-        vcf_files = [Path(f) for f in vcf_files]
-        if sample_names is None:
-            # Use stem up to first dot so "snp.vcf.gz" -> "snp"
-            sample_names = [f.name.split(".")[0] for f in vcf_files]
-        if len(sample_names) != len(vcf_files):
-            raise ValueError("sample_names length must match vcf_files length")
+        if log_file is not None:
+            from quantnado.utils import setup_logging
+            setup_logging(Path(log_file), verbose=False)
+
+        logger.info(f"Reading VCF: {vcf_path}")
+        chrom_data, header_chromsizes = _read_vcf(
+            vcf_path,
+            filter_chromosomes=filter_chromosomes,
+            test=test,
+            test_chromosomes=test_chromosomes,
+        )
+
+        if chromsizes is None:
+            if not header_chromsizes:
+                raise ValueError(
+                    "No chromsizes provided and VCF ##contig headers are missing. "
+                    "Provide chromsizes explicitly."
+                )
+            chromsizes = header_chromsizes
+
+        chromsizes_dict = _parse_chromsizes(
+            chromsizes,
+            filter_chromosomes=filter_chromosomes,
+            test=test,
+            test_chromosomes=test_chromosomes,
+        )
+        resolved_chunk_len = _resolve_chunk_len(chromsizes_dict, Path(store_path), chunk_len)
+        compressors = _resolve_compressors(construction_compression)
 
         store = cls(
             store_path=store_path,
-            sample_names=sample_names,
+            sample=sample,
+            chromsizes=chromsizes_dict,
+            chunk_len=resolved_chunk_len,
+            compressors=compressors,
             overwrite=overwrite,
-            resume=resume,
         )
 
-        logger.info("Reading VCF files...")
-        all_file_data: list[dict[str, pd.DataFrame]] = []
-        for path in vcf_files:
-            logger.info(f"  {path.name}")
-            all_file_data.append(_read_vcf(path, filter_chromosomes=filter_chromosomes))
-
-        all_chroms: set[str] = set()
-        for fd in all_file_data:
-            all_chroms.update(fd.keys())
-
-        logger.info(f"Building union positions and writing store ({len(all_chroms)} chroms)...")
-        for chrom in sorted(all_chroms):
-            chrom_samples = [
-                (i, fd[chrom]) for i, fd in enumerate(all_file_data) if chrom in fd
-            ]
-            all_positions = np.unique(
-                np.concatenate([df["pos"].values for _, df in chrom_samples])
-            )
-
-            # Aggregate ref/alt from the first sample that reports each position
-            pos_to_ref: dict[int, str] = {}
-            pos_to_alt: dict[int, str] = {}
-            for _, df in chrom_samples:
-                for row in df.itertuples(index=False):
-                    p = int(row.pos)
-                    if p not in pos_to_ref:
-                        pos_to_ref[p] = str(row.ref)
-                        pos_to_alt[p] = str(row.alt)
-
-            refs = [pos_to_ref[int(p)] for p in all_positions]
-            alts = [pos_to_alt[int(p)] for p in all_positions]
-
-            store._init_chrom_arrays(chrom, all_positions, refs, alts)
-
-            pos_to_idx: dict[int, int] = {int(p): i for i, p in enumerate(all_positions)}
-
-            for sample_idx, df in chrom_samples:
-                indices = np.array([pos_to_idx[int(p)] for p in df["pos"].values])
-                store.root[chrom]["genotype"][sample_idx, indices] = (
-                    df["genotype"].values.astype(np.int8)
-                )
-                store.root[chrom]["allele_depth_ref"][sample_idx, indices] = (
-                    df["ad_ref"].values.astype(np.int32)
-                )
-                store.root[chrom]["allele_depth_alt"][sample_idx, indices] = (
-                    df["ad_alt"].values.astype(np.int32)
-                )
-                store.root[chrom]["qual"][sample_idx, indices] = (
-                    df["qual"].values.astype(np.float32)
-                )
-
-            logger.info(f"  {chrom}: {len(all_positions)} variants")
-
-        store.meta["completed"][:] = True
-        store.root.attrs["chromosomes"] = sorted(all_chroms)
-
-        if metadata is not None:
-            if isinstance(metadata, (str, Path)):
-                metadata_df = pd.read_csv(metadata)
-            else:
-                metadata_df = metadata
-            store.set_metadata(metadata_df, sample_column=sample_column)
+        store._write_variants(chrom_data)
+        n_variants = sum(len(d["pos"]) for d in chrom_data.values())
+        store._finalise(n_variants)
 
         return store
 
-    # ---- Metadata ----
-
-    def set_metadata(
-        self, metadata: pd.DataFrame, sample_column: str = "sample_id"
-    ) -> None:
-        """Store metadata columns from a DataFrame."""
-        self._check_writable()
-        if sample_column not in metadata.columns:
-            raise ValueError(f"Sample column '{sample_column}' not found in metadata")
-        meta_subset = metadata.copy()
-        meta_subset[sample_column] = meta_subset[sample_column].astype(str)
-        meta_subset = meta_subset.set_index(sample_column)
-        for col in meta_subset.columns:
-            values = _to_str_list(
-                meta_subset[col].reindex(self.sample_names, fill_value="").tolist()
-            )
-            self.root.attrs[f"metadata_{col}"] = values
-            logger.info(f"Updated metadata column: {col}")
-    # ---- Data access ----
-
-    def get_positions(self, chrom: str) -> np.ndarray:
-        """Return variant positions (1-based) for a chromosome."""
-        return self.root[chrom]["positions"][:]
-
-    def get_alleles(self, chrom: str) -> tuple[list[str], list[str]]:
-        """
-        Return ``(ref, alt)`` allele lists for a chromosome.
-
-        Each list is aligned with :meth:`get_positions`.
-        """
-        grp_attrs = self.root[chrom].attrs
-        return list(grp_attrs["ref"]), list(grp_attrs["alt"])
-
-    def to_xarray(
-        self,
-        chromosomes: list[str] | None = None,
-        variable: str = "genotype",
-    ) -> dict[str, xr.DataArray]:
-        """
-        Extract variant data as per-chromosome Xarray DataArrays (lazy dask-backed).
-
-        Parameters
-        ----------
-        chromosomes : list[str], optional
-            Chromosomes to extract. Defaults to all.
-        variable : str, default "genotype"
-            Which array to extract: ``"genotype"``, ``"allele_depth_ref"``,
-            ``"allele_depth_alt"``, or ``"qual"``.
-
-        Returns
-        -------
-        dict[str, xr.DataArray]
-            Each DataArray has dims ``(sample, position)`` where ``position``
-            holds the actual 1-based genomic coordinates.
-        """
-        valid = {"genotype", "allele_depth_ref", "allele_depth_alt", "qual"}
-        if variable not in valid:
-            raise ValueError(f"variable must be one of {valid}, got {variable!r}")
-
-        chroms = chromosomes if chromosomes is not None else self.chromosomes
-        invalid = set(chroms) - set(self.chromosomes)
-        if invalid:
-            raise ValueError(f"Chromosomes not in store: {invalid}")
-
-        metadata_df = self.get_metadata()
-        result: dict[str, xr.DataArray] = {}
-        for chrom in chroms:
-            positions = self.get_positions(chrom)
-            zarr_arr = self.root[chrom][variable]
-            dask_arr = da.from_array(zarr_arr, chunks=(1, DEFAULT_CHUNK_LEN))
-
-            coords: dict = {"sample": self.sample_names, "position": positions}
-            for col in metadata_df.columns:
-                if col != "sample_id":
-                    coords[col] = ("sample", metadata_df[col].values)
-
-            result[chrom] = xr.DataArray(
-                dask_arr,
-                dims=("sample", "position"),
-                coords=coords,
-                attrs={"variable": variable, "chromosome": chrom},
-            )
-        return result
-
-    def extract_region(
-        self,
-        region: str | None = None,
-        chrom: str | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        variable: str = "genotype",
-        samples: list[str] | list[int] | None = None,
-        as_xarray: bool = True,
-    ) -> xr.DataArray | np.ndarray:
-        """
-        Extract variant data for a genomic region.
-
-        Parameters
-        ----------
-        region : str, optional
-            Region string, e.g. ``"chr21:5000000-6000000"``.
-        chrom, start, end : optional
-            Alternative to ``region``. Coordinates are 1-based (VCF convention)
-            and inclusive on both ends.
-        variable : str, default "genotype"
-            Which variable to return.
-        samples : list, optional
-            Sample names or integer indices. Defaults to all.
-        as_xarray : bool, default True
-            Return an xr.DataArray; if False return np.ndarray.
-        """
-        from ..utils import parse_genomic_region
-
-        if region is not None and chrom is not None:
-            raise ValueError("Specify either 'region' or 'chrom', not both")
-        if region is not None:
-            chrom, parsed_start, parsed_end = parse_genomic_region(region)
-            if parsed_start is not None:
-                start = parsed_start
-            if parsed_end is not None:
-                end = parsed_end
-        if chrom is None:
-            raise ValueError("Must specify either 'region' or 'chrom'")
-        if chrom not in self.chromosomes:
-            raise ValueError(f"Chromosome '{chrom}' not in store. Available: {self.chromosomes}")
-
-        positions = self.get_positions(chrom)
-        mask = np.ones(len(positions), dtype=bool)
-        if start is not None:
-            mask &= positions >= start
-        if end is not None:
-            mask &= positions <= end  # inclusive for 1-based VCF coords
-        pos_indices = np.where(mask)[0]
-        region_positions = positions[pos_indices]
-
-        if samples is None:
-            sample_indices = np.arange(self.n_samples)
-            sample_names_out = list(self.sample_names)
-        else:
-            sample_indices_list = []
-            sample_names_out = []
-            for s in samples:
-                if isinstance(s, str):
-                    if s not in self.sample_names:
-                        raise ValueError(f"Sample '{s}' not found in store")
-                    idx = self.sample_names.index(s)
-                else:
-                    idx = int(s)
-                sample_indices_list.append(idx)
-                sample_names_out.append(self.sample_names[idx])
-            sample_indices = np.array(sample_indices_list)
-
-        data = self.root[chrom][variable][np.ix_(sample_indices, pos_indices)]
-
-        if not as_xarray:
-            return np.array(data)
-
-        metadata_df = self.get_metadata()
-        metadata_subset = metadata_df.iloc[sample_indices]
-        coords: dict = {"sample": sample_names_out, "position": region_positions}
-        for col in metadata_subset.columns:
-            if col != "sample_id":
-                coords[col] = ("sample", np.asarray(metadata_subset[col]))
-
-        return xr.DataArray(
-            da.from_array(data, chunks=(1, -1)),
-            dims=("sample", "position"),
-            coords=coords,
-            attrs={
-                "variable": variable,
-                "chromosome": chrom,
-                "start": start,
-                "end": end,
-            },
-        )
+    @property
+    def completed(self) -> bool:
+        if self.meta is None:
+            return False
+        return bool(self.meta["completed"][0])

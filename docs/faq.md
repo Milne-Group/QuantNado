@@ -1,366 +1,117 @@
-# Frequently Asked Questions
+# FAQ
 
-## Dataset Creation
+## What does QuantNado create now?
 
-**Q: How long does BAM to Zarr conversion take?**
+QuantNado currently creates one `.zarr` store per sample with `quantnado dataset create`. You can then open the directory directly or combine those stores into a single multi-sample `.zarr`.
 
-A: Processing time depends mainly on BAM file size:
-- **Small samples** (< 10 million reads): 5-10 minutes
-- **Medium samples** (10-100M reads): 20-60 minutes
-- **Large whole-genome samples** (> 100M reads): 1-4 hours
+## Which inputs are required for `dataset create`?
 
-Use `--max-workers` to parallelize across multiple threads.
+- BAM-based assays use `--bamfile`
+- `METH` uses `--bamfile` and `--methylation_file`
+- `SNP` uses `--vcf_file`
+- `ChIP` and `CUT&TAG` can also use `--ip`
+- `RNA` can also use `--stranded`
 
-**Q: Which BAM files are compatible?**
+## Which assays are supported?
 
-A: Any BAM file can be processed as long as it:
-- Contains aligned reads
-- Has a corresponding `.bai` index file
-- Uses standard CIGAR string notation
+`ATAC`, `ChIP`, `RNA`, `CUT&TAG`, `METH`, `SNP`, and `MCC`.
 
-If your BAM lacks an index:
-```bash
-samtools index sample.bam
-```
+## How do I open a dataset in Python?
 
-**Q: Can I process paired-end and single-end reads together?**
-
-A: Yes. QuantNado counts aligned positions, not fragments, so both read types are handled uniformly.
-
-**Q: What if I have samples with different sequencing depths?**
-
-A: This is fine. QuantNado stores raw counts. For comparison, normalize using standard methods (RPKM, CPM, quantile normalization) in downstream analysis.
-
-## Peak Calling
-
-**Q: What quantile should I use?**
-
-A: The quantile controls peak stringency:
-- **0.95** - Lenient, more peaks
-- **0.98** - Standard (recommended)
-- **0.99** - Stringent, fewer peaks
-
-Start with 0.98 and adjust based on your experiment and goals.
-
-**Q: What do I do if no peaks are called?**
-
-A: Possible causes:
-1. **Quantile too high** - Try lower values (0.90-0.95)
-2. **Sample quality** - Check bigWig files for signal
-3. **Blacklist too aggressive** - Temporarily disable with `--blacklist`
-
-## Storage and Performance
-
-**Q: How much disk space does a Zarr dataset use?**
-
-A: Roughly **0.5-2x the original BAM size**, depending on compression:
-- For 100 samples × 100M reads each: ~50-200 GB
-
-**Q: Can I access data remotely (cloud storage)?**
-
-A: Currently requires local filesystem. Consider copying data locally first:
-```bash
-cp -r s3://bucket/data ./local_path
-```
-
-**Q: Can I delete intermediate files to save space?**
-
-A: Yes, after dataset creation completes. The only essential file is the `.zarr` directory.
-
-## Python API
-
-**Q: How do I load a dataset in Python?**
-
-A:
 ```python
 from quantnado import QuantNado
-qn = QuantNado.open("my_dataset.zarr")
+
+qn = QuantNado.open("dataset/")
 ```
 
-**Q: How do I subset samples?**
+You can also open a combined store:
 
-A:
 ```python
-chroms = qn.to_xarray()
-data = chroms["chr1"].sel(sample=["sample1", "sample2"])
+qn = QuantNado.open("dataset/combined.zarr")
 ```
 
-**Q: Can I write modified data back to the dataset?**
+## What is the difference between `assay` and `modality`?
 
-A: No, datasets are read-only. Export to new formats for storage:
+- `assay` filters samples by biological type, such as `RNA` or `ATAC`
+- `modality` selects a concrete array key, such as `coverage`, `rna_fwd`, or `chip_h3k27ac`
+
+Most analysis methods accept both.
+
+## How do I combine per-sample stores?
+
+```bash
+quantnado dataset combine \
+  --stores dataset/ATAC_1.zarr dataset/RNA_1.zarr dataset/METH_1.zarr \
+  --output dataset/combined.zarr
+```
+
+## How do I count RNA features?
+
 ```python
-chroms = qn.to_xarray()
-chroms["chr1"].to_pandas().to_parquet("chr1.parquet")
+signal_matrix, features = qn.quantify_signal(
+    gtf_file="genes.gtf",
+    feature_type="gene",
+    assay="RNA",
+    modality="coverage",
+)
 ```
 
-## Troubleshooting
+Use `quantify_signal()` when you want a feature-by-sample matrix derived from stored QuantNado signal.
 
-**Q: I get "No such option: --max-workers" error**
+If you specifically want the counting API:
 
-A: Upgrade QuantNado:
-```bash
-pip install --upgrade quantnado
+```python
+counts, features = qn.count_features(
+    gtf_file="genes.gtf",
+    feature_type="gene",
+    engine="signal",
+    assay="RNA",
+)
 ```
 
-**Q: BAM indexing fails with permission errors**
+## What is the difference between `reduce()`, `extract()`, `quantify_signal()`, and `count_features()`?
 
-A: Ensure you have write permissions:
+- `reduce()` summarises signal over intervals and returns an `xr.Dataset`
+- `extract()` bins signal around genomic features and returns an `xr.DataArray`
+- `quantify_signal()` returns a feature-by-sample matrix plus feature metadata from stored signal
+- `count_features(engine="signal")` uses the counting API shape but still summarises stored signal today
+
+## How do grouping and subsetting work?
+
+Use `group_by()` to cache reusable sample-group namespaces, then intersect them in `subset()`:
+
+```python
+qn.group_by(
+    ip="ip",
+    treatment={"control": ["control"], "treated": ["treated"]},
+    spikein={"spikein": ["spikein", "rx"]},
+    match="contains",
+)
+
+subset = qn.subset(
+    assay="RNA",
+    group={"treatment": "treated", "spikein": "spikein"},
+)
+```
+
+All filters in `subset()` are combined with `AND`.
+
+## Does QuantNado support peak calling?
+
+Yes. `quantnado call-peaks` works directly from a QuantNado dataset and supports `quantile`, `seacr`, and `lanceotron`.
+
+## Do BAM files need indexes?
+
+Yes. BAM inputs should be coordinate-sorted and indexed with `.bai`.
+
 ```bash
-chmod u+w *.bam*
 samtools index sample.bam
 ```
 
-**Q: Metadata CSV not recognized**
+## Does QuantNado support cloud storage?
 
-A: Check CSV format:
-- First row must be headers
-- Must include a `sample_id` column matching BAM file stems
-- Use UTF-8 encoding
+The current workflow is documented around local filesystem paths. If you are working on remote storage, it is usually safest to build stores on the mounted filesystem you intend to use and validate performance there.
 
-See [Basic Usage](basic_usage.md) for more examples.
+## Is the dataset writable after creation?
 
-Ensure BAM files are indexed:
-
-```bash
-samtools index file.bam
-```
-
-### What chromsizes file should I use?
-
-QuantNado supports standard `.chrom.sizes` files:
-
-- **NCBI** - Available from NCBI for each genome
-- **UCSC** - Standard format from UCSC
-
-Example format:
-
-```
-chr1    248956422
-chr2    242193529
-chr3    198295559
-...
-```
-
-### Can I use custom chromosomes?
-
-Yes! Provide a custom dict:
-
-```python
-chromsizes = {
-    "chr1": 248956422,
-    "chr2": 242193529,
-    "custom_region": 100000
-}
-
-qn = QuantNado.from_bam_files(
-    bam_files=[...],
-    store_path="dataset.zarr",
-    chromsizes=chromsizes
-)
-```
-
-### What metadata formats are supported?
-
-Metadata should be a CSV file with a sample_id column matching BAM file stems:
-
-```csv
-sample_id,condition,replicate,quality
-sample1,treated,1,high
-sample2,treated,2,high
-sample3,control,1,medium
-```
-
-## Usage Questions
-
-### How do I select specific samples?
-
-Samples are identified by their BAM file stems. Select them by name:
-
-```python
-qn = QuantNado.open("dataset.zarr")
-print(qn.samples)  # See all available samples
-
-# Select in analysis
-signal = qn.reduce(intervals_path="regions.bed")
-chip_samples = signal.sel(sample=['sample1', 'sample2'])
-```
-
-### What if my sample name has spaces or special characters?
-
-The sample name is derived from the BAM filename stem. For clean names:
-
-- Use underscores instead of spaces: `H3K4me3_R1.bam`
-- Avoid special characters: `chip-seq_sample1.bam` → `chip-seq_sample1`
-
-Rename BAM files before processing if needed.
-
-### Can I process partial datasets?
-
-Yes! QuantNado supports resuming interrupted processing:
-
-```python
-# Resume will skip completed samples
-qn = QuantNado.from_bam_files(
-    bam_files=[...],
-    store_path="dataset.zarr",
-    resume=True
-)
-```
-
-### What's the difference between reduce() and extract()?
-
-- **`reduce()`**: Returns aggregated (summed/mean/etc.) signal over ranges
-- **`extract()`**: Returns per-position signal over ranges
-- **`count_features()`**: Returns integer counts for each feature
-
-```python
-# reduce - returns (n_regions, n_samples)
-signal = qn.reduce(intervals_path="regions.bed", reduction="mean")
-
-# extract - returns (n_regions, max_position, n_samples)
-signal = qn.extract(intervals_path="regions.bed")
-
-# count_features - returns (n_features, n_samples) integer matrix
-counts, features = qn.count_features(gtf_file="genes.gtf")
-```
-
-### How do I handle NaN values?
-
-QuantNado provides several strategies:
-
-```python
-pca, transformed = qn.pca(
-    data,
-    nan_handling_strategy="drop"  # Remove features with NaN
-)
-
-# Other options:
-# - "set_to_zero": Replace NaN with 0
-# - "mean_value_imputation": Replace with feature mean
-```
-
-## Performance & Resources
-
-### How much disk space does a Zarr dataset need?
-
-Zarr datasets are stored efficiently. Approximate sizes:
-
-- Full genome (human), 1 sample: 500 MB - 2 GB (depending on sequencing depth)
-- Full genome, 10 samples: 5 - 20 GB
-- Specific chromosomes: Proportional to size
-
-Calculate before processing:
-
-```python
-# Depends on read depth
-# BAM file size ≈ final Zarr size (usually slightly smaller)
-```
-
-### How long does dataset creation take?
-
-**Time scales with**:
-
-- Number of BAM files
-- Read depth (sequencing coverage)
-- Chromosome complexity
-- Hardware (CPU Speed, I/O)
-
-Typical times (human genome, single sample):
-- Low coverage (5M reads): ~1 minute
-- Medium coverage (50M reads): ~5-10 minutes
-- High coverage (200M reads): ~20-40 minutes
-
-### Can I parallelize processing?
-
-Use the `max_workers` parameter:
-
-```bash
-quantnado create-dataset *.bam \
-  --output dataset.zarr \
-  --max-workers 8
-```
-
-### How much RAM do I need?
-
-Minimum: 4 GB for testing
-Recommended: 16+ GB for production datasets
-
-For very large datasets, use Dask's out-of-core capabilities.
-
-## Troubleshooting
-
-### Why is my dataset incomplete?
-
-Check completion status:
-
-```python
-qn = QuantNado.open("dataset.zarr")
-print(qn.store.completed_mask)
-print(qn.store.n_completed, "/", qn.store.n_samples)
-```
-
-Resume processing:
-
-```python
-qn = QuantNado.from_bam_files(..., resume=True)
-```
-
-### My BAM file isn't being recognized
-
-Ensure:
-- BAM file is valid: `samtools view -H file.bam`
-- BAM file is indexed: `samtools index file.bam`
-- BAM has .bam extension
-- Path is correct
-
-### How do I debug issues?
-
-Enable verbose logging:
-
-```bash
-quantnado create-dataset *.bam \
-  --output dataset.zarr \
-  --verbose \
-  --log-file debug.log
-```
-
-## Advanced Questions
-
-### Can I stream data directly from S3?
-
-Currently, QuantNado works best with local BAM files, but Zarr supports S3 via:
-
-```python
-store = zarr.open_consolidated(
-    "s3://bucket/dataset.zarr",
-    mode="r"
-)
-```
-
-### Can I use QuantNado with cloud storage?
-
-Zarr datasets can be stored on S3, but BAM input processing currently requires local files. Zarr stores can be read from S3.
-
-### How do I export results to HDF5?
-
-Use xarray's built-in support:
-
-```python
-xr_dataset = qn.to_xarray()
-xr_dataset.to_netcdf("output.h5")
-```
-
-Or export to commonly used formats:
-
-```python
-signal = qn.reduce(intervals_path="regions.bed")
-signal["mean"].to_pandas().to_csv("signal.csv")
-signal["mean"].to_pandas().to_hdf("signal.h5", key="signal")
-```
-
-## Getting Help
-
-- **Documentation**: [Full docs](index.md)
-- **GitHub Issues**: [Report bugs](https://github.com/Milne-Group/QuantNado/issues)
-- **GitHub Discussions**: [Ask questions](https://github.com/Milne-Group/QuantNado/discussions)
-- **Troubleshooting**: [Common issues](troubleshooting.md)
+The read API is designed for analysis. Typical workflows treat created stores as analysis inputs and write derived results to separate files.

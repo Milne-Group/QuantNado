@@ -5,6 +5,8 @@ matplotlib.use("Agg")  # non-interactive backend
 import numpy as np
 import pandas as pd
 import pytest
+
+pytestmark = pytest.mark.unit
 import dask.array as da
 import xarray as xr
 

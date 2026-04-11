@@ -10,7 +10,7 @@ import pyranges1 as pr
 from typing import TYPE_CHECKING, Iterable
 from loguru import logger
 
-from ..dataset.enums import ReductionMethod, FeatureType, AnchorPoint
+from ..dataset.metadata import ReductionMethod, FeatureType, AnchorPoint
 from .features import (
 	extract_feature_ranges,
 	extract_promoters,
@@ -19,6 +19,132 @@ from .features import (
 
 if TYPE_CHECKING:
 	pass
+
+
+class _RootView:
+	"""Adapts the new coverage-group layout to look like the old flat-at-root layout.
+
+	New layout: root["coverage"]["chr1"], root["coverage_fwd"]["chr1"]
+	Old layout: root["chr1"], root["chr1_fwd"]
+
+	Exposes:
+	  pos_axis      = 0  (position is axis 0 in new layout)
+	  samples_axis  = 1
+	"""
+
+	pos_axis = 0
+	samples_axis = 1
+
+	def __init__(self, zarr_root) -> None:
+		self._root = zarr_root
+		self._cov = zarr_root["coverage"]
+		self._fwd = zarr_root.get("coverage_fwd")
+		self._rev = zarr_root.get("coverage_rev")
+
+	def __contains__(self, key: str) -> bool:
+		if key.endswith("_fwd"):
+			return self._fwd is not None and key[:-4] in self._fwd
+		if key.endswith("_rev"):
+			return self._rev is not None and key[:-4] in self._rev
+		return key in self._cov
+
+	def __getitem__(self, key: str):
+		if key.endswith("_fwd") and self._fwd is not None:
+			return self._fwd[key[:-4]]
+		if key.endswith("_rev") and self._rev is not None:
+			return self._rev[key[:-4]]
+		return self._cov[key]
+
+	def keys(self):
+		return self._cov.keys()
+
+	def chrom_len(self, key: str) -> int:
+		"""Return the position-axis length for the given key."""
+		return int(self[key].shape[self.pos_axis])
+
+	def get(self, key: str, default=None):
+		try:
+			return self[key]
+		except KeyError:
+			return default
+
+	@property
+	def attrs(self):
+		return self._root.attrs
+
+
+class _TransposedArray:
+	"""Presents a (n_samples, chrom_len) array as (chrom_len, n_samples) for the reduce loop."""
+
+	def __init__(self, arr, row_indices: np.ndarray | None = None) -> None:
+		self._arr = arr
+		self._row_indices = row_indices
+		ns = len(row_indices) if row_indices is not None else int(arr.shape[0])
+		nc = int(arr.shape[1])
+		self.shape = (nc, ns)
+		_c = getattr(arr, "chunks", None)
+		sample_chunk = len(row_indices) if row_indices is not None else _c[0] if _c else ns
+		self.chunks = (_c[1], sample_chunk) if _c else (nc, ns)
+
+	def __getitem__(self, key):
+		row_sel = self._row_indices if self._row_indices is not None else slice(None)
+		if isinstance(key, tuple) and len(key) == 2:
+			pos_key, sam_key = key
+			if self._row_indices is not None:
+				row_sel = np.asarray(self._row_indices[sam_key])
+			else:
+				row_sel = sam_key
+			result = np.asarray(self._arr[row_sel, pos_key])
+			return result.T if result.ndim == 2 else result
+		result = np.asarray(self._arr[row_sel, key])
+		return result.T if result.ndim == 2 else result
+
+
+class _CombinedZarrView:
+	"""Adapts the current QuantNado combined zarr (root[chrom][array_key]) to the reduce API.
+
+	Present arrays in (chrom_len, n_samples) orientation — same as _RootView —
+	so the reduce loop needs no changes.
+	"""
+
+	pos_axis = 0
+	samples_axis = 1
+
+	def __init__(self, zarr_root, array_key: str = "coverage", row_indices: np.ndarray | None = None) -> None:
+		self._root = zarr_root
+		self._array_key = array_key
+		self._row_indices = row_indices
+
+	def _chrom_keys(self):
+		import zarr as _zarr
+
+		return [
+			k for k in self._root.keys()
+			if k != "metadata" and isinstance(self._root[k], _zarr.Group)
+			and self._array_key in self._root[k]
+		]
+
+	def __contains__(self, key: str) -> bool:
+		return key in self._root and self._array_key in self._root.get(key, {})
+
+	def __getitem__(self, key: str) -> _TransposedArray:
+		return _TransposedArray(self._root[key][self._array_key], self._row_indices)
+
+	def keys(self):
+		return iter(self._chrom_keys())
+
+	def chrom_len(self, key: str) -> int:
+		return int(self._root[key][self._array_key].shape[1])
+
+	def get(self, key: str, default=None):
+		try:
+			return self[key]
+		except (KeyError, TypeError):
+			return default
+
+	@property
+	def attrs(self):
+		return self._root.attrs
 
 
 def _ensure_dask_2d(data: xr.DataArray | np.ndarray | da.Array) -> da.Array:
@@ -180,6 +306,7 @@ def _select_samples(
 	dataset,
 	include_incomplete: bool,
 	sample_indices: np.ndarray | None,
+	array_key: str | None = None,
 ) -> tuple[np.ndarray, list[str], object]:
 	"""
 	Resolve which samples to use and return their indices, labels and the zarr root.
@@ -192,6 +319,10 @@ def _select_samples(
 		If True, include samples not marked complete.
 	sample_indices : np.ndarray, optional
 		Explicit indices (overrides completion filter).
+	array_key : str, optional
+		When given, wrap the zarr root so that ``root[chrom]`` returns the
+		per-key array (e.g. ``"atac"``, ``"coverage"``).  Also restricts
+		``sample_names`` to only those samples stored under that key.
 
 	Returns
 	-------
@@ -203,18 +334,69 @@ def _select_samples(
 	ValueError
 		If no samples are selected or no chromosome data is found.
 	"""
-	root = dataset.root if hasattr(dataset, "root") else dataset
+	if hasattr(dataset, "_combined_root") and dataset._combined_root is not None:
+		root = dataset._combined_root
+	elif hasattr(dataset, "_stores") and dataset._stores:
+		root = dataset._stores[0].root
+	elif hasattr(dataset, "root"):
+		root = dataset.root
+	else:
+		root = dataset
 	meta = root.get("metadata") if hasattr(root, "get") else None
 
-	sample_names = getattr(dataset, "sample_names", root.attrs.get("sample_names", None))
+	if hasattr(dataset, "sample_names"):
+		sample_names = dataset.sample_names
+	else:
+		sample_names = root.attrs.get("sample_names", None)
 	completed_mask = getattr(dataset, "completed_mask", None)
+	key_global_indices: np.ndarray | None = None
+	row_indices: np.ndarray | None = None
 	if completed_mask is None and meta is not None and "completed" in meta:
 		completed_mask = meta["completed"][:].astype(bool)
 
-	first_chrom = next((k for k in root.keys() if k != "metadata"), None)
+	import zarr as _zarr
+	first_chrom = next(
+		(k for k in root.keys() if k != "metadata" and isinstance(root[k], _zarr.Array)),
+		None,
+	)
 	if first_chrom is None:
-		raise ValueError("No chromosome data found in dataset")
-	total_samples = root[first_chrom].shape[0]
+		if "coverage" in root and not isinstance(root["coverage"], _zarr.Group):
+			# Old layout: root["coverage"]["chr1"]
+			root = _RootView(root)
+			first_chrom = next(iter(root.keys()), None)
+		else:
+			# Current QuantNado layout: root[chrom] is a Group containing keyed arrays
+			_effective_key = array_key or "coverage"
+			first_chrom = next(
+				(k for k in root.keys() if k != "metadata" and isinstance(root[k], _zarr.Group)),
+				None,
+			)
+			if first_chrom is not None:
+				# Override sample_names with per-key sample list BEFORE wrapping
+				if array_key is not None:
+					_key_to_samples = dict(root.attrs.get("key_to_samples", {}))
+					if array_key in _key_to_samples:
+						_key_sample_names = list(_key_to_samples[array_key])
+						# Remap completed_mask to only the samples stored under this key
+						if sample_names is not None and completed_mask is not None:
+							_subset_idx = {s: i for i, s in enumerate(sample_names)}
+							_matched_names = [s for s in _key_sample_names if s in _subset_idx]
+							row_indices = np.array(
+								[i for i, s in enumerate(_key_sample_names) if s in _subset_idx],
+								dtype=np.int64,
+							)
+							key_global_indices = np.array(
+								[_subset_idx[s] for s in _matched_names],
+								dtype=np.int64,
+							)
+							completed_mask = completed_mask[key_global_indices]
+							sample_names = _matched_names
+						else:
+							sample_names = _key_sample_names
+				root = _CombinedZarrView(root, _effective_key, row_indices=row_indices)
+		if first_chrom is None:
+			raise ValueError("No chromosome data found in dataset")
+	total_samples = root[first_chrom].shape[getattr(root, "samples_axis", 1)]
 
 	if completed_mask is None:
 		completed_mask = np.ones(total_samples, dtype=bool)
@@ -227,6 +409,14 @@ def _select_samples(
 		)
 	else:
 		sample_indices = np.asarray(sample_indices, dtype=np.int64)
+		# Explicit indices are in the global dataset order; remap them to the
+		# modality-specific sample order when array_key narrows the sample set.
+		if key_global_indices is not None:
+			global_to_local = {int(global_idx): local_idx for local_idx, global_idx in enumerate(key_global_indices)}
+			sample_indices = np.array(
+				[global_to_local[i] for i in sample_indices if int(i) in global_to_local],
+				dtype=np.int64,
+			)
 		# Apply completion filter to explicitly provided sample indices
 		if not include_incomplete:
 			sample_indices = sample_indices[completed_mask[sample_indices]]
@@ -240,12 +430,133 @@ def _select_samples(
 	return sample_indices, sample_labels, root
 
 
+def _group_ranges_into_islands(
+	starts: np.ndarray, ends: np.ndarray, max_gap: int
+) -> list[np.ndarray]:
+	"""Group ranges into islands where consecutive gaps <= max_gap.
+
+	Returns a list of index arrays (original positions), one per island.
+	Using max_gap = store chunk_len ensures no Zarr chunk is read twice.
+	"""
+	order = np.argsort(starts, kind="stable")
+	s, e = starts[order], ends[order]
+	breaks = np.where(s[1:] - e[:-1] > max_gap)[0] + 1
+	return [order[idx] for idx in np.split(np.arange(len(order)), breaks)]
+
+
+def _reduce_byranges_prefix_np(
+	starts: np.ndarray,
+	ends: np.ndarray,
+	arr: np.ndarray,
+	*,
+	min_count: int = 1,
+) -> dict[str, np.ndarray]:
+	"""Prefix-sum reduction on an in-memory numpy array (no dask overhead).
+
+	Parameters
+	----------
+	starts, ends : np.ndarray
+		0-based, end-exclusive range coordinates (relative to arr row 0).
+	arr : np.ndarray
+		2D array (positions x samples), any numeric dtype.
+	min_count : int
+		Ranges with fewer positions than this yield NaN mean.
+
+	Returns
+	-------
+	dict with keys 'sum', 'count', 'mean' — all float32 numpy arrays of
+	shape (n_ranges, n_samples).
+	"""
+	a = arr.astype(np.float32, copy=False)
+	n_pos, n_samp = a.shape
+	s = np.asarray(starts, dtype=np.int64)
+	e = np.asarray(ends, dtype=np.int64)
+	counts = (e - s).astype(np.int64)
+
+	# For large spans the prefix array (n_pos+1, n_samp) float32 is expensive
+	# to allocate and fill. Use reduceat when the span is large relative to the
+	# number of ranges — it avoids materialising the full prefix array.
+	n_ranges = len(s)
+	if n_ranges == 0:
+		empty = np.empty((0, n_samp), dtype=np.float32)
+		return {"sum": empty, "count": empty, "mean": empty}
+
+	# Prefix-sum path: O(n_pos) allocation but O(1) per range lookup.
+	# Always correct; the array is bounded by the island span, not the whole chrom.
+	sum_pref = np.zeros((n_pos + 1, n_samp), dtype=np.float32)
+	np.cumsum(a, axis=0, out=sum_pref[1:])
+	sums = sum_pref[e] - sum_pref[s]
+
+	means = np.where(counts[:, None] >= min_count, sums / np.maximum(counts[:, None], 1), np.nan)
+	return {
+		"sum": sums,
+		"count": counts[:, None].repeat(n_samp, axis=1).astype(np.float32),
+		"mean": means.astype(np.float32),
+	}
+
+
+def _reduce_ranges_vectorized_np(
+	arr: np.ndarray,
+	starts: np.ndarray,
+	ends: np.ndarray,
+	reduction: str,
+) -> np.ndarray:
+	"""Gather-and-reduce per range on an in-memory numpy array.
+
+	Parameters
+	----------
+	arr : np.ndarray
+		2D array (positions x samples).
+	starts, ends : np.ndarray
+		0-based, end-exclusive range coordinates.
+	reduction : str
+		One of 'max', 'min', 'median', 'sum'.
+
+	Returns
+	-------
+	np.ndarray of shape (n_ranges, n_samples), float32.
+	"""
+	starts = np.asarray(starts, dtype=np.int64)
+	ends = np.asarray(ends, dtype=np.int64)
+	lengths = ends - starts
+	if lengths.size == 0:
+		return np.empty((0, arr.shape[1]), dtype=np.float32)
+	max_len = int(lengths.max())
+	n_samp = arr.shape[1]
+
+	# Pad right to avoid out-of-bounds gather
+	arr_len = arr.shape[0]
+	pad_right = max(0, int(starts.max() + max_len) - arr_len)
+	if pad_right:
+		arr = np.pad(arr.astype(np.float32), ((0, pad_right), (0, 0)), constant_values=np.nan)
+	else:
+		arr = arr.astype(np.float32, copy=False)
+
+	offsets = np.arange(max_len, dtype=np.int64)
+	indices = (starts[:, None] + offsets[None, :]).reshape(-1)
+	gathered = arr[indices].reshape(len(starts), max_len, n_samp)
+
+	mask = offsets[None, :] < lengths[:, None]
+	gathered[~mask] = np.nan
+
+	if reduction == "max":
+		return np.nanmax(gathered, axis=1)
+	if reduction == "min":
+		return np.nanmin(gathered, axis=1)
+	if reduction == "median":
+		return np.nanpercentile(gathered, 50, axis=1)
+	if reduction == "sum":
+		return np.nansum(gathered, axis=1)
+	raise ValueError(f"Unknown reduction: {reduction}")
+
+
 def _reduce_byranges_prefix(
 	row_starts: np.ndarray,
 	row_ends: np.ndarray,
 	data: xr.DataArray | np.ndarray | da.Array,
 	*,
 	min_count: int = 1,
+	device: str = "cpu",
 ) -> dict[str, da.Array]:
 	"""
 	Reduce ranges via prefix sums (efficient for large range sets).
@@ -281,6 +592,31 @@ def _reduce_byranges_prefix(
 	# NaN-aware reductions require a floating dtype.
 	if not np.issubdtype(arr.dtype, np.floating):
 		arr = arr.astype(np.float32)
+
+	if device != "cpu":
+		try:
+			import torch
+			arr_np = arr.compute() if isinstance(arr, da.Array) else np.asarray(arr)
+			t = torch.from_numpy(arr_np.astype(np.float32)).to(device)
+			zero_row = torch.zeros((1, t.shape[1]), dtype=t.dtype, device=device)
+			nan_mask = torch.isnan(t)
+			values_t = torch.nan_to_num(t, nan=0.0)
+			mask_t = (~nan_mask).to(torch.int64)
+			sum_pref_t = torch.cat([zero_row, torch.cumsum(values_t, dim=0)], dim=0)
+			count_pref_t = torch.cat(
+				[torch.zeros((1, t.shape[1]), dtype=torch.int64, device=device), torch.cumsum(mask_t, dim=0)],
+				dim=0,
+			)
+			sums_np = (sum_pref_t[ends] - sum_pref_t[starts]).cpu().numpy()
+			counts_np = (count_pref_t[ends] - count_pref_t[starts]).cpu().numpy()
+			with np.errstate(invalid="ignore"):
+				means_np = np.where(counts_np >= min_count, sums_np / counts_np, np.nan)
+			sums_da = da.from_array(sums_np, chunks=sums_np.shape)
+			counts_da = da.from_array(counts_np.astype(np.int64), chunks=counts_np.shape)
+			means_da = da.from_array(means_np, chunks=means_np.shape)
+			return {"sum": sums_da, "count": counts_da, "mean": means_da}
+		except Exception:
+			pass
 
 	is_float = np.issubdtype(arr.dtype, np.floating)
 	# Prepare value and mask arrays for prefix sums.
@@ -320,6 +656,7 @@ def _reduce_ranges_vectorized(
 	starts: np.ndarray,
 	ends: np.ndarray,
 	reduction: str,
+	device: str = "cpu",
 ) -> da.Array:
 	"""
 	Reduce ranges using vectorized operations (max/min/median).
@@ -369,6 +706,25 @@ def _reduce_ranges_vectorized(
 	mask = offsets[None, :] < lengths[:, None]
 	mask_da = da.from_array(mask, chunks=(min(mask.shape[0], 256), mask.shape[1]))
 	masked = da.where(mask_da[:, :, None], gathered, np.nan)
+
+	if device != "cpu":
+		try:
+			import torch
+			gathered_np = masked.compute() if isinstance(masked, da.Array) else np.asarray(masked)
+			g_t = torch.from_numpy(gathered_np.astype(np.float32)).to(device)
+			if reduction == "max":
+				result_np = torch.amax(g_t, dim=1).cpu().numpy()
+			elif reduction == "min":
+				result_np = torch.amin(g_t, dim=1).cpu().numpy()
+			elif reduction == "median":
+				result_np = torch.nanmedian(g_t, dim=1).values.cpu().numpy()
+			elif reduction == "sum":
+				result_np = torch.nansum(g_t, dim=1).cpu().numpy()
+			else:
+				raise ValueError(f"Unknown reduction: {reduction}")
+			return da.from_array(result_np, chunks=result_np.shape)
+		except Exception:
+			pass
 
 	if reduction == "max":
 		return da.nanmax(masked, axis=1)
@@ -706,9 +1062,9 @@ def extract_byranges_signal(
 	bin_agg: ReductionMethod | str = ReductionMethod.MEAN,
 	include_incomplete: bool = False,
 	sample_indices: np.ndarray | None = None,
+	array_key: str | None = None,
 	strand_aware: bool = False,
 	force_strand: str | None = None,
-	max_workers: int = 1,
 ) -> xr.DataArray:
 	"""
 	Extract raw per-position signal over genomic ranges.
@@ -767,10 +1123,6 @@ def extract_byranges_signal(
 		(``"-"`` → ``{chrom}_rev``) strand array regardless of their strand annotation.
 		Takes precedence over ``strand_aware``.  Falls back to total coverage when
 		stranded arrays are absent.
-	max_workers : int, default 1
-		Number of chromosome groups to extract in parallel. Useful when ranges span
-		multiple contigs stored as separate arrays.
-
 	Returns
 	-------
 	xr.DataArray
@@ -815,7 +1167,9 @@ def extract_byranges_signal(
 	ranges_df, start_col, end_col, contig_col = _resolve_ranges(
 		ranges_df, intervals_path, feature_type, gtf_path, start_col, end_col, contig_col
 	)
-	sample_indices, sample_labels, root = _select_samples(dataset, include_incomplete, sample_indices)
+	sample_indices, sample_labels, root = _select_samples(
+		dataset, include_incomplete, sample_indices, array_key=array_key
+	)
 
 	# Log chromosome overlap
 	ranges_contigs = set(ranges_df[contig_col].unique())
@@ -833,7 +1187,7 @@ def extract_byranges_signal(
 	# Determine global extraction width.
 	# If bin_size is provided, drop remainder bases (exact multiple of bin_size only).
 	if _total_width is None:
-		contig_lengths = {k: int(root[k].shape[1]) for k in root.keys() if k != "metadata"}
+		contig_lengths = {k: (root.chrom_len(k) if hasattr(root, "chrom_len") else int(root[k].shape[0])) for k in root.keys() if k != "metadata"}
 		contig_len = ranges_df[contig_col].map(contig_lengths)
 		starts_all = np.asarray(ranges_df[start_col], dtype=np.int64)
 		ends_all = np.asarray(ranges_df[end_col], dtype=np.int64)
@@ -893,18 +1247,9 @@ def extract_byranges_signal(
 			and f"{contig}_fwd" in root
 			and f"{contig}_rev" in root
 		)
-		if use_forced_strand:
-			akey = f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev"
-			arr = da.from_zarr(root[akey])[sample_indices, :].transpose(1, 0).astype(np.float32)
-		elif use_stranded:
-			arr_fwd = da.from_zarr(root[f"{contig}_fwd"])[sample_indices, :].transpose(1, 0).astype(np.float32)
-			arr_rev = da.from_zarr(root[f"{contig}_rev"])[sample_indices, :].transpose(1, 0).astype(np.float32)
-			arr = arr_fwd
-		else:
-			arr = da.from_zarr(root[contig])[sample_indices, :].transpose(1, 0)
-		if not np.issubdtype(arr.dtype, np.floating):
-			arr = arr.astype(np.float32)
-		arr_len = int(arr.shape[0])
+		# Get chromosome length from zarr shape without loading data
+		_ref_akey = (f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev") if use_forced_strand else contig
+		arr_len = root.chrom_len(_ref_akey) if hasattr(root, "chrom_len") else int(root[_ref_akey].shape[0])
 
 		clipped_starts = np.maximum(starts, 0)
 		clipped_ends = np.minimum(ends, arr_len)
@@ -924,6 +1269,7 @@ def extract_byranges_signal(
 		if starts.size == 0:
 			continue
 
+		# Compute anchor positions and span of positions to load
 		if _total_width is not None:
 			if anchor == AnchorPoint.MIDPOINT:
 				anchor_pos = (starts + ends) // 2
@@ -933,8 +1279,36 @@ def extract_byranges_signal(
 				anchor_pos = np.where(strands == "-", starts, ends) if has_strand else ends
 			else:
 				raise ValueError(f"Unknown anchor point: {anchor}")
-
 			extract_starts = anchor_pos - _upstream
+			span_start = int(max(0, extract_starts.min()))
+			span_end = int(min(arr_len, int(extract_starts.max()) + _total_width))
+		else:
+			anchor_pos = None
+			extract_starts = None
+			span_start = int(clipped_starts.min())
+			span_end = int(clipped_ends.max())
+
+		# Load only the span of positions needed: array is (position, sample)
+		def _load_arr(akey: str) -> "da.Array":
+			region = root[akey][span_start:span_end, sample_indices.tolist()].astype(np.float32)
+			return da.from_array(region, chunks=("auto", len(sample_indices)))
+
+		if use_forced_strand:
+			arr = _load_arr(f"{contig}_fwd" if force_strand == "+" else f"{contig}_rev")
+		elif use_stranded:
+			arr_fwd = _load_arr(f"{contig}_fwd")
+			arr_rev = _load_arr(f"{contig}_rev")
+			arr = arr_fwd
+		else:
+			arr = _load_arr(contig)
+
+		# arr_len is now the loaded span length; rebase coordinates to span_start
+		arr_len = int(arr.shape[0])
+		clipped_starts = clipped_starts - span_start
+		clipped_ends = clipped_ends - span_start
+
+		if _total_width is not None:
+			extract_starts = extract_starts - span_start
 			pad_left = int(max(0, -int(extract_starts.min())))
 			pad_right = int(max(0, int(extract_starts.max() + _total_width) - arr_len))
 
@@ -1114,6 +1488,7 @@ def reduce_byranges_signal(
 	include_incomplete: bool = False,
 	sample_indices: np.ndarray | None = None,
 	strand_mode: int = 0,
+	array_key: str | None = None,
 ) -> xr.Dataset:
 	"""
 	Summarize per-chromosome Zarr arrays over genomic ranges using efficient reduction.
@@ -1187,7 +1562,7 @@ def reduce_byranges_signal(
 	ranges_df, start_col, end_col, contig_col = _resolve_ranges(
 		ranges_df, intervals_path, feature_type, gtf_path, start_col, end_col, contig_col
 	)
-	sample_indices, sample_labels, root = _select_samples(dataset, include_incomplete, sample_indices)
+	sample_indices, sample_labels, root = _select_samples(dataset, include_incomplete, sample_indices, array_key=array_key)
 
 	# Log chromosome overlap between ranges and dataset
 	ranges_contigs = set(ranges_df[contig_col].unique())
@@ -1219,79 +1594,159 @@ def reduce_byranges_signal(
 		None,
 	)
 
+	# Collect all (subgroup, array_key, contig) work items up front so we can
+	# distribute them across threads.  Most callers have one item per chromosome;
+	# strand-per-feature mode produces two (one per strand orientation).
+	_work_items: list[tuple] = []
 	for contig, group in ranges_df.groupby(contig_col, observed=True):
-		# Build (sub_group, array_key) pairs.
-		# When strand_mode != 0 and a strand column is present, split features by
-		# their annotation so that each half reads from the correct _fwd/_rev array:
-		#   mode 1 (F / ISF / ligation):  + → _fwd,  - → _rev
-		#   mode 2 (R / ISR / dUTP):      + → _rev,  - → _fwd
-		# Unstranded features (strand not in +/-) fall back to total coverage.
 		if _strand_per_feature:
 			_strand_to_key = (
 				{"+": f"{contig}_fwd", "-": f"{contig}_rev"}
 				if strand_mode == 1
 				else {"+": f"{contig}_rev", "-": f"{contig}_fwd"}
 			)
-			pairs = [
-				(sg, _strand_to_key.get(str(sv), contig))
-				for sv, sg in group.groupby(strand_col_name)
-			]
+			for sv, sg in group.groupby(strand_col_name):
+				_work_items.append((sg, _strand_to_key.get(str(sv), contig), contig))
 		else:
 			_akey = f"{contig}{_array_suffix}" if _array_suffix and f"{contig}{_array_suffix}" in root else contig
-			pairs = [(group, _akey)]
+			_work_items.append((group, _akey, contig))
 
-		for sg, akey in pairs:
-			if akey not in root:
-				continue
+	def _process_work_item(sg, akey, contig):
+		"""Reduce one (subgroup, array_key) pair. Thread-safe — zarr reads are
+		immutable and all helpers operate on local numpy arrays."""
+		if akey not in root:
+			return None
 
-			starts = np.asarray(sg[start_col], dtype=np.int64)
-			ends = np.asarray(sg[end_col], dtype=np.int64)
-			names = np.asarray(sg[name_col], dtype=object) if name_col is not None else None
+		starts = np.asarray(sg[start_col], dtype=np.int64)
+		ends = np.asarray(sg[end_col], dtype=np.int64)
+		names = np.asarray(sg[name_col], dtype=object) if name_col is not None else None
 
-			# Load chromosome data: (samples × positions) → transpose to (positions × samples)
-			arr = da.from_zarr(root[akey])[sample_indices, :].transpose(1, 0)
-			arr_len = int(arr.shape[0])
+		# Chromosome length from zarr shape; no need to load data yet
+		arr_len = root.chrom_len(akey) if hasattr(root, "chrom_len") else int(root[akey].shape[0])
 
-			# Clip coordinates to valid range
-			starts = starts.clip(min=0)
-			ends = ends.clip(max=arr_len)
+		# Clip coordinates to valid range
+		starts = starts.clip(min=0)
+		ends = ends.clip(max=arr_len)
 
-			# Filter out invalid ranges
-			valid = (ends > starts) & (starts < arr_len) & (ends > 0)
-			if not np.all(valid):
-				starts = starts[valid]
-				ends = ends[valid]
-				if names is not None:
-					names = names[valid]
-				sg = sg.loc[valid]
-
-			if starts.size == 0:
-				continue
-
-			# Reduce using appropriate method
-			# Always compute sum/count/mean via prefix sums (fast + consistent API)
-			reduced = _reduce_byranges_prefix(starts, ends, arr, min_count=min_count)
-			if reduction_str == "mean":
-				reduction_data = reduced["mean"]
-			else:
-				reduction_data = _reduce_ranges_vectorized(arr, starts, ends, reduction_str)
-
-			outputs.append(
-				{
-					"sum": reduced["sum"],
-					"count": reduced["count"],
-					"mean": reduced["mean"],
-					reduction_str: reduction_data,
-				}
-			)
-			idx_order.append(sg.index.to_numpy())
-			starts_all.append(starts)
-			ends_all.append(ends)
-			contigs_all.append(np.asarray(sg[contig_col]))
-			if has_strand:
-				strands_all.append(np.asarray(sg["Strand"]))
+		# Filter out invalid ranges
+		valid = (ends > starts) & (starts < arr_len) & (ends > 0)
+		if not np.all(valid):
+			starts = starts[valid]
+			ends = ends[valid]
 			if names is not None:
-				names_all.append(names)
+				names = names[valid]
+			sg = sg.loc[valid]
+
+		if starts.size == 0:
+			return None
+
+		# Batch ranges into islands separated by >= chunk_len bp so each Zarr
+		# chunk is read at most once and inter-range deserts are skipped.
+		_zarr_arr = root[akey]
+		chunk_len = int(_zarr_arr.chunks[0]) if hasattr(_zarr_arr, "chunks") else int(_zarr_arr.shape[0])
+		islands = _group_ranges_into_islands(starts, ends, max_gap=chunk_len)
+
+		island_sums: list[np.ndarray] = []
+		island_counts: list[np.ndarray] = []
+		island_means: list[np.ndarray] = []
+		island_red: list[np.ndarray] = []
+		island_order: list[np.ndarray] = []
+
+		for island_idx in islands:
+			i_starts = starts[island_idx]
+			i_ends = ends[island_idx]
+			span_start = int(i_starts.min())
+			span_end = int(i_ends.max())
+			# Use basic slicing (rows then columns) rather than fancy indexing.
+			# Passing a list as the column index triggers np.ix_ inside Zarr,
+			# adding ~0.17s of overhead per island. Reading all columns then
+			# selecting in numpy avoids this when n_samples is small.
+			_raw = _zarr_arr[span_start:span_end, :]
+			region_np = _raw[:, sample_indices] if sample_indices.size < _raw.shape[1] else _raw
+			adj_starts = i_starts - span_start
+			adj_ends = i_ends - span_start
+			r_i = _reduce_byranges_prefix_np(adj_starts, adj_ends, region_np, min_count=min_count)
+			if reduction_str == "mean":
+				red_np_i = r_i["mean"]
+			else:
+				red_np_i = _reduce_ranges_vectorized_np(region_np, adj_starts, adj_ends, reduction_str)
+			island_sums.append(r_i["sum"])
+			island_counts.append(r_i["count"])
+			island_means.append(r_i["mean"])
+			island_red.append(red_np_i)
+			island_order.append(island_idx)
+
+		# Restore original range order within this work item's group
+		contig_order = np.concatenate(island_order)
+		restore = np.empty_like(contig_order)
+		restore[contig_order] = np.arange(contig_order.size)
+
+		r = {
+			"sum": np.concatenate(island_sums)[restore],
+			"count": np.concatenate(island_counts)[restore],
+			"mean": np.concatenate(island_means)[restore],
+		}
+		red_np = np.concatenate(island_red)[restore]
+
+		# Wrap as zero-copy dask for downstream xr.Dataset assembly
+		reduced_arrs = {k: da.from_array(v, chunks=v.shape) for k, v in r.items()}
+		reduction_data = da.from_array(red_np, chunks=red_np.shape)
+
+		return {
+			"output": {
+				"sum": reduced_arrs["sum"],
+				"count": reduced_arrs["count"],
+				"mean": reduced_arrs["mean"],
+				reduction_str: reduction_data,
+			},
+			"idx": sg.index.to_numpy(),
+			"starts": starts,
+			"ends": ends,
+			"contigs": np.asarray(sg[contig_col]),
+			"strands": np.asarray(sg["Strand"]) if has_strand else None,
+			"names": names,
+		}
+
+	# Run one work item per chromosome (or per strand group) in parallel.
+	# zarr reads and numpy prefix-sums both release the GIL, so threading gives
+	# real concurrency for I/O-bound workloads.
+	import os
+	from concurrent.futures import ThreadPoolExecutor, as_completed
+
+	n_workers = min(len(_work_items), os.cpu_count() or 4)
+	if n_workers > 1:
+		with ThreadPoolExecutor(max_workers=n_workers) as _pool:
+			_futures = {
+				_pool.submit(_process_work_item, sg, akey, contig): (sg, akey, contig)
+				for sg, akey, contig in _work_items
+			}
+			for _fut in as_completed(_futures):
+				result = _fut.result()
+				if result is None:
+					continue
+				outputs.append(result["output"])
+				idx_order.append(result["idx"])
+				starts_all.append(result["starts"])
+				ends_all.append(result["ends"])
+				contigs_all.append(result["contigs"])
+				if has_strand and result["strands"] is not None:
+					strands_all.append(result["strands"])
+				if name_col is not None and result["names"] is not None:
+					names_all.append(result["names"])
+	else:
+		for sg, akey, contig in _work_items:
+			result = _process_work_item(sg, akey, contig)
+			if result is None:
+				continue
+			outputs.append(result["output"])
+			idx_order.append(result["idx"])
+			starts_all.append(result["starts"])
+			ends_all.append(result["ends"])
+			contigs_all.append(result["contigs"])
+			if has_strand and result["strands"] is not None:
+				strands_all.append(result["strands"])
+			if name_col is not None and result["names"] is not None:
+				names_all.append(result["names"])
 
 	if not outputs:
 		raise ValueError("No valid ranges found for provided contigs")
