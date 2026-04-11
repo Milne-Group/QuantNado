@@ -131,7 +131,7 @@ nav:
     - CLI Reference: cli.md
   - API Reference:
     - QuantNado: api/quantnado.md
-    - MultiomicsStore: api/multiomicsstore.md
+    - QuantNadoDataset: api/quantnadodataset.md
     - BamStore: api/bamstore.md
     - MethylStore: api/methylstore.md
     - VariantStore: api/variantstore.md

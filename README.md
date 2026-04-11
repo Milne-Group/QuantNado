@@ -5,15 +5,12 @@
 [![Release](https://img.shields.io/github/v/release/Milne-Group/QuantNado?sort=semver)](https://github.com/Milne-Group/QuantNado/releases)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![PyPI Version](https://img.shields.io/pypi/v/quantnado)](https://pypi.org/project/quantnado)
-[![PyPI Downloads](https://static.pepy.tech/badge/quantnado)](https://pepy.tech/projects/quantnado)
 
 <p align="center">
   <img src="docs/assets/images/logo.png" alt="QuantNado logo" width="192">
 </p>
 
-**QuantNado provides efficient Zarr-backed storage and analysis of genomic signal from BAM and bigWig files, with support for signal reduction, feature counting, dimensionality reduction, and quantile-based peak calling.**
-
----
+**QuantNado builds per-sample Zarr stores from genomic assays and exposes a unified Python API for region selection, reduction, feature counting, normalisation, PCA, and peak calling.**
 
 ## Installation
 
@@ -23,120 +20,164 @@ pip install quantnado
 
 Requires Python 3.12 or 3.13.
 
----
-
 ## Quick Start
 
-### Create a dataset from BAM files
+### 1. Create per-sample stores from a metadata table
 
-```python
-from quantnado import QuantNado
-
-qn = QuantNado.from_bam_files(
-    bam_files=["sample1.bam", "sample2.bam", "sample3.bam"],
-    store_path="dataset.zarr",
-    metadata="samples.csv",  # optional
-)
+```csv
+sample,assay,bam,methyl,vcf,ip
+ATAC_1,ATAC,/data/ATAC_1.bam,,,
+H3K27ac_1,ChIP,/data/H3K27ac_1.bam,,,H3K27ac
+RNA_1,RNA,/data/RNA_1.bam,,,
+METH_1,METH,/data/METH_1.bam,/data/METH_1.bedGraph,,
+SNP_1,SNP,,,/data/SNP_1.vcf.gz,
 ```
-
-### Load and analyse an existing dataset
-
-```python
-from quantnado import QuantNado
-
-qn = QuantNado.open("dataset.zarr")
-
-# Aggregate signal over genomic ranges
-promoter_signal = qn.reduce("promoters.bed", reduction="mean")
-print(promoter_signal["mean"].shape)  # (n_promoters, n_samples)
-
-# PCA on reduced signal
-pca_obj, transformed = qn.pca(promoter_signal["mean"], n_components=10)
-print(transformed.shape)  # (n_samples, 10)
-
-# Generate a count matrix for DESeq2
-counts, features = qn.count_features("genes.gtf", feature_type="gene")
-counts.to_csv("counts.csv")
-
-# Extract signal over a specific region
-region = qn.extract_region("chr1:1000-5000")
-print(region.shape)  # (n_samples, 4000)
-```
-
----
-
-## Command-line Interface
-
-QuantNado installs a `quantnado` command with two subcommands.
-
-### `create-dataset` — build a multi-omics store from BAM/bedGraph/VCF files
-
-At least one of `--bam`, `--bedgraph`, or `--vcf` is required. File lists are comma-separated.
 
 ```bash
 quantnado create-dataset \
-  --output dataset \
-  --bam sample1.bam,sample2.bam,sample3.bam \
-  --bedgraph meth_rep1.bedGraph,meth_rep2.bedGraph \
-  --vcf sample1.vcf.gz,sample2.vcf.gz \
   --metadata samples.csv \
-  --max-workers 8
+  --output-dir dataset \
+  --chromsizes hg38.chrom.sizes
 ```
 
-### `call-peaks` — call quantile-based peaks from bigWig files
+This writes one `.zarr` store per sample into `dataset/`.
+
+For quick test builds, you can either use the default test chromosomes:
+
+```bash
+quantnado create-dataset \
+  --metadata samples.csv \
+  --output-dir dataset \
+  --test
+```
+
+or provide an explicit list:
+
+```bash
+quantnado create-dataset \
+  --metadata samples.csv \
+  --output-dir dataset \
+  --test-chrom chr21 \
+  --test-chrom chr9
+```
+
+### 2. Open the dataset in Python
+
+```python
+from quantnado import QuantNado
+
+qn = QuantNado.open("dataset/")
+
+print(qn.sample_names)
+print(qn.assays)
+print(qn.array_keys)
+print(qn.info)
+```
+
+### 3. Run common analyses
+
+```python
+# Select a genomic region
+region = qn.sel("chr1", 1_000_000, 1_010_000)
+
+# Reduce signal over intervals
+promoters = qn.reduce(
+    intervals_path="promoters.bed",
+    reduction="mean",
+    modality="coverage",
+)
+
+# Quantify stored signal over genes
+gene_signal, gene_meta = qn.quantify_signal(
+    gtf_file="genes.gtf",
+    feature_type="gene",
+    assay="RNA",
+    modality="coverage",
+)
+
+# Count features using the current signal backend
+counts, features = qn.count_features(
+    gtf_file="genes.gtf",
+    feature_type="gene",
+    engine="signal",
+    assay="RNA",
+)
+
+# PCA on reduced signal
+pca_obj, pca_result = qn.pca(promoters["mean"], n_components=10)
+```
+
+### 4. Optionally combine stores
+
+```python
+from quantnado import QuantNado
+
+combined = QuantNado.combine("dataset/", "dataset/combined.zarr")
+```
+
+You can open either `dataset/` or `dataset/combined.zarr` with the same API.
+
+## CLI
+
+QuantNado installs a `quantnado` command with two main workflows.
+
+### `create-dataset`
+
+Creates per-sample Zarr stores from a metadata CSV/TSV.
+
+```bash
+quantnado create-dataset \
+  --metadata samples.csv \
+  --output-dir dataset \
+  --overwrite
+```
+
+Supported assays: `ATAC`, `ChIP`, `RNA`, `CUT&TAG`, `METH`, `SNP`, `MCC`.
+
+### `call-peaks`
+
+Calls peaks directly from a QuantNado dataset.
 
 ```bash
 quantnado call-peaks \
-  --bigwig-dir path/to/bigwigs/ \
-  --output-dir peaks/ \
-  --chromsizes hg38.chrom.sizes \
-  --quantile 0.98
+  --zarr dataset/combined.zarr \
+  --method quantile \
+  --assay atac \
+  --output-dir peaks/
 ```
 
-Run `quantnado --help` or `quantnado <subcommand> --help` for full option listings.
+Available methods: `quantile`, `seacr`, and `lanceotron`.
 
----
+## Python API
 
-## API Reference
+The main entry points are:
+
+| Object / function | Purpose |
+|---|---|
+| `QuantNado.open(path)` | Open a directory of per-sample stores or a combined `.zarr` |
+| `QuantNado.combine(src, output)` | Combine per-sample stores into one multi-sample store |
+| `QuantNadoDataset(path)` | Lower-level analysis object used by the facade |
+| `create_dataset(...)` | Build a single per-sample store programmatically |
+| `metadata_from_seqnado(...)` | Generate a QuantNado metadata table from a SeqNado project |
+
+Common analysis methods on `QuantNado` / `QuantNadoDataset`:
+
+| Method | Purpose |
+|---|---|
+| `.sel(chrom, start, end, ...)` | Extract a genomic region as `xr.Dataset` |
+| `.reduce(...)` | Summarise signal over BED/GTF intervals |
+| `.quantify_signal(...)` | Quantify stored signal over features |
+| `.count_features(...)` | Count features via the selected engine (`signal` today, `bam` planned) |
+| `.extract(...)` | Bin signal around promoters, genes, transcripts, or exons |
+| `.normalise(...)` | Apply CPM/RPKM/TPM normalisation |
+| `.group_by(...)`, `.subset(...)`, `.info` | Notebook-friendly sample grouping, filtering, and dataset summaries |
+| `.pca(...)` | Run PCA on reduced or selected signal |
+| `.metaplot(...)`, `.tornadoplot(...)`, `.heatmap(...)`, `.correlate(...)` | Visualisation helpers |
+
+## Documentation
 
 Full documentation is available at [milne-group.github.io/QuantNado](https://milne-group.github.io/QuantNado/).
 
-### `QuantNado`
-
-| Method / Property | Description |
-|---|---|
-| `QuantNado.from_bam_files(bam_files, store_path, ...)` | Create a new dataset from BAM files |
-| `QuantNado.open(store_path, read_only=True)` | Open an existing dataset |
-| `.reduce(ranges, reduction="mean")` | Aggregate signal over genomic ranges (BED) |
-| `.count_features(gtf_file, feature_type="gene")` | Generate a DESeq2-compatible count matrix |
-| `.pca(data, n_components=10)` | Run PCA on a signal matrix |
-| `.extract_region(region)` | Extract raw signal for a genomic region |
-| `.to_xarray(chromosomes)` | Load dataset as lazy xarray DataArrays |
-| `.samples` | List of sample names |
-| `.metadata` | Sample metadata (DataFrame) |
-| `.chromosomes` | Available chromosome names |
-| `.chromsizes` | Chromosome sizes (dict) |
-| `.store_path` | Path to the underlying Zarr store |
-
----
-
-## Requirements
-
-| Dependency | Purpose |
-|---|---|
-| `zarr`| Zarr v3 storage backend |
-| `xarray`, `dask` | Lazy array operations |
-| `pandas`, `numpy` | Data structures |
-| `pysam`, `bamnado` | BAM file I/O |
-| `pyBigWig` | bigWig I/O |
-| `pyranges` | Genomic range operations |
-| `scikit-learn` (via `dask-ml`) | PCA |
-| `typer`, `loguru` | CLI and logging |
-| `ipykernel`, `jupyterlab`, `matplotlib` | Example notebook (`pip install "quantnado[example]"`) |
-
-
----
-
 ## License
 
-GNU GPL v3.0 — see [LICENSE](LICENSE).
+GNU GPL v3.0. See [LICENSE](LICENSE).

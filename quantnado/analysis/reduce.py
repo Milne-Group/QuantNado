@@ -1594,122 +1594,159 @@ def reduce_byranges_signal(
 		None,
 	)
 
+	# Collect all (subgroup, array_key, contig) work items up front so we can
+	# distribute them across threads.  Most callers have one item per chromosome;
+	# strand-per-feature mode produces two (one per strand orientation).
+	_work_items: list[tuple] = []
 	for contig, group in ranges_df.groupby(contig_col, observed=True):
-		# Build (sub_group, array_key) pairs.
-		# When strand_mode != 0 and a strand column is present, split features by
-		# their annotation so that each half reads from the correct _fwd/_rev array:
-		#   mode 1 (F / ISF / ligation):  + → _fwd,  - → _rev
-		#   mode 2 (R / ISR / dUTP):      + → _rev,  - → _fwd
-		# Unstranded features (strand not in +/-) fall back to total coverage.
 		if _strand_per_feature:
 			_strand_to_key = (
 				{"+": f"{contig}_fwd", "-": f"{contig}_rev"}
 				if strand_mode == 1
 				else {"+": f"{contig}_rev", "-": f"{contig}_fwd"}
 			)
-			pairs = [
-				(sg, _strand_to_key.get(str(sv), contig))
-				for sv, sg in group.groupby(strand_col_name)
-			]
+			for sv, sg in group.groupby(strand_col_name):
+				_work_items.append((sg, _strand_to_key.get(str(sv), contig), contig))
 		else:
 			_akey = f"{contig}{_array_suffix}" if _array_suffix and f"{contig}{_array_suffix}" in root else contig
-			pairs = [(group, _akey)]
+			_work_items.append((group, _akey, contig))
 
-		for sg, akey in pairs:
-			if akey not in root:
-				continue
+	def _process_work_item(sg, akey, contig):
+		"""Reduce one (subgroup, array_key) pair. Thread-safe — zarr reads are
+		immutable and all helpers operate on local numpy arrays."""
+		if akey not in root:
+			return None
 
-			starts = np.asarray(sg[start_col], dtype=np.int64)
-			ends = np.asarray(sg[end_col], dtype=np.int64)
-			names = np.asarray(sg[name_col], dtype=object) if name_col is not None else None
+		starts = np.asarray(sg[start_col], dtype=np.int64)
+		ends = np.asarray(sg[end_col], dtype=np.int64)
+		names = np.asarray(sg[name_col], dtype=object) if name_col is not None else None
 
-			# Chromosome length from zarr shape; no need to load data yet
-			arr_len = root.chrom_len(akey) if hasattr(root, "chrom_len") else int(root[akey].shape[0])
+		# Chromosome length from zarr shape; no need to load data yet
+		arr_len = root.chrom_len(akey) if hasattr(root, "chrom_len") else int(root[akey].shape[0])
 
-			# Clip coordinates to valid range
-			starts = starts.clip(min=0)
-			ends = ends.clip(max=arr_len)
+		# Clip coordinates to valid range
+		starts = starts.clip(min=0)
+		ends = ends.clip(max=arr_len)
 
-			# Filter out invalid ranges
-			valid = (ends > starts) & (starts < arr_len) & (ends > 0)
-			if not np.all(valid):
-				starts = starts[valid]
-				ends = ends[valid]
-				if names is not None:
-					names = names[valid]
-				sg = sg.loc[valid]
-
-			if starts.size == 0:
-				continue
-
-			# Batch ranges into islands separated by >= chunk_len bp so each Zarr
-			# chunk is read at most once and inter-range deserts are skipped.
-			_zarr_arr = root[akey]
-			chunk_len = int(_zarr_arr.chunks[0]) if hasattr(_zarr_arr, "chunks") else int(_zarr_arr.shape[0])
-			islands = _group_ranges_into_islands(starts, ends, max_gap=chunk_len)
-
-			island_sums: list[np.ndarray] = []
-			island_counts: list[np.ndarray] = []
-			island_means: list[np.ndarray] = []
-			island_red: list[np.ndarray] = []
-			island_order: list[np.ndarray] = []
-
-			for island_idx in islands:
-				i_starts = starts[island_idx]
-				i_ends = ends[island_idx]
-				span_start = int(i_starts.min())
-				span_end = int(i_ends.max())
-				# Use basic slicing (rows then columns) rather than fancy indexing.
-				# Passing a list as the column index triggers np.ix_ inside Zarr,
-				# adding ~0.17s of overhead per island. Reading all columns then
-				# selecting in numpy avoids this when n_samples is small.
-				_raw = _zarr_arr[span_start:span_end, :]
-				region_np = _raw[:, sample_indices] if sample_indices.size < _raw.shape[1] else _raw
-				adj_starts = i_starts - span_start
-				adj_ends = i_ends - span_start
-				r_i = _reduce_byranges_prefix_np(adj_starts, adj_ends, region_np, min_count=min_count)
-				if reduction_str == "mean":
-					red_np_i = r_i["mean"]
-				else:
-					red_np_i = _reduce_ranges_vectorized_np(region_np, adj_starts, adj_ends, reduction_str)
-				island_sums.append(r_i["sum"])
-				island_counts.append(r_i["count"])
-				island_means.append(r_i["mean"])
-				island_red.append(red_np_i)
-				island_order.append(island_idx)
-
-			# Restore original range order within this contig group
-			contig_order = np.concatenate(island_order)
-			restore = np.empty_like(contig_order)
-			restore[contig_order] = np.arange(contig_order.size)
-
-			r = {
-				"sum": np.concatenate(island_sums)[restore],
-				"count": np.concatenate(island_counts)[restore],
-				"mean": np.concatenate(island_means)[restore],
-			}
-			red_np = np.concatenate(island_red)[restore]
-
-			# Wrap as zero-copy dask for downstream xr.Dataset assembly
-			reduced = {k: da.from_array(v, chunks=v.shape) for k, v in r.items()}
-			reduction_data = da.from_array(red_np, chunks=red_np.shape)
-
-			outputs.append(
-				{
-					"sum": reduced["sum"],
-					"count": reduced["count"],
-					"mean": reduced["mean"],
-					reduction_str: reduction_data,
-				}
-			)
-			idx_order.append(sg.index.to_numpy())
-			starts_all.append(starts)
-			ends_all.append(ends)
-			contigs_all.append(np.asarray(sg[contig_col]))
-			if has_strand:
-				strands_all.append(np.asarray(sg["Strand"]))
+		# Filter out invalid ranges
+		valid = (ends > starts) & (starts < arr_len) & (ends > 0)
+		if not np.all(valid):
+			starts = starts[valid]
+			ends = ends[valid]
 			if names is not None:
-				names_all.append(names)
+				names = names[valid]
+			sg = sg.loc[valid]
+
+		if starts.size == 0:
+			return None
+
+		# Batch ranges into islands separated by >= chunk_len bp so each Zarr
+		# chunk is read at most once and inter-range deserts are skipped.
+		_zarr_arr = root[akey]
+		chunk_len = int(_zarr_arr.chunks[0]) if hasattr(_zarr_arr, "chunks") else int(_zarr_arr.shape[0])
+		islands = _group_ranges_into_islands(starts, ends, max_gap=chunk_len)
+
+		island_sums: list[np.ndarray] = []
+		island_counts: list[np.ndarray] = []
+		island_means: list[np.ndarray] = []
+		island_red: list[np.ndarray] = []
+		island_order: list[np.ndarray] = []
+
+		for island_idx in islands:
+			i_starts = starts[island_idx]
+			i_ends = ends[island_idx]
+			span_start = int(i_starts.min())
+			span_end = int(i_ends.max())
+			# Use basic slicing (rows then columns) rather than fancy indexing.
+			# Passing a list as the column index triggers np.ix_ inside Zarr,
+			# adding ~0.17s of overhead per island. Reading all columns then
+			# selecting in numpy avoids this when n_samples is small.
+			_raw = _zarr_arr[span_start:span_end, :]
+			region_np = _raw[:, sample_indices] if sample_indices.size < _raw.shape[1] else _raw
+			adj_starts = i_starts - span_start
+			adj_ends = i_ends - span_start
+			r_i = _reduce_byranges_prefix_np(adj_starts, adj_ends, region_np, min_count=min_count)
+			if reduction_str == "mean":
+				red_np_i = r_i["mean"]
+			else:
+				red_np_i = _reduce_ranges_vectorized_np(region_np, adj_starts, adj_ends, reduction_str)
+			island_sums.append(r_i["sum"])
+			island_counts.append(r_i["count"])
+			island_means.append(r_i["mean"])
+			island_red.append(red_np_i)
+			island_order.append(island_idx)
+
+		# Restore original range order within this work item's group
+		contig_order = np.concatenate(island_order)
+		restore = np.empty_like(contig_order)
+		restore[contig_order] = np.arange(contig_order.size)
+
+		r = {
+			"sum": np.concatenate(island_sums)[restore],
+			"count": np.concatenate(island_counts)[restore],
+			"mean": np.concatenate(island_means)[restore],
+		}
+		red_np = np.concatenate(island_red)[restore]
+
+		# Wrap as zero-copy dask for downstream xr.Dataset assembly
+		reduced_arrs = {k: da.from_array(v, chunks=v.shape) for k, v in r.items()}
+		reduction_data = da.from_array(red_np, chunks=red_np.shape)
+
+		return {
+			"output": {
+				"sum": reduced_arrs["sum"],
+				"count": reduced_arrs["count"],
+				"mean": reduced_arrs["mean"],
+				reduction_str: reduction_data,
+			},
+			"idx": sg.index.to_numpy(),
+			"starts": starts,
+			"ends": ends,
+			"contigs": np.asarray(sg[contig_col]),
+			"strands": np.asarray(sg["Strand"]) if has_strand else None,
+			"names": names,
+		}
+
+	# Run one work item per chromosome (or per strand group) in parallel.
+	# zarr reads and numpy prefix-sums both release the GIL, so threading gives
+	# real concurrency for I/O-bound workloads.
+	import os
+	from concurrent.futures import ThreadPoolExecutor, as_completed
+
+	n_workers = min(len(_work_items), os.cpu_count() or 4)
+	if n_workers > 1:
+		with ThreadPoolExecutor(max_workers=n_workers) as _pool:
+			_futures = {
+				_pool.submit(_process_work_item, sg, akey, contig): (sg, akey, contig)
+				for sg, akey, contig in _work_items
+			}
+			for _fut in as_completed(_futures):
+				result = _fut.result()
+				if result is None:
+					continue
+				outputs.append(result["output"])
+				idx_order.append(result["idx"])
+				starts_all.append(result["starts"])
+				ends_all.append(result["ends"])
+				contigs_all.append(result["contigs"])
+				if has_strand and result["strands"] is not None:
+					strands_all.append(result["strands"])
+				if name_col is not None and result["names"] is not None:
+					names_all.append(result["names"])
+	else:
+		for sg, akey, contig in _work_items:
+			result = _process_work_item(sg, akey, contig)
+			if result is None:
+				continue
+			outputs.append(result["output"])
+			idx_order.append(result["idx"])
+			starts_all.append(result["starts"])
+			ends_all.append(result["ends"])
+			contigs_all.append(result["contigs"])
+			if has_strand and result["strands"] is not None:
+				strands_all.append(result["strands"])
+			if name_col is not None and result["names"] is not None:
+				names_all.append(result["names"])
 
 	if not outputs:
 		raise ValueError("No valid ranges found for provided contigs")

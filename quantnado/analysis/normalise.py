@@ -1,4 +1,4 @@
-"""Normalisation of genomic signal from QuantNado stores.
+"""Normalisation of genomic signal from QuantNado datasets.
 
 Works on the outputs of ``reduce()``, ``extract()``, and ``count_features()``.
 
@@ -15,7 +15,7 @@ Examples
 >>> signal = ds.reduce(intervals_path="promoters.bed")
 >>> normalised = normalise(signal, ds, method="cpm")
 
->>> binned = ds.extract(feature_type="transcript", gtf_path="genes.gtf", bin_size=50)
+>>> binned = ds.extract(feature_type="transcript", GTF_FILE="genes.gtf", modality="coverage", bin_size=50)
 >>> normalised = normalise(binned, ds, method="cpm")
 
 >>> counts, features = ds.count_features(gtf_file="genes.gtf")
@@ -48,7 +48,7 @@ def get_mean_read_lengths(dataset) -> pd.Series:
 
     Parameters
     ----------
-    dataset : QuantNadoDataset | BamStore | MultiomicsStore
+    dataset : QuantNadoDataset | QuantNado | BamStore
 
     Returns
     -------
@@ -92,7 +92,7 @@ def get_library_sizes(dataset) -> pd.Series:
     Parameters
     ----------
     dataset : QuantNadoDataset | BamStore
-        Any QuantNado object with a coverage store attached.
+        Any current QuantNado analysis object with coverage metadata available.
 
     Returns
     -------
@@ -192,7 +192,7 @@ def _resolve_bam_store(dataset):
         return dataset
     raise TypeError(
         f"Cannot resolve a BamStore from {type(dataset).__name__}. "
-        "Pass a QuantNado, BamStore, or MultiomicsStore."
+        "Pass a QuantNadoDataset, QuantNado, or BamStore."
     )
 
 
@@ -217,7 +217,7 @@ def normalise(
     ----------
     data : xr.Dataset | xr.DataArray | pd.DataFrame
         Output of ``reduce()``, ``extract()``, or ``count_features()``.
-    dataset : QuantNado | BamStore | MultiomicsStore, optional
+    dataset : QuantNadoDataset | QuantNado | BamStore, optional
         Source dataset used to look up library sizes automatically.
         Not required when ``library_sizes`` is provided explicitly, or for
         ``method="tpm"`` (which is self-normalising).
@@ -252,7 +252,7 @@ def normalise(
     >>> cpm_signal = normalise(signal, ds, method="cpm")
 
     >>> # Normalise a binned extract() output (e.g. for metaplots)
-    >>> binned = ds.extract(feature_type="transcript", gtf_path="genes.gtf", bin_size=50)
+    >>> binned = ds.extract(feature_type="transcript", GTF_FILE="genes.gtf", modality="coverage", bin_size=50)
     >>> cpm_binned = normalise(binned, ds, method="cpm")
 
     >>> # Normalise count matrix for DESeq2 pre-inspection or plotting

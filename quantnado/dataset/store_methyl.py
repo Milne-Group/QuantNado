@@ -51,6 +51,7 @@ def _read_bedgraph(
     path: Path | str,
     filter_chromosomes: bool = True,
     test: bool = False,
+    test_chromosomes: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Read a CpG bedGraph file from MethylDackel or similar tools.
 
@@ -121,8 +122,8 @@ def _read_bedgraph(
         result = result[
             result["chrom"].str.startswith("chr") & ~result["chrom"].str.contains("_")
         ]
-    if test:
-        test_chroms = _parse_chromsizes({}, test=True)
+    if test or test_chromosomes:
+        test_chroms = _parse_chromsizes({}, test=test, test_chromosomes=test_chromosomes)
         result = result[result["chrom"].isin(test_chroms)]
 
     return {chrom: grp.reset_index(drop=True) for chrom, grp in result.groupby("chrom")}
@@ -305,6 +306,7 @@ class MethylStore:
         overwrite: bool = True,
         filter_chromosomes: bool = True,
         test: bool = False,
+        test_chromosomes: list[str] | tuple[str, ...] | None = None,
         log_file: Path | None = None,
     ) -> "MethylStore":
         """Create a per-sample MethylStore from a BAM file and a MethylDackel bedGraph.
@@ -332,12 +334,18 @@ class MethylStore:
             chromsizes = _get_chromsizes_from_bam(bam_path)
 
         chromsizes_dict = _parse_chromsizes(
-            chromsizes, filter_chromosomes=filter_chromosomes, test=test
+            chromsizes,
+            filter_chromosomes=filter_chromosomes,
+            test=test,
+            test_chromosomes=test_chromosomes,
         )
 
         logger.info(f"Reading methylation data from {methyl_path}")
         by_chrom = _read_bedgraph(
-            methyl_path, filter_chromosomes=filter_chromosomes, test=test
+            methyl_path,
+            filter_chromosomes=filter_chromosomes,
+            test=test,
+            test_chromosomes=test_chromosomes,
         )
 
         resolved_chunk_len = _resolve_chunk_len(chromsizes_dict, Path(store_path), chunk_len)

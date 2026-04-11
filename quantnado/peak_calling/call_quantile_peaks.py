@@ -109,6 +109,7 @@ def call_quantile_peaks_from_zarr(
     zarr_path: Path,
     output_dir: Path,
     assay: Optional[str] = None,
+    samples: Optional[list[str]] = None,
     blacklist_file: Optional[Path] = None,
     tilesize: int = 128,
     window_overlap: int = 8,
@@ -143,11 +144,22 @@ def call_quantile_peaks_from_zarr(
     step = tilesize - window_overlap
 
     qn = QuantNadoDataset(zarr_path)
-    assay_key = assay or qn.assays[0]
+    array_keys = qn.array_keys
+    assay_key = assay or ("coverage" if "coverage" in array_keys else (array_keys[0] if array_keys else None))
     chromsizes = {c: s for c, s in qn.chromsizes.items() if "_" not in c}
 
     library_sizes = get_library_sizes(qn)
-    valid_samples = qn.sample_names  # QuantNadoDataset already filters to completed
+    if qn._combined:
+        key_to_samples = {
+            str(k): [str(s) for s in v]
+            for k, v in dict(qn._combined_root.attrs.get("key_to_samples", {})).items()
+        }
+        valid_samples = key_to_samples.get(assay_key, qn.sample_names)
+    else:
+        valid_samples = qn.sample_names  # QuantNadoDataset already filters to completed
+    if samples is not None:
+        requested = [str(s) for s in samples]
+        valid_samples = [s for s in valid_samples if s in requested]
 
     if not valid_samples:
         logger.error("No completed samples found in store.")
@@ -173,7 +185,7 @@ def call_quantile_peaks_from_zarr(
 
         ds_chrom = qn.sel(chrom=chrom)
         # shape: (n_samples, chrom_len)
-        cov = ds_chrom[assay_key].values.astype(np.float32)
+        cov = ds_chrom[assay_key].sel(sample=valid_samples).values.astype(np.float32)
 
         tile_starts = np.arange(0, chrom_len, step, dtype=np.int64)
         tile_ends = np.minimum(tile_starts + tilesize, chrom_len).astype(np.int64)
@@ -255,5 +267,3 @@ def call_quantile_peaks_from_zarr(
             logger.warning(f"[{sample_name}] No peaks detected.")
 
     return results
-
-

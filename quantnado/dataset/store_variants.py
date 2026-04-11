@@ -53,6 +53,7 @@ def _read_vcf(
     path: Path | str,
     filter_chromosomes: bool = True,
     test: bool = False,
+    test_chromosomes: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, int]]:
     """Read a single-sample VCF/VCF.gz with pysam (htslib).
 
@@ -66,8 +67,10 @@ def _read_vcf(
     """
     path = Path(path)
 
-    if test:
-        allowed_chroms: set[str] | None = set(_parse_chromsizes({}, test=True))
+    if test or test_chromosomes:
+        allowed_chroms: set[str] | None = set(
+            _parse_chromsizes({}, test=test, test_chromosomes=test_chromosomes)
+        )
     else:
         allowed_chroms = None
 
@@ -320,6 +323,7 @@ class VariantStore:
         overwrite: bool = True,
         filter_chromosomes: bool = True,
         test: bool = False,
+        test_chromosomes: list[str] | tuple[str, ...] | None = None,
         log_file: Path | None = None,
     ) -> "VariantStore":
         """Create a per-sample VariantStore zarr from a single-sample VCF.
@@ -341,7 +345,10 @@ class VariantStore:
 
         logger.info(f"Reading VCF: {vcf_path}")
         chrom_data, header_chromsizes = _read_vcf(
-            vcf_path, filter_chromosomes=filter_chromosomes, test=test
+            vcf_path,
+            filter_chromosomes=filter_chromosomes,
+            test=test,
+            test_chromosomes=test_chromosomes,
         )
 
         if chromsizes is None:
@@ -353,7 +360,10 @@ class VariantStore:
             chromsizes = header_chromsizes
 
         chromsizes_dict = _parse_chromsizes(
-            chromsizes, filter_chromosomes=filter_chromosomes, test=test
+            chromsizes,
+            filter_chromosomes=filter_chromosomes,
+            test=test,
+            test_chromosomes=test_chromosomes,
         )
         resolved_chunk_len = _resolve_chunk_len(chromsizes_dict, Path(store_path), chunk_len)
         compressors = _resolve_compressors(construction_compression)

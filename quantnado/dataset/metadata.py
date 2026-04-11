@@ -47,6 +47,7 @@ def _parse_chromsizes(
     *,
     filter_chromosomes: bool = True,
     test: bool = False,
+    test_chromosomes: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, int]:
     """Parse chromosome sizes from a file or dict, with optional filtering."""
     import pandas as pd
@@ -61,12 +62,20 @@ def _parse_chromsizes(
         df = pd.read_csv(path, sep="\t", header=None, names=["chrom", "size"])
         chromsizes_dict = df.set_index("chrom")["size"].to_dict()
 
-    if test:
-        desired = {"chr21": 46449983, "chr22": 50818468, "chrY": 57227415}
+    if test or test_chromosomes:
+        desired_defaults = {"chr9": 138394717, "chr13": 114364328, "chr21": 46709983}
+        desired_order = [str(c) for c in (test_chromosomes or desired_defaults.keys())]
         if chromsizes_dict:
-            chromsizes_dict = {k: chromsizes_dict.get(k, v) for k, v in desired.items() if k in chromsizes_dict}
+            chromsizes_dict = {
+                chrom: chromsizes_dict[chrom]
+                for chrom in desired_order
+                if chrom in chromsizes_dict
+            }
         else:
-            chromsizes_dict = desired
+            chromsizes_dict = {
+                chrom: desired_defaults.get(chrom, 0)
+                for chrom in desired_order
+            }
         logger.info(f"Test mode enabled: keeping chromosomes {list(chromsizes_dict.keys())}")
     elif filter_chromosomes:
         chromsizes_dict = {

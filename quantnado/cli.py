@@ -12,6 +12,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import typer
 from loguru import logger
 
@@ -44,6 +45,23 @@ def _setup_logging(log_file: Path, verbose: bool) -> None:
         except Exception:
             pass
     setup_logging(log_file, verbose)
+
+
+def _parse_stranded_value(value) -> str | None:
+    """Normalize RNA strandedness metadata to ``R`` / ``F`` / ``None``."""
+    if value is None or pd.isna(value):
+        return None
+
+    text = str(value).strip().upper()
+    if text in {"", "NONE", "FALSE", "0", "U", "UNSTRANDED"}:
+        return None
+    if text in {"R", "REVERSE", "2"}:
+        return "R"
+    if text in {"F", "FORWARD", "1"}:
+        return "F"
+    raise ValueError(
+        f"Invalid stranded value '{value}'. Expected one of R/F/1/2/U."
+    )
 
 
 # ======================================================================
@@ -89,7 +107,12 @@ def create_dataset(
         case_sensitive=False,
     ),
     test: bool = typer.Option(
-        False, "--test", help="Restrict to chr21/chr22/chrY (for testing)."
+        False, "--test", help="Restrict to test chromosomes (default: chr9/chr13/chr21)."
+    ),
+    test_chrom: list[str] = typer.Option(
+        None,
+        "--test-chrom",
+        help="Chromosome to keep in test mode. Repeat to pass multiple chromosomes.",
     ),
     log_file: Path = typer.Option(
         Path("quantnado_create.log"), "--log-file", help="Path to log file."
@@ -166,7 +189,8 @@ def create_dataset(
                     construction_compression=construction_compression,
                     overwrite=overwrite,
                     filter_chromosomes=filter_chromosomes,
-                    test=test,
+                    test=test or bool(test_chrom),
+                    test_chromosomes=test_chrom or None,
                 )
             elif assay == "SNP":
                 from quantnado.dataset.store_variants import VariantStore
@@ -181,14 +205,19 @@ def create_dataset(
                     construction_compression=construction_compression,
                     overwrite=overwrite,
                     filter_chromosomes=filter_chromosomes,
-                    test=test,
+                    test=test or bool(test_chrom),
+                    test_chromosomes=test_chrom or None,
                 )
             else:
                 # BAM-based: ATAC, ChIP, CUT&TAG, RNA, MCC
                 from quantnado.dataset.store_bam import BamStore
                 if not bam_path:
                     raise ValueError(f"{assay} rows require a 'bam' column")
-                stranded = assay.upper() == "RNA"
+                stranded = (
+                    _parse_stranded_value(row.get("stranded", None))
+                    if assay.upper() == "RNA"
+                    else None
+                )
                 is_mcc = assay.upper() == "MCC"
                 BamStore.from_bam_files(
                     bam_path=bam_path,
@@ -203,7 +232,8 @@ def create_dataset(
                     construction_compression=construction_compression,
                     overwrite=overwrite,
                     filter_chromosomes=filter_chromosomes,
-                    test=test,
+                    test=test or bool(test_chrom),
+                    test_chromosomes=test_chrom or None,
                 )
             logger.success(f"Wrote {store_path.name}")
         except Exception as e:

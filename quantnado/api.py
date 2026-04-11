@@ -1,19 +1,27 @@
 """QuantNado API facade.
 
 Thin wrapper around :class:`QuantNadoDataset <quantnado.analysis.core.QuantNadoDataset>`
-that adds convenience methods for normalisation, PCA, and visualisation.
+that keeps the same analysis API while exposing a slightly friendlier entry point.
 
 Example::
 
-    qn = QuantNado.open("dataset/")          # directory of per-sample zarrs
-    qn = QuantNado.open("combined.zarr")      # combined store
+    qn = QuantNado.open("dataset/")           # directory of per-sample zarr stores
+    qn = QuantNado.open("combined.zarr")      # combined multi-sample zarr
 
     region = qn.sel(chrom="chr1", start=1_000_000, end=1_001_000)
-    tree   = qn.to_datatree()
+    reduced = qn.reduce("promoters.bed", reduction="mean", modality="coverage")
+    binned = qn.extract(
+        feature_type="promoter",
+        GTF_FILE="genes.gtf",
+        assay="ATAC",
+        modality="coverage",
+        upstream=1000,
+        downstream=1000,
+    )
 
-    cpm = qn.normalise(region, method="cpm")
-    qn.metaplot(binned)
-    qn.heatmap(reduced)
+    cpm = qn.normalise(reduced, method="cpm")
+    qn.metaplot(binned, modality="coverage")
+    qn.heatmap(reduced, variable="mean")
 """
 
 from __future__ import annotations
@@ -150,6 +158,7 @@ def create_dataset(
     overwrite: bool = True,
     filter_chromosomes: bool = True,
     test: bool = False,
+    test_chromosomes: "Sequence[str] | None" = None,
     log_file: "Path | None" = None,
 ):
     """Create a single per-sample zarr store and return its path.
@@ -202,6 +211,7 @@ def create_dataset(
         overwrite=overwrite,
         filter_chromosomes=filter_chromosomes,
         test=test,
+        test_chromosomes=list(test_chromosomes) if test_chromosomes is not None else None,
         log_file=log_file,
     )
 
@@ -312,6 +322,45 @@ class QuantNado:
     @property
     def completed_mask(self):
         return self._dataset.completed_mask
+
+    @property
+    def groups(self):
+        return self._dataset.groups
+
+    def group_by(
+        self,
+        by: str = "assay",
+        *,
+        groups: "dict[str, list[str] | str] | None" = None,
+        match: str = "exact",
+        drop_empty: bool = True,
+        **named_groups: "dict[str, list[str] | str]",
+    ):
+        return self._dataset.group_by(
+            by=by,
+            groups=groups,
+            match=match,
+            drop_empty=drop_empty,
+            **named_groups,
+        )
+
+    @property
+    def info(self) -> dict[str, object]:
+        return self._dataset.info
+
+    def subset(
+        self,
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        ip: "str | Sequence[str] | None" = None,
+        group: "str | Sequence[str] | dict[str, str | Sequence[str]] | None" = None,
+    ) -> "QuantNado":
+        """Return a filtered QuantNado view. See :meth:`QuantNadoDataset.subset`."""
+        return QuantNado(self._dataset.subset(assay=assay, samples=samples, ip=ip, group=group))
+
+    def info_of(self, obj):
+        """Return a compact summary for xarray / pandas objects."""
+        return self._dataset.info_of(obj)
 
     # ------------------------------------------------------------------
     # Region access
@@ -554,6 +603,7 @@ class QuantNado:
         bed_file: str | None = None,
         ranges_df=None,
         feature_type: str = "gene",
+        engine: str = "signal",
         assay: str | Sequence[str] | None = None,
         samples: str | Sequence[str] | None = None,
         modality: str | Sequence[str] | None = None,
@@ -565,9 +615,35 @@ class QuantNado:
             bed_file=bed_file,
             ranges_df=ranges_df,
             feature_type=feature_type,
+            engine=engine,
             assay=assay,
             samples=samples,
             modality=modality,
+            **kwargs,
+        )
+
+    def quantify_signal(
+        self,
+        gtf_file: str | None = None,
+        bed_file: str | None = None,
+        ranges_df=None,
+        feature_type: str = "gene",
+        assay: str | Sequence[str] | None = None,
+        samples: str | Sequence[str] | None = None,
+        modality: str | Sequence[str] | None = None,
+        return_metadata: bool = True,
+        **kwargs,
+    ):
+        """Quantify stored signal over features. See :meth:`QuantNadoDataset.quantify_signal`."""
+        return self._dataset.quantify_signal(
+            gtf_file=gtf_file,
+            bed_file=bed_file,
+            ranges_df=ranges_df,
+            feature_type=feature_type,
+            assay=assay,
+            samples=samples,
+            modality=modality,
+            return_metadata=return_metadata,
             **kwargs,
         )
 

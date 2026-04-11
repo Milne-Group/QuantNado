@@ -724,6 +724,7 @@ def call_seacr_peaks_from_zarr(
     zarr_path: Path,
     output_dir: Path,
     assay: Optional[str] = None,
+    samples: Optional[list[str]] = None,
     control_zarr_path: Optional[Path] = None,
     fdr_threshold: float = 0.01,
     norm: str = "non",
@@ -776,10 +777,21 @@ def call_seacr_peaks_from_zarr(
         raise ValueError(f"norm must be 'norm' or 'non', got {norm!r}")
 
     qn = QuantNadoDataset(zarr_path)
-    assay_key = assay or qn.assays[0]
+    array_keys = qn.array_keys
+    assay_key = assay or ("coverage" if "coverage" in array_keys else (array_keys[0] if array_keys else None))
     chromsizes = {c: s for c, s in qn.chromsizes.items() if "_" not in c}
 
-    valid_samples = qn.sample_names  # QuantNadoDataset already filters to completed
+    if qn._combined:
+        key_to_samples = {
+            str(k): [str(s) for s in v]
+            for k, v in dict(qn._combined_root.attrs.get("key_to_samples", {})).items()
+        }
+        valid_samples = key_to_samples.get(assay_key, qn.sample_names)
+    else:
+        valid_samples = qn.sample_names  # QuantNadoDataset already filters to completed
+    if samples is not None:
+        requested = [str(s) for s in samples]
+        valid_samples = [s for s in valid_samples if s in requested]
 
     if not valid_samples:
         logger.error("No completed samples found in store.")
@@ -803,7 +815,7 @@ def call_seacr_peaks_from_zarr(
                 continue
             logger.debug(f"Computing islands for {chrom} ({chrom_len:,} bp)")
             ds_chrom = qn.sel(chrom=chrom)
-            cov_matrix = ds_chrom[assay_key].values.astype(np.float32)  # (n_samples, chrom_len)
+            cov_matrix = ds_chrom[assay_key].sel(sample=valid_samples).values.astype(np.float32)  # (n_samples, chrom_len)
 
             for i, sample in enumerate(valid_samples):
                 cov = cov_matrix[i, :]
@@ -819,7 +831,7 @@ def call_seacr_peaks_from_zarr(
             if chrom not in qn.chromosomes:
                 continue
             ds_chrom = qn.sel(chrom=chrom)
-            cov_matrix = ds_chrom[assay_key].values.astype(np.float32)
+            cov_matrix = ds_chrom[assay_key].sel(sample=valid_samples).values.astype(np.float32)
             for i, sample in enumerate(valid_samples):
                 tasks.append((cov_matrix[i, :].copy(), sample, chrom))
 

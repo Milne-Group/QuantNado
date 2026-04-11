@@ -728,6 +728,7 @@ def call_lanceotron_peaks_from_zarr(
     zarr_path: Path,
     output_dir: Path,
     assay: Optional[str] = None,
+    samples: Optional[list[str]] = None,
     score_threshold: float = 0.5,
     blacklist_file: Optional[Path] = None,
     smooth_window: int = SMOOTH_WINDOW,
@@ -784,10 +785,21 @@ def call_lanceotron_peaks_from_zarr(
 
     # ── open dataset ─────────────────────────────────────────────────────
     ds = QuantNadoDataset(zarr_path)
-    assay_key = assay or ds.assays[0]
+    array_keys = ds.array_keys
+    assay_key = assay or ("coverage" if "coverage" in array_keys else (array_keys[0] if array_keys else None))
     library_sizes = get_library_sizes(ds)
 
-    valid_samples = ds.sample_names  # QuantNadoDataset already filters to completed
+    if ds._combined:
+        key_to_samples = {
+            str(k): [str(s) for s in v]
+            for k, v in dict(ds._combined_root.attrs.get("key_to_samples", {})).items()
+        }
+        valid_samples = key_to_samples.get(assay_key, ds.sample_names)
+    else:
+        valid_samples = ds.sample_names  # QuantNadoDataset already filters to completed
+    if samples is not None:
+        requested = [str(s) for s in samples]
+        valid_samples = [s for s in valid_samples if s in requested]
     if not valid_samples:
         logger.error("No completed samples in store.")
         return []

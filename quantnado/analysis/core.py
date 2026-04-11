@@ -29,6 +29,123 @@ _META_KEYS = frozenset({"metadata"})
 _COVERAGE_COLLAPSE_KEYS = frozenset({"atac", "chip", "cat"})
 
 
+class DatasetInfo(dict):
+    """Pretty-printable dict returned by :meth:`QuantNadoDataset.info`."""
+
+    @staticmethod
+    def _format_chromsizes(chromsizes: dict[str, int]) -> str:
+        return ", ".join(f"{chrom}={size:,}" for chrom, size in chromsizes.items())
+
+    @staticmethod
+    def _format_list(values: list[str]) -> str:
+        return ", ".join(values)
+
+    @staticmethod
+    def _format_value(value) -> str:
+        if isinstance(value, list):
+            return DatasetInfo._format_list([str(v) for v in value])
+        if isinstance(value, dict):
+            return ", ".join(f"{k}={v}" for k, v in value.items())
+        return str(value)
+
+    def __repr__(self) -> str:
+        assays = self.get("assays", [])
+        chromosomes = self.get("chromosomes", [])
+        chromsizes = self.get("chromsizes", {})
+        per_assay = self.get("per_assay", {})
+        extras = self.get("extras", {})
+
+        lines = [
+            "DatasetInfo",
+            f"  assays      : {self._format_list(assays)}",
+            f"  chromosomes : {self._format_list(chromosomes)}",
+            f"  chromsizes  : {self._format_chromsizes(chromsizes)}",
+        ]
+        if extras:
+            lines.append("")
+            for key, value in extras.items():
+                if key == "groups" and isinstance(value, dict):
+                    lines.append("  groups")
+                    for group_name, labels in value.items():
+                        if isinstance(labels, dict):
+                            label_text = self._format_list([str(v) for v in labels.get("labels", [])])
+                            count_text = labels.get("n")
+                            suffix = f" ({count_text})" if count_text is not None else ""
+                            lines.append(f"    {group_name:<9}: {label_text}{suffix}")
+                        else:
+                            lines.append(f"    {group_name:<9}: {self._format_value(labels)}")
+                    continue
+                lines.append(f"  {key:<11} : {self._format_value(value)}")
+        for assay, assay_info in per_assay.items():
+            lines.append("")
+            lines.append(f"  {assay}")
+            if assay_info.get("n_samples") is not None:
+                lines.append(f"    n        : {assay_info.get('n_samples')}")
+            lines.append(
+                f"    samples   : {self._format_list(assay_info.get('sample_names', []))}"
+            )
+            lines.append(
+                f"    keys      : {self._format_list(assay_info.get('array_keys', []))}"
+            )
+            if assay_info.get("ips"):
+                lines.append(
+                    f"    ips       : {self._format_list(assay_info.get('ips', []))}"
+                )
+        return "\n".join(lines)
+
+    __str__ = __repr__
+
+
+class ObjectInfo(dict):
+    """Pretty-printable summary for xarray / pandas objects."""
+
+    @staticmethod
+    def _fmt(value) -> str:
+        if isinstance(value, dict):
+            return ", ".join(f"{k}={v}" for k, v in value.items())
+        if isinstance(value, (list, tuple)):
+            return ", ".join(str(v) for v in value)
+        return str(value)
+
+    def __repr__(self) -> str:
+        lines = ["ObjectInfo"]
+        for key, value in self.items():
+            lines.append(f"  {key:<10} : {self._fmt(value)}")
+        return "\n".join(lines)
+
+    __str__ = __repr__
+
+
+class GroupInfo(dict):
+    """Pretty-printable assay -> sample group mapping."""
+
+    @staticmethod
+    def _fmt_samples(samples: list[str]) -> str:
+        return ", ".join(samples)
+
+    def __repr__(self) -> str:
+        lines = ["GroupInfo"]
+        for assay, samples in self.items():
+            lines.append(f"  {assay:<10}: {self._fmt_samples(samples)}")
+        return "\n".join(lines)
+
+    __str__ = __repr__
+
+
+class NamedGroupInfo(dict):
+    """Pretty-printable mapping of group-set name -> GroupInfo."""
+
+    def __repr__(self) -> str:
+        lines = ["NamedGroupInfo"]
+        for name, groups in self.items():
+            lines.append(f"  {name}")
+            for label, samples in groups.items():
+                lines.append(f"    {label:<9}: {', '.join(samples)}")
+        return "\n".join(lines)
+
+    __str__ = __repr__
+
+
 # ---------------------------------------------------------------------------
 # Layout detection helpers
 # ---------------------------------------------------------------------------
@@ -72,6 +189,7 @@ class _PerSampleStore:
         self.assay = attrs.get("assay", "")
         self.sample = attrs.get("sample", path.stem)
         self.ip = attrs.get("ip", "")
+        self.stranded = attrs.get("stranded", "")
         self.chromsizes: dict[str, int] = {
             str(k): int(v) for k, v in attrs.get("chromsizes", {}).items()
         }
@@ -124,6 +242,8 @@ class QuantNadoDataset:
         self._genes_df: pd.DataFrame | None = None
         self._exons_df: pd.DataFrame | None = None
         self._subset_samples: list[str] | None = None
+        self._group_sets: dict[str, dict[str, list[str]]] = {}
+        self._last_group_name: str | None = None
 
         if self.path.is_dir() and not str(self.path).endswith(".zarr"):
             # Directory of per-sample zarrs
@@ -189,6 +309,8 @@ class QuantNadoDataset:
     def assays(self) -> list[str]:
         """Distinct biological assay types present (e.g. 'ATAC', 'RNA', 'METH')."""
         if self._combined:
+            if self._subset_samples is not None:
+                return sorted(set(a.upper() for a in self._get_assay_per_sample() if a))
             return sorted(set(s.upper() for s in self._combined_root.attrs.get("assay_types", [])))
         return sorted(set(s.assay.upper() for s in self._stores))
 
@@ -196,7 +318,19 @@ class QuantNadoDataset:
     def array_keys(self) -> list[str]:
         """All zarr data-variable names (e.g. 'atac', 'rna_fwd', 'coverage', 'AF')."""
         if self._combined:
-            return list(self._combined_root.attrs.get("array_keys", []))
+            all_keys = [str(k) for k in self._combined_root.attrs.get("array_keys", [])]
+            if self._subset_samples is None:
+                return all_keys
+
+            subset = set(self._subset_samples)
+            key_to_samples = {
+                str(k): {str(s) for s in v}
+                for k, v in dict(self._combined_root.attrs.get("key_to_samples", {})).items()
+            }
+            return [
+                key for key in all_keys
+                if key == "coverage" or bool(key_to_samples.get(key, set()) & subset)
+            ]
         keys: set[str] = set()
         for store in self._stores:
             keys.update(store.array_keys())
@@ -236,6 +370,16 @@ class QuantNadoDataset:
             return np.ones(len(self.sample_names), dtype=bool)
         return np.array([s.completed for s in self._stores], dtype=bool)
 
+    @property
+    def groups(self) -> GroupInfo:
+        """Assay-based sample groups for the current dataset view."""
+        return self.group_by("assay")
+
+    @property
+    def group_sets(self) -> dict[str, GroupInfo]:
+        """Cached named group sets for the current dataset view."""
+        return {name: GroupInfo(groups) for name, groups in self._group_sets.items()}
+
     def _get_assay_per_sample(self) -> list[str]:
         """Return assay type string for each sample, in sample_names order."""
         if self._combined:
@@ -257,6 +401,181 @@ class QuantNadoDataset:
                 result.append(store.assay.upper())
         return result
 
+    def _get_ip_per_sample(self) -> list[str]:
+        """Return IP / target label per sample, in sample_names order."""
+        def _fill_missing(values: list[str], assays: list[str], samples: list[str]) -> list[str]:
+            return [
+                value
+                if str(value).strip()
+                else QuantNadoDataset._infer_ip_from_sample_name(sample, assay)
+                for value, assay, sample in zip(values, assays, samples)
+            ]
+
+        if self._combined:
+            meta = self._combined_root.get("metadata")
+            if meta is not None and "ip" in meta:
+                raw = meta["ip"][:]
+                all_values = [s.decode() if isinstance(s, bytes) else str(s) for s in raw]
+                if self._subset_samples is not None:
+                    full_names = [str(s) for s in self._combined_root.attrs.get("sample_names", [])]
+                    name_to_idx = {s: i for i, s in enumerate(full_names)}
+                    samples = [s for s in self._subset_samples if s in name_to_idx]
+                    values = [all_values[name_to_idx[s]] for s in samples]
+                    assays = self._get_assay_per_sample()
+                    return _fill_missing(values, assays, samples)
+                return _fill_missing(all_values, self._get_assay_per_sample(), self.sample_names)
+            return _fill_missing(
+                [""] * len(self.sample_names),
+                self._get_assay_per_sample(),
+                self.sample_names,
+            )
+        result = []
+        for store in self._stores:
+            value = str(store.ip or "") or QuantNadoDataset._infer_ip_from_sample_name(
+                store.sample, store.assay
+            )
+            if store.viewpoints:
+                result.extend([value] * len(store.viewpoints))
+            else:
+                result.append(value)
+        return result
+
+    @staticmethod
+    def _infer_ip_from_sample_name(sample_name: str, assay_name: str) -> str:
+        """Best-effort fallback for missing IP metadata from assay-style sample names."""
+        assay_upper = str(assay_name or "").upper()
+        if assay_upper not in {"CHIP", "CUT&TAG", "CUTTAG", "CAT", "CUT&RUN", "CUTRUN"}:
+            return ""
+        sample = str(sample_name)
+        if "_" not in sample:
+            return ""
+        return sample.rsplit("_", 1)[-1]
+
+    def group_by(
+        self,
+        by: str = "assay",
+        *,
+        groups: "dict[str, list[str] | str] | None" = None,
+        match: str = "exact",
+        drop_empty: bool = True,
+        **named_groups: "dict[str, list[str] | str]",
+    ) -> "GroupInfo | NamedGroupInfo":
+        """Build sample groups from metadata or an explicit mapping.
+
+        Parameters
+        ----------
+        by:
+            Metadata field to group on. Currently supports ``"assay"``,
+            ``"ip"``, and ``"stranded"``.
+        groups:
+            Optional explicit label -> sample list mapping. When provided, this
+            takes precedence over ``by`` and is validated against the current
+            dataset view. With ``match="exact"`` (default), values are treated
+            as explicit sample names. With ``match="contains"``, string or
+            string-list values are treated as case-insensitive substrings to
+            search for in sample names.
+        match:
+            How to interpret ``groups`` values. One of ``"exact"`` or
+            ``"contains"``.
+        drop_empty:
+            If True (default), drop groups whose label is empty.
+        """
+        if named_groups:
+            result: dict[str, GroupInfo] = {}
+            for name, spec in named_groups.items():
+                self._last_group_name = str(name)
+                if isinstance(spec, str) and spec.lower() in {"assay", "ip", "stranded"}:
+                    result[str(name)] = self.group_by(
+                        by=spec,
+                        drop_empty=drop_empty,
+                    )
+                else:
+                    result[str(name)] = self.group_by(
+                        groups=spec,
+                        match=match,
+                        drop_empty=drop_empty,
+                        by="assay",
+                    )
+                self._last_group_name = str(name)
+            return NamedGroupInfo(result)
+
+        if groups is not None:
+            if isinstance(groups, str):
+                if groups.lower() in {"assay", "ip", "stranded"}:
+                    return self.group_by(by=groups, drop_empty=drop_empty)
+                raise ValueError(
+                    "group_by(groups=...) expects a mapping of label -> samples/patterns, "
+                    "or use a metadata shorthand like ip='ip'."
+                )
+            valid = set(self.sample_names)
+            grouped: dict[str, list[str]] = {}
+            if match not in {"exact", "contains"}:
+                raise ValueError("group_by(match=...) currently supports 'exact' or 'contains'")
+
+            for label, samples in groups.items():
+                if match == "exact":
+                    if isinstance(samples, str):
+                        requested = [samples]
+                    else:
+                        requested = [str(s) for s in samples]
+                    grouped[str(label)] = [str(s) for s in requested if str(s) in valid]
+                else:
+                    patterns = [samples] if isinstance(samples, str) else [str(s) for s in samples]
+                    patterns_lower = [p.lower() for p in patterns]
+                    grouped[str(label)] = [
+                        sample for sample in self.sample_names
+                        if any(pattern in sample.lower() for pattern in patterns_lower)
+                    ]
+            result = GroupInfo({k: v for k, v in grouped.items() if v})
+            cache_name = self._last_group_name or "group"
+            self._group_sets[cache_name] = {k: list(v) for k, v in result.items()}
+            return result
+
+        key = by.lower()
+        if key == "assay":
+            values = self._get_assay_per_sample()
+            labels = [str(v).upper() if v else "" for v in values]
+        elif key == "ip":
+            values = self._get_ip_per_sample()
+            labels = [str(v) for v in values]
+        elif key == "stranded":
+            values = self._get_stranded_per_sample()
+            labels = [str(v) for v in values]
+        else:
+            raise ValueError("group_by(by=...) currently supports 'assay', 'ip', or 'stranded'")
+
+        grouped: dict[str, list[str]] = {}
+        for sample, label in zip(self.sample_names, labels):
+            if drop_empty and not label:
+                continue
+            grouped.setdefault(label or "UNKNOWN", []).append(sample)
+        result = GroupInfo(grouped)
+        self._group_sets[key] = {k: list(v) for k, v in result.items()}
+        self._last_group_name = key
+        return result
+
+    def _get_stranded_per_sample(self) -> list[str]:
+        """Return strandedness string per sample (``R``/``F``/``""``)."""
+        if self._combined:
+            meta = self._combined_root.get("metadata")
+            if meta is not None and "stranded" in meta:
+                raw = meta["stranded"][:]
+                all_values = [s.decode() if isinstance(s, bytes) else str(s) for s in raw]
+                if self._subset_samples is not None:
+                    full_names = [str(s) for s in self._combined_root.attrs.get("sample_names", [])]
+                    name_to_idx = {s: i for i, s in enumerate(full_names)}
+                    return [all_values[name_to_idx[s]] for s in self._subset_samples if s in name_to_idx]
+                return all_values
+            return [""] * len(self.sample_names)
+        result = []
+        for store in self._stores:
+            value = str(store.stranded or "")
+            if store.viewpoints:
+                result.extend([value] * len(store.viewpoints))
+            else:
+                result.append(value)
+        return result
+
     # ------------------------------------------------------------------
     # Subset
     # ------------------------------------------------------------------
@@ -265,8 +584,10 @@ class QuantNadoDataset:
         self,
         assay: "str | Sequence[str] | None" = None,
         samples: "str | Sequence[str] | None" = None,
+        ip: "str | Sequence[str] | None" = None,
+        group: "str | Sequence[str] | dict[str, str | Sequence[str]] | None" = None,
     ) -> "QuantNadoDataset":
-        """Return a new QuantNadoDataset restricted to the specified assay/samples.
+        """Return a new QuantNadoDataset restricted to the specified filters.
 
         No data is copied — the returned object shares the same zarr handles.
         Use this to avoid repeating ``assay=`` or ``samples=`` on every call::
@@ -280,14 +601,26 @@ class QuantNadoDataset:
         assay:
             One or more assay types (e.g. ``"RNA"``, ``["ATAC", "ChIP"]``).
         samples:
-            Explicit sample name(s) — takes precedence over *assay*.
+            Explicit sample name(s).
+        ip:
+            One or more IP / target labels (e.g. ``"MLL"``, ``["H3K27ac", "TET2"]``).
+        group:
+            Labels from cached group sets. Pass a string / list to use the most
+            recent :meth:`group_by` namespace, or a mapping like
+            ``{"treatment": "treated", "replicate": "rep1"}``.
 
         Returns
         -------
         QuantNadoDataset
             A lightweight view over the same stores, filtered to the resolved samples.
         """
-        resolved = self._resolve_samples(assay=assay, samples=samples)
+        resolved = QuantNadoDataset._resolve_samples(
+            self,
+            assay=assay,
+            samples=samples,
+            ip=ip,
+            group=group,
+        )
 
         new: QuantNadoDataset = object.__new__(QuantNadoDataset)
         new.path = self.path
@@ -295,6 +628,8 @@ class QuantNadoDataset:
         new._combined_root = self._combined_root
         new._genes_df = self._genes_df
         new._exons_df = self._exons_df
+        new._group_sets = {k: dict(v) for k, v in self._group_sets.items()}
+        new._last_group_name = self._last_group_name
 
         if self._combined:
             new._stores = []
@@ -526,7 +861,8 @@ class QuantNadoDataset:
                 raise ValueError(f"Assay '{assay}' not found. Available: {available}")
             ds = ds.isel(sample=assay_mask)
 
-        return ds
+        stranded_by_sample = dict(zip(self.sample_names, self._get_stranded_per_sample()))
+        return _orient_rna_strands(ds, stranded_by_sample)
 
     def _sel_per_sample(
         self, chrom: str, s0: int, e0: int, position_coords: np.ndarray
@@ -754,11 +1090,14 @@ class QuantNadoDataset:
         # Load and extract features
         gtf = load_gtf(GTF_FILE)
 
+        _promoter_upstream = upstream if upstream is not None else 1000
+        _promoter_downstream = downstream if downstream is not None else 200
+
         if feature_type == "promoter":
             features_pr = extract_promoters(
                 gtf,
-                upstream=upstream if upstream is not None else 1000,
-                downstream=downstream if downstream is not None else 200,
+                upstream=_promoter_upstream,
+                downstream=_promoter_downstream,
                 anchor_feature=anchor_feature,
             )
         else:
@@ -774,48 +1113,56 @@ class QuantNadoDataset:
         if "End" in features_df.columns:
             features_df = features_df.rename(columns={"End": "end"})
 
-        # Apply fixed-width or upstream/downstream windowing
         strand_col = next((c for c in ("Strand", "strand") if c in features_df.columns), None)
         strands = features_df[strand_col].fillna("+").astype(str).values if strand_col else None
-        if anchor == "start":
-            anchor_pos = features_df["start"].values.copy()
-            if strands is not None:
-                minus_mask = strands == "-"
-                anchor_pos[minus_mask] = features_df.loc[minus_mask, "end"].values
-        elif anchor == "end":
-            anchor_pos = features_df["end"].values.copy()
-            if strands is not None:
-                plus_mask = strands == "+"
-                minus_mask = strands == "-"
-                anchor_pos[plus_mask] = features_df.loc[plus_mask, "end"].values
-                anchor_pos[minus_mask] = features_df.loc[minus_mask, "start"].values
-        elif anchor == "midpoint":
-            anchor_pos = ((features_df["start"].values + features_df["end"].values) // 2).astype(int)
-        else:
-            raise ValueError(f"Unknown anchor: {anchor}")
 
-        if upstream is not None or downstream is not None:
-            left = upstream if upstream is not None else 0
-            right = downstream if downstream is not None else 0
-            features_df["start"] = anchor_pos - left
-            features_df["end"] = anchor_pos + right
-            window_upstream = left
-            window_downstream = right
-        elif fixed_width is not None:
-            half_width = fixed_width // 2
-            features_df["start"] = anchor_pos - half_width
-            features_df["end"] = anchor_pos + (fixed_width - half_width)
-            window_upstream = half_width
-            window_downstream = fixed_width - half_width
+        if feature_type == "promoter":
+            # extract_promoters already sets start = TSS - upstream, end = TSS + downstream
+            # for all strands, so no anchor re-computation or re-windowing is needed.
+            window_upstream = _promoter_upstream
+            window_downstream = _promoter_downstream
         else:
-            window_upstream = None
-            window_downstream = None
+            # Apply fixed-width or upstream/downstream windowing around the chosen anchor
+            if anchor == "start":
+                anchor_pos = features_df["start"].values.copy()
+                if strands is not None:
+                    minus_mask = strands == "-"
+                    anchor_pos[minus_mask] = features_df.loc[minus_mask, "end"].values
+            elif anchor == "end":
+                anchor_pos = features_df["end"].values.copy()
+                if strands is not None:
+                    plus_mask = strands == "+"
+                    minus_mask = strands == "-"
+                    anchor_pos[plus_mask] = features_df.loc[plus_mask, "end"].values
+                    anchor_pos[minus_mask] = features_df.loc[minus_mask, "start"].values
+            elif anchor == "midpoint":
+                anchor_pos = ((features_df["start"].values + features_df["end"].values) // 2).astype(int)
+            else:
+                raise ValueError(f"Unknown anchor: {anchor}")
 
-        # Convert to 1-based intervals
-        intervals = [
-            (row["chrom"], int(row["start"]) + 1, int(row["end"]))
-            for _, row in features_df.iterrows()
-        ]
+            if upstream is not None or downstream is not None:
+                left = upstream if upstream is not None else 0
+                right = downstream if downstream is not None else 0
+                features_df["start"] = anchor_pos - left
+                features_df["end"] = anchor_pos + right
+                window_upstream = left
+                window_downstream = right
+            elif fixed_width is not None:
+                half_width = fixed_width // 2
+                features_df["start"] = anchor_pos - half_width
+                features_df["end"] = anchor_pos + (fixed_width - half_width)
+                window_upstream = half_width
+                window_downstream = fixed_width - half_width
+            else:
+                window_upstream = None
+                window_downstream = None
+
+        # Convert to 1-based intervals (vectorised — avoids slow iterrows)
+        intervals = list(zip(
+            features_df["chrom"].tolist(),
+            (features_df["start"].values + 1).tolist(),
+            features_df["end"].values.tolist(),
+        ))
 
         # Extract signal into bins
         signal_array = extract_signal_into_bins(
@@ -857,6 +1204,229 @@ class QuantNadoDataset:
         )
 
         return da
+
+    # ------------------------------------------------------------------
+    # Peak calling
+    # ------------------------------------------------------------------
+
+    def call_peaks(
+        self,
+        output_dir: "str | Path",
+        method: "str | None" = None,
+        assay: "str | None" = None,
+        **kwargs,
+    ) -> "dict[str, Path]":
+        """Call peaks for all completed samples in the dataset.
+
+        Parameters
+        ----------
+        output_dir : str or Path
+            Directory where per-sample BED files are written.
+        method : {"quantile", "seacr", "lanceotron"}, optional
+            Peak-calling algorithm.  Auto-selected from the biological assay
+            type when omitted:
+
+            * ATAC or unknown → ``"quantile"``
+            * CUT&TAG / CUT&RUN → ``"seacr"``
+            * ChIP → ``"lanceotron"``
+        assay : str, optional
+            Zarr array key to call peaks on (e.g. ``"coverage"``).
+            Defaults to ``"coverage"`` when present in the store, otherwise
+            the first array key.
+        **kwargs
+            Passed through to the underlying caller.  Common options:
+
+            * ``blacklist_file`` – BED path of excluded regions (all methods)
+            * ``quantile`` – threshold quantile (quantile method)
+            * ``fdr_threshold`` – FDR cutoff (seacr method)
+            * ``score_threshold`` – minimum classification score (lanceotron)
+            * ``n_workers`` – parallel workers (seacr / lanceotron)
+
+        Returns
+        -------
+        dict[str, Path]
+            Sample name → path to the output BED file.
+
+        Examples
+        --------
+        >>> beds = qn.subset(assay="ATAC").call_peaks("peaks/atac/")
+        >>> beds = qn.subset(assay="CUT&TAG").call_peaks("peaks/cat/", method="seacr")
+        """
+        from pathlib import Path as _Path
+        from ..peak_calling.call_quantile_peaks import call_quantile_peaks_from_zarr
+        from ..peak_calling.call_seacr_peaks import call_seacr_peaks_from_zarr
+        from ..peak_calling.call_lanceotron_peaks import call_lanceotron_peaks_from_zarr
+
+        output_dir = _Path(output_dir)
+
+        # Auto-select calling method from biological assay types
+        if method is None:
+            bio_assays = {a.upper() for a in self.assays}
+            if bio_assays & {"CUT&TAG", "CUTTAG", "CAT", "CUT&RUN", "CUTRUN"}:
+                method = "seacr"
+            elif bio_assays & {"CHIP"}:
+                method = "lanceotron"
+            else:
+                method = "quantile"
+            logger.info(f"Auto-selected peak-calling method '{method}' for assays {sorted(bio_assays)}")
+
+        def _resolve_peak_tasks(
+            assay_value: "str | Sequence[str] | None",
+        ) -> "list[tuple[str, list[str] | None, str]]":
+            array_keys = self.array_keys
+            if assay_value is None:
+                default_key = "coverage" if "coverage" in array_keys else (array_keys[0] if array_keys else None)
+                return [(default_key, None, default_key)] if default_key is not None else []
+
+            requested = [assay_value] if isinstance(assay_value, str) else list(assay_value)
+            resolved: list[tuple[str, list[str] | None, str]] = []
+            assay_by_sample = dict(zip(self.sample_names, self._get_assay_per_sample()))
+            key_to_samples: dict[str, list[str]]
+            if self._combined:
+                key_to_samples = {
+                    str(k): [str(s) for s in v]
+                    for k, v in dict(self._combined_root.attrs.get("key_to_samples", {})).items()
+                }
+            else:
+                key_to_samples = {}
+                for store in self._stores:
+                    samples_for_store = (
+                        [f"{store.sample}_{vp}" for vp in store.viewpoints]
+                        if store.viewpoints else [store.sample]
+                    )
+                    for key in store.array_keys():
+                        key_to_samples.setdefault(key, []).extend(samples_for_store)
+
+            for raw in requested:
+                value = str(raw)
+                matched_key = next((k for k in array_keys if k.lower() == value.lower()), None)
+                if matched_key is not None:
+                    samples_for_key = key_to_samples.get(matched_key)
+                    task = (matched_key, samples_for_key, matched_key)
+                    if task not in resolved:
+                        resolved.append(task)
+                    continue
+
+                assay_upper = value.upper()
+                assay_samples = self._resolve_samples(assay=assay_upper)
+                explicit_keys: list[str] = []
+                for key in array_keys:
+                    samples_for_key = key_to_samples.get(key, [])
+                    if any(assay_by_sample.get(sample, "").upper() == assay_upper for sample in samples_for_key):
+                        explicit_keys.append(key)
+
+                if explicit_keys:
+                    for key in explicit_keys:
+                        samples_for_key = [
+                            sample for sample in key_to_samples.get(key, [])
+                            if assay_by_sample.get(sample, "").upper() == assay_upper
+                        ]
+                        label = assay_upper.lower() if key == "coverage" else key
+                        task = (key, samples_for_key or None, label)
+                        if task not in resolved:
+                            resolved.append(task)
+                elif assay_samples:
+                    coverage_key = "coverage" if "coverage" in array_keys else None
+                    if coverage_key is not None:
+                        label = assay_upper.lower()
+                        task = (coverage_key, assay_samples, label)
+                        if task not in resolved:
+                            resolved.append(task)
+
+            if not resolved:
+                raise ValueError(
+                    f"Could not resolve assay={assay_value!r} to any peak-callable array keys. "
+                    f"Available assays: {self.assays}; available array keys: {self.array_keys}"
+                )
+            return resolved
+
+        _dispatch = {
+            "quantile":    call_quantile_peaks_from_zarr,
+            "seacr":       call_seacr_peaks_from_zarr,
+            "lanceotron":  call_lanceotron_peaks_from_zarr,
+        }
+        if method not in _dispatch:
+            raise ValueError(
+                f"Unknown method {method!r}. Choose from: {sorted(_dispatch)}"
+            )
+
+        tasks = _resolve_peak_tasks(assay)
+        bed_paths: list[str] = []
+        multi_key = len(tasks) > 1
+        for array_key, selected_samples, label in tasks:
+            key_output_dir = output_dir / label if multi_key else output_dir
+            bed_paths.extend(
+                _dispatch[method](
+                    self.path, key_output_dir, assay=array_key, samples=selected_samples, **kwargs
+                )
+            )
+
+        return {_Path(p).stem: _Path(p) for p in bed_paths}
+
+    def peak_overlap(
+        self,
+        peak_sets: "dict[str, str | Path]",
+    ) -> "pd.DataFrame":
+        """Compute overlap statistics across 2–4 peak sets.
+
+        Parameters
+        ----------
+        peak_sets : dict[str, str or Path]
+            Label → BED file path.
+
+        Returns
+        -------
+        pd.DataFrame
+            Rows are exclusive Venn regions; columns are ``combination``,
+            ``n_peaks``, and ``pct_of_first``.
+
+        Examples
+        --------
+        >>> counts = qn.peak_overlap({
+        ...     "ATAC":    "peaks/atac/ATAC-SEM-1.bed",
+        ...     "CUT&TAG": "peaks/cat/CAT-HSC_H3K27ac.bed",
+        ... })
+        """
+        from .peaks import overlap_peaks
+        return overlap_peaks(peak_sets)
+
+    def venn_peaks(
+        self,
+        peak_sets: "dict[str, str | Path]",
+        ax: "plt.Axes | None" = None,
+        title: "str | None" = None,
+        colors: "list[str] | None" = None,
+        alpha: float = 0.50,
+        figsize: "tuple[float, float]" = (5.5, 5.5),
+    ) -> "plt.Axes":
+        """Venn diagram for 2 or 3 peak sets.
+
+        Parameters
+        ----------
+        peak_sets : dict[str, str or Path]
+            Label → BED file path.  Must have exactly 2 or 3 entries.
+        ax : matplotlib.axes.Axes, optional
+        title : str, optional
+        colors : list of str, optional
+        alpha : float
+        figsize : tuple
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+
+        Examples
+        --------
+        >>> ax = qn.venn_peaks(
+        ...     {"ATAC": "peaks/atac/SEM-1.bed", "ChIP": "peaks/chip/SEM-1.bed"},
+        ...     title="Peak overlap",
+        ... )
+        """
+        from .peaks import venn_plot
+        return venn_plot(
+            peak_sets, ax=ax, title=title,
+            colors=colors, alpha=alpha, figsize=figsize,
+        )
 
     # ------------------------------------------------------------------
     # Combine
@@ -1014,15 +1584,19 @@ class QuantNadoDataset:
         completed_list: list[bool] = []
         total_reads_list: list[int] = []
         assay_list: list[str] = []
+        ip_list: list[str] = []
         mean_rl_list: list[float] = []
         sparsity_list: list[float] = []
+        stranded_list: list[str] = []
         for s in src_ds._stores:
             n = len(s.viewpoints) if s.viewpoints else 1
             completed_list.extend([s.completed] * n)
             total_reads_list.extend([s.total_reads] * n)
             assay_list.extend([s.assay.upper()] * n)
+            ip_list.extend([str(s.ip or "")] * n)
             mean_rl_list.extend([s.mean_read_length] * n)
             sparsity_list.extend([s.sparsity] * n)
+            stranded_list.extend([str(s.stranded or "")] * n)
         completed = np.array(completed_list, dtype=bool)
         meta_grp.require_array("completed", shape=(len(all_samples),), dtype=bool, overwrite=True)
         meta_grp["completed"][:] = completed
@@ -1032,10 +1606,18 @@ class QuantNadoDataset:
             "assay", shape=(len(all_samples),), dtype="str", overwrite=True
         )
         assay_arr[:] = assay_list
+        ip_arr = meta_grp.require_array(
+            "ip", shape=(len(all_samples),), dtype="str", overwrite=True
+        )
+        ip_arr[:] = ip_list
         meta_grp.require_array("mean_read_length", shape=(len(all_samples),), dtype=np.float32, overwrite=True)
         meta_grp["mean_read_length"][:] = np.array(mean_rl_list, dtype=np.float32)
         meta_grp.require_array("sparsity", shape=(len(all_samples),), dtype=np.float32, overwrite=True)
         meta_grp["sparsity"][:] = np.array(sparsity_list, dtype=np.float32)
+        stranded_arr = meta_grp.require_array(
+            "stranded", shape=(len(all_samples),), dtype="str", overwrite=True
+        )
+        stranded_arr[:] = stranded_list
 
         out_root.attrs.update({
             "assay_types": all_assay_types,
@@ -1058,8 +1640,10 @@ class QuantNadoDataset:
         self,
         assay: "str | Sequence[str] | None" = None,
         samples: "str | Sequence[str] | None" = None,
+        ip: "str | Sequence[str] | None" = None,
+        group: "str | Sequence[str] | dict[str, str | Sequence[str]] | None" = None,
     ) -> "list[str]":
-        """Return sample names after applying assay/samples filters."""
+        """Return sample names after applying assay/sample/IP/group filters."""
         def _as_list(value):
             if value is None:
                 return None
@@ -1071,23 +1655,76 @@ class QuantNadoDataset:
 
         sample_list = _as_list(samples)
         assay_list = _as_list(assay)
+        ip_list = _as_list(ip)
+        resolved = list(self.sample_names)
 
         if sample_list is not None:
-            resolved = [s for s in sample_list if s in self.sample_names]
-            if not resolved:
+            requested = [s for s in sample_list if s in self.sample_names]
+            if not requested:
                 raise ValueError(f"No requested samples found. Available: {self.sample_names}")
-            return resolved
+            requested_set = set(requested)
+            resolved = [s for s in resolved if s in requested_set]
+
         if assay_list is not None:
             assay_upper = {a.upper() for a in assay_list}
-            assay_per_sample = self._get_assay_per_sample()
-            resolved = [
-                s for s, a in zip(self.sample_names, assay_per_sample)
-                if a.upper() in assay_upper
-            ]
+            assay_per_sample = dict(zip(self.sample_names, self._get_assay_per_sample()))
+            resolved = [s for s in resolved if assay_per_sample.get(s, "").upper() in assay_upper]
             if not resolved:
                 raise ValueError(f"No samples found for assay='{assay}'. Available assays: {self.assays}")
-            return resolved
-        return list(self.sample_names)
+
+        if ip_list is not None:
+            ip_upper = {v.upper() for v in ip_list}
+            ip_per_sample = dict(zip(self.sample_names, self._get_ip_per_sample()))
+            resolved = [s for s in resolved if ip_per_sample.get(s, "").upper() in ip_upper]
+            if not resolved:
+                available = sorted({v for v in self._get_ip_per_sample() if str(v).strip()})
+                raise ValueError(f"No samples found for ip='{ip}'. Available IPs: {available}")
+
+        if group is not None:
+            if isinstance(group, dict):
+                group_requests = {
+                    str(name): _as_list(labels) or []
+                    for name, labels in group.items()
+                }
+            else:
+                if self._last_group_name is None:
+                    raise ValueError(
+                        "No cached group namespace found. Call qn.group_by(...) first, or pass group={'name': 'label'}."
+                    )
+                group_requests = {self._last_group_name: _as_list(group) or []}
+
+            for group_name, group_labels in group_requests.items():
+                group_set = self._group_sets.get(group_name)
+                if group_set is None:
+                    raise ValueError(
+                        f"Unknown group set '{group_name}'. Available group sets: {sorted(self._group_sets)}"
+                    )
+                unknown = [label for label in group_labels if label not in group_set]
+                if unknown:
+                    raise ValueError(
+                        f"Unknown group(s) for '{group_name}': {unknown}. Available: {sorted(group_set)}"
+                    )
+                allowed = {
+                    sample
+                    for label in group_labels
+                    for sample in group_set.get(label, [])
+                }
+                before = list(resolved)
+                resolved = [s for s in resolved if s in allowed]
+                if not resolved:
+                    available_labels = sorted(group_set)
+                    available_from_current = sorted(set(before) & {
+                        sample for samples in group_set.values() for sample in samples
+                    })
+                    raise ValueError(
+                        "No samples found after applying group filter "
+                        f"'{group_name}={group_labels}'. "
+                        f"Samples remaining before this step: {before}. "
+                        f"Available labels for '{group_name}': {available_labels}. "
+                        f"Samples in this group namespace that overlap the current filters: {available_from_current}."
+                    )
+
+        return resolved
 
     def _resolve_modalities(
         self,
@@ -1192,12 +1829,13 @@ class QuantNadoDataset:
         bed_file: "str | None" = None,
         ranges_df=None,
         feature_type: str = "gene",
+        engine: str = "signal",
         assay: "str | Sequence[str] | None" = None,
         samples: "str | Sequence[str] | None" = None,
         modality: "str | Sequence[str] | None" = None,
         **kwargs,
     ):
-        """Count reads over genomic features (DESeq2-compatible matrix).
+        """Count or quantify genomic features into a feature-by-sample matrix.
 
         Parameters
         ----------
@@ -1209,6 +1847,14 @@ class QuantNadoDataset:
             Pre-parsed ranges DataFrame.
         feature_type:
             GTF feature level (default ``"gene"``).
+        engine:
+            Counting backend.
+
+            - ``"signal"`` (default): quantify stored QuantNado signal over features.
+              This is coverage/signal-derived summarisation and is useful for
+              exploratory matrices, clustering, and general signal analysis.
+            - ``"bam"``: reserved for future BAM-backed, featureCounts-style
+              read/fragement assignment. Not implemented yet.
         assay:
             Restrict to samples of this assay type.
         samples:
@@ -1221,6 +1867,16 @@ class QuantNadoDataset:
         tuple[pd.DataFrame, pd.DataFrame]
             (counts_df, feature_metadata)
         """
+        engine = engine.lower()
+        if engine != "signal":
+            if engine == "bam":
+                raise NotImplementedError(
+                    "count_features(engine='bam') is not implemented yet. "
+                    "Use quantify_signal(...) or count_features(engine='signal') "
+                    "for stored-signal quantification today."
+                )
+            raise ValueError("engine must be either 'signal' or 'bam'")
+
         from .counts import count_features as _count_features
 
         resolved = self._resolve_samples(assay=assay, samples=samples)
@@ -1234,6 +1890,60 @@ class QuantNadoDataset:
             modality=self._resolve_modalities(modality) if modality is not None else None,
             **kwargs,
         )
+
+    def quantify_signal(
+        self,
+        gtf_file: "str | None" = None,
+        bed_file: "str | None" = None,
+        ranges_df=None,
+        feature_type: str = "gene",
+        assay: "str | Sequence[str] | None" = None,
+        samples: "str | Sequence[str] | None" = None,
+        modality: "str | Sequence[str] | None" = None,
+        return_metadata: bool = True,
+        **kwargs,
+    ):
+        """Quantify stored signal over genomic features.
+
+        This is the explicit signal-based alternative to BAM-backed counting.
+        Internally it reuses the current ``count_features(engine="signal")``
+        implementation and is intended for exploratory analysis, clustering,
+        PCA, and assay-agnostic feature summarisation.
+
+        Parameters
+        ----------
+        gtf_file, bed_file, ranges_df, feature_type:
+            Same feature selection inputs accepted by :meth:`count_features`.
+        assay:
+            Restrict to samples of this assay type.
+        samples:
+            Explicit sample names (overrides *assay*).
+        modality:
+            Concrete zarr array key to quantify, for example ``"coverage"``
+            or ``"rna_fwd"``.
+        return_metadata:
+            If True (default), return ``(matrix, feature_metadata)``.
+            If False, return only the quantified matrix.
+
+        Returns
+        -------
+        pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]
+            Feature-by-sample quantified matrix, optionally with aligned
+            feature metadata.
+        """
+        kwargs.setdefault("integerize", False)
+        matrix, feature_metadata = self.count_features(
+            gtf_file=gtf_file,
+            bed_file=bed_file,
+            ranges_df=ranges_df,
+            feature_type=feature_type,
+            engine="signal",
+            assay=assay,
+            samples=samples,
+            modality=modality,
+            **kwargs,
+        )
+        return (matrix, feature_metadata) if return_metadata else matrix
 
     # ------------------------------------------------------------------
     # Normalisation
@@ -1605,6 +2315,82 @@ class QuantNadoDataset:
         """Compatibility alias for :meth:`normalise` with ``data=None``."""
         return self.normalise(method=method, library_sizes=library_sizes)
 
+    @property
+    def info(self) -> DatasetInfo:
+        """Concise dataset summary with notebook-friendly representation."""
+        group_summary = {
+            name: {
+                "labels": list(groups.keys()),
+                "n": len(groups),
+            }
+            for name, groups in self._group_sets.items()
+            if groups
+        }
+        summary = DatasetInfo({
+            "assays": list(self.assays),
+            "chromosomes": list(self.chromosomes),
+            "chromsizes": dict(self.chromsizes),
+            "extras": {
+                "layout": "combined" if self._combined else "per-sample",
+                "path": str(self.path),
+                "subset": bool(self._subset_samples is not None),
+                "groups": group_summary,
+            },
+            "per_assay": {},
+        })
+        if self._subset_samples is not None:
+            summary["extras"]["subset_samples"] = list(self._subset_samples)
+
+        per_assay: dict[str, dict[str, list[str]]] = {}
+        for assay in self.assays:
+            assay_ds = self.subset(assay=assay)
+            ips = []
+            if hasattr(assay_ds, "_get_ip_per_sample"):
+                ips = [
+                    ip for ip in dict.fromkeys(assay_ds._get_ip_per_sample()) if str(ip).strip()
+                ]
+            assay_summary = {
+                "n_samples": len(assay_ds.sample_names),
+                "sample_names": list(assay_ds.sample_names),
+                "array_keys": list(assay_ds.array_keys),
+                "ips": ips,
+            }
+            per_assay[assay] = assay_summary
+
+        summary["per_assay"] = per_assay
+        return summary
+
+    def info_of(self, obj) -> ObjectInfo:
+        """Return a compact summary for xarray / pandas objects."""
+        if isinstance(obj, xr.DataArray):
+            name = obj.name or "<unnamed>"
+            return ObjectInfo({
+                "type": "DataArray",
+                "name": name,
+                "dims": list(obj.dims),
+                "sizes": {k: int(v) for k, v in obj.sizes.items()},
+                "dtype": str(obj.dtype),
+                "coords": list(obj.coords),
+            })
+        if isinstance(obj, xr.Dataset):
+            return ObjectInfo({
+                "type": "Dataset",
+                "dims": list(obj.dims),
+                "sizes": {k: int(v) for k, v in obj.sizes.items()},
+                "data_vars": list(obj.data_vars),
+                "coords": list(obj.coords),
+            })
+        if isinstance(obj, pd.DataFrame):
+            return ObjectInfo({
+                "type": "DataFrame",
+                "shape": list(obj.shape),
+                "columns": list(obj.columns),
+                "index_name": obj.index.name,
+            })
+        raise TypeError(
+            "info_of(...) expects an xarray DataArray, xarray Dataset, or pandas DataFrame"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Plotnado sub-store adapters (used by QuantNadoDataset.coverage / .methylation / .variants)
@@ -1624,6 +2410,43 @@ def _parse_plotnado_region(region: str) -> "tuple[str, int, int]":
     chrom, coords = region.split(":")
     start, end = map(int, coords.replace(",", "").split("-"))
     return chrom, start, end
+
+
+def _orient_rna_strands(
+    ds: xr.Dataset,
+    stranded_by_sample: dict[str, str],
+) -> xr.Dataset:
+    """Present RNA strands in intuitive transcript orientation.
+
+    Public xarray views should expose ``rna_fwd`` / ``rna_rev`` as forward- and
+    reverse-transcript signal respectively. Reverse-stranded libraries therefore
+    need their stored arrays swapped on read.
+    """
+    if "rna_fwd" not in ds.data_vars or "rna_rev" not in ds.data_vars or "sample" not in ds.dims:
+        return ds
+
+    sample_names = [
+        s.decode() if isinstance(s, bytes) else str(s)
+        for s in ds.coords["sample"].values
+    ]
+    reverse_samples = {sample for sample in sample_names if stranded_by_sample.get(sample, "") == "R"}
+    if not reverse_samples:
+        return ds
+
+    fwd_parts = []
+    rev_parts = []
+    for sample in sample_names:
+        if sample in reverse_samples:
+            fwd_parts.append(ds["rna_rev"].sel(sample=[sample]))
+            rev_parts.append(ds["rna_fwd"].sel(sample=[sample]))
+        else:
+            fwd_parts.append(ds["rna_fwd"].sel(sample=[sample]))
+            rev_parts.append(ds["rna_rev"].sel(sample=[sample]))
+
+    remapped = ds.copy()
+    remapped["rna_fwd"] = xr.concat(fwd_parts, dim="sample")
+    remapped["rna_rev"] = xr.concat(rev_parts, dim="sample")
+    return remapped
 
 
 class _PlotnadoCoverageAdapter:
@@ -1732,6 +2555,18 @@ class NormalisedQuantNadoDataset:
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
 
+    @property
+    def info(self) -> DatasetInfo:
+        """Dataset summary annotated with normalisation state."""
+        summary = DatasetInfo(self._inner.info)
+        extras = dict(summary.get("extras", {}))
+        extras.update({
+            "normalised": True,
+            "normalise_method": self._method,
+        })
+        summary["extras"] = extras
+        return summary
+
     def _normalise_data(self, data):
         return self._inner.normalise(
             data,
@@ -1739,6 +2574,42 @@ class NormalisedQuantNadoDataset:
             library_sizes=self._lib_sizes,
             feature_lengths=self._feature_lengths,
         )
+
+    def count_features(self, *args, **kwargs):
+        """Count features on raw signal then apply normalisation to the matrix."""
+        # Disable integerize by default — normalised values are floats
+        kwargs.setdefault("integerize", False)
+        counts_df, feature_metadata = self._inner.count_features(*args, **kwargs)
+        feature_lengths = feature_metadata["range_length"] if "range_length" in feature_metadata.columns else None
+        normalised_df = self._inner.normalise(
+            counts_df,
+            method=self._method,
+            library_sizes=self._lib_sizes,
+            feature_lengths=feature_lengths if self._method in ("rpkm", "tpm") else None,
+        )
+        return normalised_df, feature_metadata
+
+    def quantify_signal(self, *args, **kwargs):
+        """Quantify stored signal on raw data then apply normalisation to the matrix."""
+        kwargs.setdefault("integerize", False)
+        kwargs.setdefault("return_metadata", True)
+        result = self._inner.quantify_signal(*args, **kwargs)
+        if isinstance(result, tuple):
+            matrix, feature_metadata = result
+        else:
+            matrix, feature_metadata = result, None
+        feature_lengths = (
+            feature_metadata["range_length"]
+            if feature_metadata is not None and "range_length" in feature_metadata.columns
+            else None
+        )
+        normalised_df = self._inner.normalise(
+            matrix,
+            method=self._method,
+            library_sizes=self._lib_sizes,
+            feature_lengths=feature_lengths if self._method in ("rpkm", "tpm") else None,
+        )
+        return (normalised_df, feature_metadata) if feature_metadata is not None else normalised_df
 
     def subset(
         self,

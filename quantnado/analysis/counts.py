@@ -34,13 +34,13 @@ def count_features(
     include_incomplete: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Compute per-feature summed counts suitable for DESeq2.
+    Compute per-feature summed counts suitable for DESeq2-like workflows.
 
     Parameters
     ----------
-    dataset : BamStore
+    dataset : QuantNadoDataset | QuantNado | BamStore
         Source dataset providing per-chromosome signal arrays. Sample names and
-        completion status are read from the store.
+        completion status are read from the current QuantNado analysis object.
     ranges_df : pandas.DataFrame, optional
         Table containing 0-based end-exclusive ranges. Highest priority if provided.
     bed_file : str, optional
@@ -80,10 +80,12 @@ def count_features(
     integerize : bool
         If True, round sums to int64 for DESeq2 compatibility.
     assay : str, optional
-        If set, limit columns to samples matching this assay using attrs['assay_by_sample'] when available.
+        Restrict counting to samples of the given assay type, for example ``"RNA"``.
     samples : list of str, optional
-        If set, count only these specific sample names (e.g., ["RNA-SEM-1", "RNA-SEM-2"]).
+        If set, count only these specific sample names.
         If both assay and samples are provided, samples takes precedence.
+    modality : str, optional
+        Concrete array key to count from, for example ``"coverage"`` or ``"rna_fwd"``.
     filter_chromosomes : bool, default True
         Keep only canonical chromosomes (``chr*`` without underscores).
     integerize : bool
@@ -107,7 +109,7 @@ def count_features(
         if gtf_df is None and gtf_file is None:
             raise TypeError("Provide ranges_df, bed_file, or gtf_df/gtf_file")
         gtf_source = (
-            gtf_df if gtf_df is not None else load_gtf(gtf_file, feature_types=None)
+            gtf_df if gtf_df is not None else load_gtf(gtf_file, feature_types=[feature_type])
         )
         
         # Extract feature ranges and convert from PyRanges to DataFrame

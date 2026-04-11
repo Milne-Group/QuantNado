@@ -16,8 +16,13 @@ Array keys:
     ATAC                 → "atac"
     ChIP + ip=H3K27ac   → "chip_h3k27ac"
     CUT&TAG + ip=MLLN   → "cat_mlln"
-    RNA (stranded)       → "rna_fwd", "rna_rev"
-    MCC                  → "viewpoint_{viewpoint}" per viewpoint
+    RNA (stranded)      → "rna_fwd", "rna_rev"
+    MCC                 → "viewpoint_{viewpoint}" per viewpoint
+
+For stranded RNA, ``rna_fwd`` and ``rna_rev`` always represent genomic
+forward- and reverse-strand coverage respectively. Library strandedness
+(``R``/``F``) is applied later during feature counting, not while writing the
+coverage arrays.
 """
 
 from __future__ import annotations
@@ -313,18 +318,21 @@ class BamStore:
         read_filter: bamnado.ReadFilter,
         use_fragment: bool,
     ) -> tuple[np.ndarray, np.ndarray | None]:
-        """Return (fwd_signal, rev_signal | None) for one chromosome.
+        """Return genomic forward/reverse strand signal for one chromosome.
 
-        For stranded RNA, 'fwd' means forward gene strand:
-          - "R" (reverse/dUTP library): fwd gene ← reverse-strand reads, rev gene ← forward-strand reads
-          - "F" (forward library):       fwd gene ← forward-strand reads, rev gene ← reverse-strand reads
+        For stranded RNA, ``rna_fwd`` and ``rna_rev`` are always written in
+        genomic strand orientation:
+
+        - ``rna_fwd`` ← reads aligned to the genomic ``+`` strand
+        - ``rna_rev`` ← reads aligned to the genomic ``-`` strand
+
+        Library strandedness (``R``/``F``) is intentionally not applied here.
+        Downstream feature counting maps gene orientation onto these arrays via
+        ``strand=1`` / ``strand=2``.
         """
         if self.stranded:
-            # bamnado expects "forward" / "reverse" (full lowercase strings)
-            if self.stranded == "R":
-                fwd_bam_strand, rev_bam_strand = "reverse", "forward"
-            else:  # "F"
-                fwd_bam_strand, rev_bam_strand = "forward", "reverse"
+            # bamnado expects genomic strand filters: "forward" / "reverse".
+            fwd_bam_strand, rev_bam_strand = "forward", "reverse"
             rf_fwd = _copy_read_filter(read_filter)
             rf_fwd.strand = fwd_bam_strand
             rf_rev = _copy_read_filter(read_filter)
@@ -462,13 +470,14 @@ class BamStore:
         ip: str | None = None,
         stranded: str | None = None,
         bam_filter: bamnado.ReadFilter | None = None,
-        count_fragments: bool = False,
+        count_fragments: bool | None = None,
         viewpoint_tag: str = "VP",
         chunk_len: int | None = None,
         construction_compression: str = DEFAULT_CONSTRUCTION_COMPRESSION,
         overwrite: bool = True,
         filter_chromosomes: bool = True,
         test: bool = False,
+        test_chromosomes: list[str] | tuple[str, ...] | None = None,
         staging_dir: Path | str | None = None,
         log_file: Path | None = None,
     ) -> "BamStore":
@@ -503,9 +512,14 @@ class BamStore:
             logger.info(f"Extracting chromsizes from {bam_path}")
             chromsizes = _get_chromsizes_from_bam(bam_path)
 
-        chromsizes_dict = _parse_chromsizes(chromsizes, filter_chromosomes=filter_chromosomes, test=test)
+        chromsizes_dict = _parse_chromsizes(
+            chromsizes,
+            filter_chromosomes=filter_chromosomes,
+            test=test,
+            test_chromosomes=test_chromosomes,
+        )
         read_filter = bam_filter or bamnado.ReadFilter()
-        use_fragment = count_fragments
+        use_fragment = bool(count_fragments) if count_fragments is not None else assay.upper() == "RNA"
 
         viewpoints: list[str] = []
         if is_mcc:

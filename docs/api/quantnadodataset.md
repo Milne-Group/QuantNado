@@ -1,4 +1,4 @@
-::: quantnado.dataset.store_multiomics.MultiomicsStore
+::: quantnado.analysis.core.QuantNadoDataset
     options:
       show_source: true
       show_root_heading: true

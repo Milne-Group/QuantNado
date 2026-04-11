@@ -13,6 +13,16 @@ if TYPE_CHECKING:
 
 __all__ = ["metaplot", "tornadoplot", "locus_plot", "heatmap", "correlate"]
 
+
+class _AxesList(list):
+    """List-like container with a compact notebook/REPL representation."""
+
+    def __repr__(self) -> str:
+        return f"<QuantNadoAxesList n={len(self)}>"
+
+    def _repr_pretty_(self, p, cycle) -> None:
+        p.text(repr(self))
+
 # Sensible per-modality defaults that metaplot / tornadoplot apply when
 # ``modality`` is provided.  Explicit kwargs passed by the caller always win.
 _MODALITY_DEFAULTS: "dict[str, dict]" = {
@@ -149,12 +159,15 @@ def metaplot(
     --------
     >>> binned = qn.extract(
     ...     feature_type="promoter",
-    ...     gtf_path="genes.gtf",
-    ...     fixed_width=2000,
+    ...     GTF_FILE="genes.gtf",
+    ...     assay="ATAC",
+    ...     modality="coverage",
+    ...     upstream=1000,
+    ...     downstream=1000,
     ...     anchor="start",
     ...     bin_size=50,
     ... )
-    >>> ax = metaplot(binned, title="Promoter metagene")
+    >>> ax = metaplot(binned, modality="coverage", title="Promoter metagene")
     >>> ax = metaplot(
     ...     binned,
     ...     groups={"control": ["s1", "s2"], "treated": ["s3", "s4"]},
@@ -635,7 +648,7 @@ def tornadoplot(
     if filepath is not None:
         fig.savefig(filepath, bbox_inches="tight")
 
-    return axes
+    return _AxesList(axes)
 
 
 def locus_plot(
@@ -923,7 +936,7 @@ def locus_plot(
     if filepath is not None:
         fig.savefig(filepath, bbox_inches="tight", dpi=150)
 
-    return axes
+    return _AxesList(axes)
 
 
 # ---------------------------------------------------------------------------
@@ -1043,11 +1056,11 @@ def heatmap(
 
     Examples
     --------
-    >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+    >>> signal = qn.reduce(intervals_path="promoters.bed", reduction="mean", modality="coverage")
     >>> g = qn.heatmap(signal, variable="mean", title="Promoter signal")
 
-    >>> counts, _ = ds.count_features(gtf_file="genes.gtf")
-    >>> g = qn.heatmap(counts, log_transform=True, title="Gene counts")
+    >>> counts, _ = qn.count_features(gtf_file="genes.gtf", assay="RNA")
+    >>> g = qn.heatmap(counts, log_transform=True, title="RNA feature counts")
     """
     import seaborn as sns
 
@@ -1119,7 +1132,7 @@ def correlate(
     device: str = "cpu",
 ) -> "tuple[pd.DataFrame, Any]":
     """
-    Compute and plot a sample–sample correlation matrix.
+    Compute and plot a sample-sample correlation matrix.
 
     Parameters
     ----------
@@ -1147,15 +1160,15 @@ def correlate(
     Returns
     -------
     corr_df : pd.DataFrame
-        Correlation matrix (samples × samples).
+        Correlation matrix (samples x samples).
     g : seaborn.matrix.ClusterGrid
 
     Examples
     --------
-    >>> signal = ds.reduce(intervals_path="promoters.bed", reduction="mean")
+    >>> signal = qn.reduce(intervals_path="promoters.bed", reduction="mean", modality="coverage")
     >>> corr_df, g = qn.correlate(signal, title="Promoter signal correlation")
 
-    >>> counts, _ = ds.count_features(gtf_file="genes.gtf")
+    >>> counts, _ = qn.count_features(gtf_file="genes.gtf", assay="RNA")
     >>> corr_df, g = qn.correlate(counts, method="spearman")
     """
     import seaborn as sns

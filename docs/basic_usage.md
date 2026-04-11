@@ -1,282 +1,239 @@
 # Usage Guide
 
-Detailed workflows for each modality — coverage, methylation, and variants.
+This page reflects the current post-refactor API: datasets are opened from a directory of per-sample `.zarr` stores or from a combined `.zarr`, and most analysis methods work through `QuantNado` or `QuantNadoDataset`.
 
 ## Opening a Dataset
 
 ```python
-import quantnado as qn
+from quantnado import QuantNado, QuantNadoDataset
 
-ds = qn.open("dataset/")
-print(ds)
-# MultiomicsStore at 'dataset/'
-#   modalities : ['coverage', 'methylation', 'variants']
-#   coverage   : 3 samples, 24 chrom(s)
-#   methylation: 1 samples, 24 chrom(s)
-#   variants   : 1 samples, 24 chrom(s)
-
-print(ds.modalities)   # ['coverage', 'methylation', 'variants']
-print(ds.chromosomes)  # ['chr1', 'chr2', ..., 'chrX']
-print(ds.samples)      # list of coverage sample IDs (if coverage available)
+qn = QuantNado.open("dataset/")
+raw = QuantNadoDataset("dataset/")
+combined = QuantNado.open("dataset/combined.zarr")
 ```
 
-Sub-stores are accessed as properties:
+Useful properties:
 
 ```python
-ds.coverage    # BamStore  (or None if not present)
-ds.methylation # MethylStore (or None if not present)
-ds.variants    # VariantStore (or None if not present)
+qn.sample_names
+qn.assays
+qn.array_keys
+qn.chromosomes
+qn.chromsizes
+qn.info
 ```
 
----
+`qn.info` returns a compact dataset summary that includes assay-level sample counts, array keys, inferred IPs, and any cached sample-group namespaces.
 
-## Coverage Analysis
-
-Coverage is stored as dense per-base read depth (sample × position) in Zarr.
-
-### Metadata
+## Region Selection
 
 ```python
-metadata = ds.get_metadata()    # combined metadata across all modalities
-print(metadata.columns)
-
-# Update or extend
-ds.set_metadata(new_df)
-ds.update_metadata({"batch": "batch1"})
+region = qn.sel("chr21", 36_000_000, 36_010_000)
 ```
 
-### Reduce Signal Over Regions
-
-Collapse per-base signal over a BED file of regions into a (regions × samples) matrix:
+Filter by assay type or explicit sample names:
 
 ```python
-# Returns an xarray Dataset with variables: sum, count, mean
-reduced = ds.reduce("promoters.bed", reduction="mean")
-mat = reduced["mean"]          # DataArray: (n_regions, n_samples)
+rna_region = qn.sel("chr21", 36_000_000, 36_010_000, assay="RNA")
+atac_region = qn.sel("chr21", 36_000_000, 36_010_000, samples=["ATAC_1"])
 ```
 
-### PCA
+You can also build reusable sample groups and intersect them in `subset()`:
 
 ```python
-pca_obj, pca_result = ds.pca(reduced["mean"], n_components=8)
-
-# Scree plot
-qn.plot_pca_scree(pca_obj)
-
-# Scatter coloured by a metadata column
-qn.plot_pca_scatter(pca_obj, pca_result, colour_by="assay", metadata_df=metadata)
-```
-
-### Feature Counts (DESeq2-compatible)
-
-Count reads over genomic features from a GTF:
-
-```python
-counts, features = ds.count_features(
-    "genes.gtf",
-    feature_type="gene",
-    integerize=True,   # round to integers for DESeq2
+qn.group_by(
+    ip="ip",
+    treatment={"control": ["control"], "treated": ["treated"]},
+    replicate={"rep1": ["rep1"], "rep2": ["rep2"]},
+    spikein={"spikein": ["spikein", "rx"]},
+    match="contains",
 )
-# counts: (n_genes, n_samples) array
-# features: DataFrame with chr, start, end, gene_id, ...
+
+chip_subset = qn.subset(
+    assay="CHIP",
+    ip="MLL",
+    group={"spikein": "spikein"},
+)
+
+rna_subset = qn.subset(
+    assay="RNA",
+    group={
+        "treatment": ["treated", "control"],
+        "spikein": "spikein",
+        "replicate": ["rep1", "rep2"],
+    },
+)
 ```
 
-### Metagene and Tornado Plots
+`subset()` intersects all requested filters. If a combination resolves to no samples, the error message reports which group namespace removed the remaining samples.
 
-Extract binned signal over windows anchored to genomic features:
+## Assay vs Modality
+
+- `assay` means a biological assay such as `ATAC`, `RNA`, or `METH`
+- `modality` means an array key such as `coverage`, `rna_fwd`, `chip_h3k27ac`, `methyl_pct`, or `GT`
+
+In practice, use `assay=` to choose samples and `modality=` to choose which signal array to analyse.
+
+## Reducing Signal Over Intervals
+
+Use BED intervals directly:
 
 ```python
-binned = ds.extract(
-    feature_type="transcript",
+signal = qn.reduce(
+    intervals_path="promoters.bed",
+    reduction="mean",
+    modality="coverage",
+)
+```
+
+Or derive intervals from a GTF:
+
+```python
+gene_signal = qn.reduce(
     gtf_path="genes.gtf",
+    feature_type="gene",
+    reduction="sum",
+    assay="RNA",
+    modality="coverage",
+)
+```
+
+Returned value: `xr.Dataset` with variables such as `sum`, `count`, and `mean`.
+The sample axis remains sample-oriented, so the usual next step is `signal["mean"]` for PCA, heatmaps, or correlations.
+
+## Counting Features
+
+```python
+counts, features = qn.count_features(
+    gtf_file="genes.gtf",
+    feature_type="gene",
+    engine="signal",
+    assay="RNA",
+)
+```
+
+`counts` is a feature-by-sample `pd.DataFrame`. `features` is the aligned feature metadata table.
+
+For explicit signal quantification without the counting terminology:
+
+```python
+signal_matrix, signal_features = qn.quantify_signal(
+    gtf_file="genes.gtf",
+    feature_type="gene",
+    assay="RNA",
+    modality="coverage",
+)
+```
+
+`quantify_signal()` is the recommended API when you want a feature-by-sample matrix derived from stored QuantNado signal rather than BAM-backed read assignment.
+
+`count_features(engine="signal")` is still a signal-derived summarisation path. A BAM-backed `engine="bam"` mode is planned for featureCounts-style read assignment semantics.
+
+You can also count over BED intervals:
+
+```python
+counts, features = qn.count_features(
+    bed_file="peaks.bed",
+    samples=["ATAC_1", "ATAC_2"],
+    modality="coverage",
+)
+```
+
+## Extracting Binned Signal
+
+`extract()` bins signal around promoters, genes, transcripts, or exons.
+
+```python
+binned = qn.extract(
+    feature_type="promoter",
+    GTF_FILE="genes.gtf",
+    assay="ATAC",
+    modality="coverage",
     upstream=2000,
     downstream=2000,
-    anchor="start",
     bin_size=50,
 )
-
-# Metagene (average profile across all features)
-ds.metaplot(binned, modality="coverage", title="Coverage at TSS")
-
-# Tornado (per-feature heatmap)
-ds.tornadoplot(binned, modality="coverage", sort_by="mean")
 ```
 
-You can also supply a BED file or a pre-built DataFrame of ranges:
+Returned value: `xr.DataArray` with dimensions `(interval, bin, sample)`.
+Use this output with `metaplot()` or `tornadoplot()`.
+
+## Normalisation
+
+Normalise reduced signal, extracted signal, or count matrices:
 
 ```python
-binned = ds.extract(intervals_path="peaks.bed", upstream=500, downstream=500, bin_size=25)
-```
-
----
-
-## Methylation Analysis
-
-Methylation is stored sparsely: only covered CpG positions are kept per chromosome.
-
-### Inspect the Store
-
-```python
-meth = ds.methylation
-
-print(meth.chromosomes)
-print(meth.samples)
-
-# Number of CpG sites per chromosome
-for chrom in meth.chromosomes:
-    print(f"{chrom}: {len(meth.get_positions(chrom)):,} CpG sites")
-```
-
-### Available Variables
-
-Each CpG site stores five variables:
-
-| Variable | Description |
-|---|---|
-| `methylation_pct` | Methylation percentage (0–100) |
-| `methylation_ratio` | Methylation ratio (0–1) |
-| `n_methylated` | Count of methylated reads |
-| `n_unmethylated` | Count of unmethylated reads |
-| `n_cpg_covered` | Total reads covering this site |
-
-### Metagene and Tornado Plots
-
-Use `ds.extract()` with `modality="methylation"`:
-
-```python
-binned_meth = ds.extract(
-    modality="methylation",
-    variable="methylation_pct",   # default
-    feature_type="transcript",
-    gtf_path="genes.gtf",
-    upstream=1000,
-    downstream=1000,
-    anchor="start",
-    bin_size=50,
-)
-
-ds.metaplot(binned_meth, modality="methylation", title="CpG methylation at TSS")
-ds.tornadoplot(binned_meth, modality="methylation", sort_by="mean")
-```
-
-### Feature-level Methylation Stats
-
-```python
-stats, features = ds.methylation.count_features(gtf_file="genes.gtf", feature_type="gene")
-# stats is a dict with keys:
-#   n_methylated, n_unmethylated, n_cpg_covered,
-#   methylation_ratio, methylation_pct
-```
-
----
-
-## Variant Analysis
-
-Variants are stored sparsely from VCF.gz files, indexed per chromosome.
-
-### Inspect the Store
-
-```python
-var = ds.variants
-
-print(var.chromosomes)
-print(var.samples)
-```
-
-### Available Variables
-
-| Variable | Description |
-|---|---|
-| `genotype` | Integer-encoded genotype (0=hom-ref, 1=het, 2=hom-alt) |
-| `allele_depth` | Read depth per allele |
-| `quality` | Variant quality score |
-
-### Extract as xarray
-
-```python
-# Full chromosome as a DataArray (lazy)
-gt_xr = var.to_xarray(variable="genotype")     # dict[chrom → DataArray]
-
-# Specific region
-region_gt = var.extract_region("chr21:5000000-6000000", variable="genotype")
-
-# Allele information
-refs, alts = var.get_alleles("chr21")
-```
-
----
-
-## Creating Datasets
-
-### Python API
-
-```python
-import quantnado as qn
-
-qn.create_dataset(
-    store_dir="dataset/",
-    bam_files=["atac.bam", "chip.bam", "rna.bam"],
-    methyldackel_files=["meth-rep1.bedGraph", "meth-rep2.bedGraph"],
-    vcf_files=["snp.vcf.gz"],
-    # Callable to derive sample names from file paths
-    methyldackel_sample_names=lambda p: p.stem.split("_hg38")[0],
-    max_workers=4,
+cpm_signal = qn.normalise(signal, method="cpm")
+rpkm_counts = qn.normalise(
+    counts,
+    method="rpkm",
+    feature_lengths=features["range_length"],
 )
 ```
 
-All modalities are optional — pass only what you have.
-
-### Command Line
-
-```bash
-quantnado create-dataset \
-  --output dataset/ \
-  --bam atac.bam,chip.bam,rna.bam \
-  --bedgraph meth-rep1.bedGraph,meth-rep2.bedGraph \
-  --vcf snp.vcf.gz \
-  --max-workers 4
-```
-
----
-
-## Metadata Management
+Library sizes are available directly:
 
 ```python
-import pandas as pd
-
-# Read current metadata
-meta = ds.get_metadata()
-
-# Set metadata from a DataFrame (replaces existing)
-new_meta = pd.DataFrame({
-    "sample_id": ds.samples,
-    "condition": ["control", "control", "treatment"],
-    "assay": ["ATAC", "ChIP", "RNA"],
-})
-ds.set_metadata(new_meta)
-
-# Add/update individual columns
-ds.update_metadata({"batch": "batch1"})
-
-# Inspect columns
-print(ds.list_metadata_columns())
-
-# Export / import
-ds.metadata_to_csv("metadata.csv")
-ds.metadata_from_csv("updated_metadata.csv")
+qn.library_sizes()
+qn.library_sizes(assay="RNA")
 ```
 
----
+## PCA
 
-## Common Questions
+On a reduced matrix:
 
-**Can I resume an interrupted dataset creation?**
-Yes — pass `resume=True` (Python) or `--resume` (CLI). QuantNado skips samples that are already written.
+```python
+pca_obj, pca_result = qn.pca(signal["mean"], n_components=8)
+```
 
-**How long does creation take?**
-Coverage stores are the slowest (20 min – 2 h per whole-genome BAM). Use `max_workers` to parallelise. Methylation and variant stores are typically much faster.
+Here `pca_result` is sample-by-component output, ready for `pca_scatter()`.
 
-**What if I only have one modality?**
-`qn.open()` works with any combination. If you only have BAM files, pass them directly to `BamStore.from_bam_files()` or use `qn.create_dataset(bam_files=...)`.
+Or directly from one chromosome and modality:
 
-See [Troubleshooting](troubleshooting.md) for more help.
+```python
+pca_obj, pca_result = qn.pca(
+    "chr21",
+    assay="ATAC",
+    modality="coverage",
+    n_components=5,
+)
+```
+
+## Visualisation
+
+```python
+qn.heatmap(signal, variable="mean", title="Promoter signal")
+qn.correlate(signal, variable="mean", title="Sample correlation")
+qn.metaplot(binned, modality="coverage", title="Metaplot")
+qn.tornadoplot(binned, modality="coverage", title="Tornado plot")
+```
+
+Use `heatmap()` and `correlate()` on reduced matrices, and `metaplot()` / `tornadoplot()` on extracted binned signal.
+
+## Annotation-Aware Queries
+
+```python
+qn = QuantNadoDataset("dataset/", annotation="genes.gtf")
+info = qn.gene_info("GNAQ")
+gene_region = qn.sel_gene("GNAQ", padding=2000)
+```
+
+## Combining Per-Sample Stores
+
+```python
+from quantnado import QuantNado
+
+combined = QuantNado.combine("dataset/", "dataset/combined.zarr")
+```
+
+The combined store keeps the same read API and is often easier to move or share.
+
+## SeqNado Integration
+
+```python
+from quantnado import metadata_from_seqnado
+
+metadata = metadata_from_seqnado("my_seqnado_project", output_dir=".")
+```
+
+This writes a `quantnado_metadata.csv` that can be fed into `quantnado create-dataset`.
