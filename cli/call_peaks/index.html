@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://milne-group.github.io/QuantNado/cli/call_peaks/">
       
       
-        <link rel="prev" href="../create_dataset/">
+        <link rel="prev" href="../combine_dataset/">
       
       
         <link rel="next" href="../">
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#call-peaks-command" class="md-skip">
+        <a href="#call-peaks" class="md-skip">
           Skip to content
         </a>
       
@@ -524,6 +524,8 @@
       
         
       
+        
+      
     
     
     
@@ -641,6 +643,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../combine_dataset/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Combine Dataset
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -715,10 +745,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#description" class="md-nav__link">
+  <a href="#required-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Description
+        Required Options
       
     </span>
   </a>
@@ -726,201 +756,57 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#options" class="md-nav__link">
+  <a href="#methods" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Options
+        Methods
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Options">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#bigwig-dir" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        BigWig Directory (--bigwig-dir)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#output-directory-output-dir" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output Directory (--output-dir)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#chromsizes-chromsizes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Chromsizes (--chromsizes)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#quantile-quantile" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quantile (--quantile)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#tile-size-tilesize" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tile Size (--tilesize)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#blacklist-blacklist" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Blacklist (--blacklist)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#merge-merge-no-merge" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Merge (--merge / --no-merge)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#temporary-directory-tmp-dir" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Temporary Directory (--tmp-dir)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#log-file-log-file" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Log File (--log-file)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verbose-verbose-v" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verbose (--verbose, -v)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#examples" class="md-nav__link">
+  <a href="#common-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Examples
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Examples">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#basic-peak-calling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic Peak Calling
+        Common Options
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#stringent-thresholding" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#quantile-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Stringent Thresholding
+        Quantile Options
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#with-blacklist" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#seacr-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        With Blacklist
+        SEACR Options
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#fine-tuned-tile-size" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#lanceotron-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Fine-Tuned Tile Size
+        LanceOTron Options
       
     </span>
   </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#full-pipeline" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full Pipeline
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -929,139 +815,6 @@
     <span class="md-ellipsis">
       
         Output
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#performance" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Performance
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Performance">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#typical-run-times" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Typical Run Times
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#resource-requirements" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Resource Requirements
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Troubleshooting">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#no-bigwig-files-found" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        No bigWig files found
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#missing-chromsizes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Missing chromsizes
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#out-of-memory" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Out of memory
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#no-peaks-detected" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        No peaks detected
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#preparing-bigwig-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Preparing BigWig Files
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#python-equivalent" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Python Equivalent
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See Also
       
     </span>
   </a>
@@ -1213,14 +966,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../api/multiomicsstore/" class="md-nav__link">
+      <a href="../../api/quantnadodataset/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    MultiomicsStore
+    QuantNadoDataset
   
 
     
@@ -1420,14 +1173,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../example_dataset/" class="md-nav__link">
+      <a href="../../example/example_dataset/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    QuantNado — Multi-Modal Dataset Exploration
+    QuantNado — end-to-end tutorial
   
 
     
@@ -1609,10 +1362,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#description" class="md-nav__link">
+  <a href="#required-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Description
+        Required Options
       
     </span>
   </a>
@@ -1620,201 +1373,57 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#options" class="md-nav__link">
+  <a href="#methods" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Options
+        Methods
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Options">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#bigwig-dir" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        BigWig Directory (--bigwig-dir)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#output-directory-output-dir" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Output Directory (--output-dir)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#chromsizes-chromsizes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Chromsizes (--chromsizes)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#quantile-quantile" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quantile (--quantile)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#tile-size-tilesize" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tile Size (--tilesize)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#blacklist-blacklist" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Blacklist (--blacklist)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#merge-merge-no-merge" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Merge (--merge / --no-merge)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#temporary-directory-tmp-dir" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Temporary Directory (--tmp-dir)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#log-file-log-file" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Log File (--log-file)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verbose-verbose-v" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verbose (--verbose, -v)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#examples" class="md-nav__link">
+  <a href="#common-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Examples
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Examples">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#basic-peak-calling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic Peak Calling
+        Common Options
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#stringent-thresholding" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#quantile-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Stringent Thresholding
+        Quantile Options
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#with-blacklist" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#seacr-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        With Blacklist
+        SEACR Options
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#fine-tuned-tile-size" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#lanceotron-options" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Fine-Tuned Tile Size
+        LanceOTron Options
       
     </span>
   </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#full-pipeline" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full Pipeline
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1823,139 +1432,6 @@
     <span class="md-ellipsis">
       
         Output
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#performance" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Performance
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Performance">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#typical-run-times" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Typical Run Times
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#resource-requirements" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Resource Requirements
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Troubleshooting">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#no-bigwig-files-found" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        No bigWig files found
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#missing-chromsizes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Missing chromsizes
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#out-of-memory" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Out of memory
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#no-peaks-detected" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        No peaks detected
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#preparing-bigwig-files" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Preparing BigWig Files
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#python-equivalent" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Python Equivalent
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See Also
       
     </span>
   </a>
@@ -2043,273 +1519,81 @@
   
 
 
-<h1 id="call-peaks-command">Call Peaks Command<a class="headerlink" href="#call-peaks-command" title="Anchor link to this section">&para;</a></h1>
-<p>Call quantile-based peaks from bigWig files.</p>
+<h1 id="call-peaks"><code>call-peaks</code><a class="headerlink" href="#call-peaks" title="Anchor link to this section">&para;</a></h1>
+<p>Call peaks directly from a QuantNado dataset.</p>
 <h2 id="usage">Usage<a class="headerlink" href="#usage" title="Anchor link to this section">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="o">[</span>OPTIONS<span class="o">]</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>--zarr<span class="w"> </span>dataset/combined.zarr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>peaks
 </span></code></pre></div>
-<h2 id="description">Description<a class="headerlink" href="#description" title="Anchor link to this section">&para;</a></h2>
-<p>The <code>call-peaks</code> command identifies peaks in bigWig files using quantile-based thresholding. It's useful for determining enriched regions from ChIP-seq, ATAC-seq, and similar assays.</p>
-<h2 id="options">Options<a class="headerlink" href="#options" title="Anchor link to this section">&para;</a></h2>
-<h3 id="bigwig-dir">BigWig Directory (<code>--bigwig-dir</code>)<a class="headerlink" href="#bigwig-dir" title="Anchor link to this section">&para;</a></h3>
-<p><strong>Required.</strong> Directory containing bigWig (.bw) files:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes
+<h2 id="required-options">Required Options<a class="headerlink" href="#required-options" title="Anchor link to this section">&para;</a></h2>
+<ul>
+<li><code>--zarr</code>: path to a QuantNado store or a directory of per-sample stores</li>
+<li><code>--output-dir</code>: directory for output BED files</li>
+</ul>
+<h2 id="methods">Methods<a class="headerlink" href="#methods" title="Anchor link to this section">&para;</a></h2>
+<ul>
+<li><code>quantile</code>: fast default method</li>
+<li><code>seacr</code>: SEACR-style peak calling with optional control store</li>
+<li><code>lanceotron</code>: ML-based peak calling, typically for ChIP-seq</li>
+</ul>
+<h2 id="common-options">Common Options<a class="headerlink" href="#common-options" title="Anchor link to this section">&para;</a></h2>
+<ul>
+<li><code>--method TEXT</code>: <code>quantile</code>, <code>seacr</code>, or <code>lanceotron</code></li>
+<li><code>--assay TEXT</code>: array key to call peaks on, such as <code>atac</code> or <code>chip_h3k27ac</code></li>
+<li><code>--blacklist PATH</code>: BED file of excluded regions</li>
+<li><code>--log-file PATH</code>: log destination</li>
+<li><code>--verbose</code>, <code>-v</code>: debug logging</li>
+</ul>
+<h2 id="quantile-options">Quantile Options<a class="headerlink" href="#quantile-options" title="Anchor link to this section">&para;</a></h2>
+<ul>
+<li><code>--tilesize INTEGER</code></li>
+<li><code>--window-overlap INTEGER</code></li>
+<li><code>--quantile FLOAT</code></li>
+<li><code>--merge / --no-merge</code></li>
+</ul>
+<p>Example:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--zarr<span class="w"> </span>dataset<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--method<span class="w"> </span>quantile<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--assay<span class="w"> </span>atac<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.98<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span>--output-dir<span class="w"> </span>peaks
 </span></code></pre></div>
-<p>All .bw files in the directory will be processed.</p>
-<h3 id="output-directory-output-dir">Output Directory (<code>--output-dir</code>)<a class="headerlink" href="#output-directory-output-dir" title="Anchor link to this section">&para;</a></h3>
-<p><strong>Required.</strong> Directory to save peak files in BED format:</p>
+<h2 id="seacr-options">SEACR Options<a class="headerlink" href="#seacr-options" title="Anchor link to this section">&para;</a></h2>
+<ul>
+<li><code>--control-zarr PATH</code></li>
+<li><code>--fdr FLOAT</code></li>
+<li><code>--norm TEXT</code></li>
+<li><code>--stringency TEXT</code></li>
+<li><code>--n-workers INTEGER</code></li>
+<li><code>--device TEXT</code></li>
+</ul>
+<p>Example:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--zarr<span class="w"> </span>chip_dataset<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--method<span class="w"> </span>seacr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--assay<span class="w"> </span>chip_h3k27ac<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span>--control-zarr<span class="w"> </span>igg_dataset<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span>--output-dir<span class="w"> </span>peaks_seacr
 </span></code></pre></div>
-<p>Output BED files will be named: <code>&lt;bigwig_name&gt;.peaks.bed</code></p>
-<h3 id="chromsizes-chromsizes">Chromsizes (<code>--chromsizes</code>)<a class="headerlink" href="#chromsizes-chromsizes" title="Anchor link to this section">&para;</a></h3>
-<p><strong>Required.</strong> Path to chromsizes file:</p>
+<h2 id="lanceotron-options">LanceOTron Options<a class="headerlink" href="#lanceotron-options" title="Anchor link to this section">&para;</a></h2>
+<ul>
+<li><code>--score-threshold FLOAT</code></li>
+<li><code>--smooth-window INTEGER</code></li>
+<li><code>--batch-size INTEGER</code></li>
+<li><code>--n-workers INTEGER</code></li>
+<li><code>--device TEXT</code></li>
+</ul>
+<p>Example:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>/reference/hg38.chrom.sizes
-</span></code></pre></div>
-<h3 id="quantile-quantile">Quantile (<code>--quantile</code>)<a class="headerlink" href="#quantile-quantile" title="Anchor link to this section">&para;</a></h3>
-<p>Quantile threshold for peak calling (default: 0.98):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Stricter threshold - fewer, higher-confidence peaks</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span>--quantile<span class="w"> </span><span class="m">0</span>.99
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c1"># More relaxed threshold - more peaks</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span>--quantile<span class="w"> </span><span class="m">0</span>.95
-</span></code></pre></div>
-<p>Higher quantile = fewer peaks (more stringent)</p>
-<table>
-<thead>
-<tr>
-<th>Quantile</th>
-<th>Interpretation</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>0.90</td>
-<td>90<sup>th</sup> percentile - relaxed</td>
-</tr>
-<tr>
-<td>0.95</td>
-<td>95<sup>th</sup> percentile - standard</td>
-</tr>
-<tr>
-<td>0.98</td>
-<td>98<sup>th</sup> percentile - stringent</td>
-</tr>
-<tr>
-<td>0.99</td>
-<td>99<sup>th</sup> percentile - very stringent</td>
-</tr>
-</tbody>
-</table>
-<h3 id="tile-size-tilesize">Tile Size (<code>--tilesize</code>)<a class="headerlink" href="#tile-size-tilesize" title="Anchor link to this section">&para;</a></h3>
-<p>Size of genomic tiles for peak calling (default: 128 bp):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span>--tilesize<span class="w"> </span><span class="m">50</span>
-</span></code></pre></div>
-<p>Smaller tiles = more sensitive to local changes
-Larger tiles = more robust to noise</p>
-<h3 id="blacklist-blacklist">Blacklist (<code>--blacklist</code>)<a class="headerlink" href="#blacklist-blacklist" title="Anchor link to this section">&para;</a></h3>
-<p>Path to BED file with regions to exclude:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>--blacklist<span class="w"> </span>/reference/hg38-blacklist.bed
-</span></code></pre></div>
-<p>Blacklist format (tab-separated):
-<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>chr1    1000    2000
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>chr2    5000    6000
-</span></code></pre></div></p>
-<h3 id="merge-merge-no-merge">Merge (<code>--merge</code> / <code>--no-merge</code>)<a class="headerlink" href="#merge-merge-no-merge" title="Anchor link to this section">&para;</a></h3>
-<p>Merge overlapping peaks (default: disabled with <code>--no-merge</code>):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Enable merging</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span>--merge
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="c1"># Disable merging (default)</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="w">  </span>--no-merge
-</span></code></pre></div>
-<h3 id="temporary-directory-tmp-dir">Temporary Directory (<code>--tmp-dir</code>)<a class="headerlink" href="#temporary-directory-tmp-dir" title="Anchor link to this section">&para;</a></h3>
-<p>Temporary directory for intermediate files (default: <code>tmp</code>):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span>--tmp-dir<span class="w"> </span>/scratch/tmp
-</span></code></pre></div>
-<h3 id="log-file-log-file">Log File (<code>--log-file</code>)<a class="headerlink" href="#log-file-log-file" title="Anchor link to this section">&para;</a></h3>
-<p>Save logs (default: <code>quantnado_peaks.log</code>):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span>--log-file<span class="w"> </span>peak_calling.log
-</span></code></pre></div>
-<h3 id="verbose-verbose-v">Verbose (<code>--verbose</code>, <code>-v</code>)<a class="headerlink" href="#verbose-verbose-v" title="Anchor link to this section">&para;</a></h3>
-<p>Enable debug logging:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">  </span>--verbose
-</span></code></pre></div>
-<h2 id="examples">Examples<a class="headerlink" href="#examples" title="Anchor link to this section">&para;</a></h2>
-<h3 id="basic-peak-calling">Basic Peak Calling<a class="headerlink" href="#basic-peak-calling" title="Anchor link to this section">&para;</a></h3>
-<p>Call peaks from bigWig files:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes
-</span></code></pre></div>
-<h3 id="stringent-thresholding">Stringent Thresholding<a class="headerlink" href="#stringent-thresholding" title="Anchor link to this section">&para;</a></h3>
-<p>Call only high-confidence peaks:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.99<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">  </span>--merge
-</span></code></pre></div>
-<h3 id="with-blacklist">With Blacklist<a class="headerlink" href="#with-blacklist" title="Anchor link to this section">&para;</a></h3>
-<p>Exclude problematic regions:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span>--blacklist<span class="w"> </span>/reference/hg38-blacklist.bed<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.98
-</span></code></pre></div>
-<h3 id="fine-tuned-tile-size">Fine-Tuned Tile Size<a class="headerlink" href="#fine-tuned-tile-size" title="Anchor link to this section">&para;</a></h3>
-<p>Use smaller tiles for better resolution:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">  </span>--tilesize<span class="w"> </span><span class="m">50</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.98
-</span></code></pre></div>
-<h3 id="full-pipeline">Full Pipeline<a class="headerlink" href="#full-pipeline" title="Anchor link to this section">&para;</a></h3>
-<p>Comprehensive peak calling with all options:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>/reference/hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">  </span>--blacklist<span class="w"> </span>/reference/hg38-blacklist.bed<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.98<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-7"><a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="w">  </span>--tilesize<span class="w"> </span><span class="m">128</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-8"><a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="w">  </span>--merge<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-9"><a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="w">  </span>--tmp-dir<span class="w"> </span>/scratch/tmp<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-10"><a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="w">  </span>--log-file<span class="w"> </span>peak_calling.log<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-16-11"><a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="w">  </span>--verbose
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--zarr<span class="w"> </span>chip_dataset<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--method<span class="w"> </span>lanceotron<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--assay<span class="w"> </span>chip_h3k27ac<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--output-dir<span class="w"> </span>peaks_lanceotron
 </span></code></pre></div>
 <h2 id="output">Output<a class="headerlink" href="#output" title="Anchor link to this section">&para;</a></h2>
-<p>Output BED files contain called peaks:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>chr1    1000    2000    peak_1    100    .
-</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>chr1    5000    6500    peak_2    150    .
-</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>chr2    10000   11000   peak_3    120    .
-</span></code></pre></div>
-<p>Columns:
-1. Chromosome
-2. Start position
-3. End position
-4. Peak name
-5. Score (signal intensity)
-6. Strand (always <code>.</code> for this implementation)</p>
-<h2 id="performance">Performance<a class="headerlink" href="#performance" title="Anchor link to this section">&para;</a></h2>
-<h3 id="typical-run-times">Typical Run Times<a class="headerlink" href="#typical-run-times" title="Anchor link to this section">&para;</a></h3>
-<p>Peak calling time depends on bigWig file size:</p>
-<table>
-<thead>
-<tr>
-<th>Genome Coverage</th>
-<th>Time</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Low coverage</td>
-<td>1-5 minutes</td>
-</tr>
-<tr>
-<td>Medium coverage</td>
-<td>5-15 minutes</td>
-</tr>
-<tr>
-<td>High coverage</td>
-<td>15-30 minutes</td>
-</tr>
-</tbody>
-</table>
-<h3 id="resource-requirements">Resource Requirements<a class="headerlink" href="#resource-requirements" title="Anchor link to this section">&para;</a></h3>
-<ul>
-<li><strong>Memory</strong>: 2-8 GB (depends on tile size and coverage)</li>
-<li><strong>Disk</strong>: ~2-3× bigWig file size (for temporary files)</li>
-</ul>
-<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Anchor link to this section">&para;</a></h2>
-<h3 id="no-bigwig-files-found">No bigWig files found<a class="headerlink" href="#no-bigwig-files-found" title="Anchor link to this section">&para;</a></h3>
-<p><strong>Problem</strong>: Directory is empty or wrong format</p>
-<p><strong>Solution</strong>: Check directory and file extensions:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>ls<span class="w"> </span>-l<span class="w"> </span>./bigwigs/*.bw
-</span></code></pre></div></p>
-<h3 id="missing-chromsizes">Missing chromsizes<a class="headerlink" href="#missing-chromsizes" title="Anchor link to this section">&para;</a></h3>
-<p><strong>Problem</strong>: <code>FileNotFoundError: chromsizes file not found</code></p>
-<p><strong>Solution</strong>: Download or provide chromsizes:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># Download from UCSC</span>
-</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>wget<span class="w"> </span>http://hgdownload.cse.ucsc.edu/goldenpath/hg38/bigZips/hg38.chrom.sizes
-</span></code></pre></div></p>
-<h3 id="out-of-memory">Out of memory<a class="headerlink" href="#out-of-memory" title="Anchor link to this section">&para;</a></h3>
-<p><strong>Problem</strong>: Memory error during peak calling</p>
-<p><strong>Solution</strong>: Use larger tile size (fewer tiles):
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="w">  </span>--tilesize<span class="w"> </span><span class="m">256</span>
-</span></code></pre></div></p>
-<h3 id="no-peaks-detected">No peaks detected<a class="headerlink" href="#no-peaks-detected" title="Anchor link to this section">&para;</a></h3>
-<p><strong>Problem</strong>: Output peak files are empty</p>
-<p><strong>Likely causes</strong>:
-- Quantile threshold too stringent
-- BigWig files have low signal
-- Incorrect chromsizes</p>
-<p><strong>Solution</strong>: Lower quantile threshold:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="w">  </span>--bigwig-dir<span class="w"> </span>./bigwigs/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span>--output-dir<span class="w"> </span>./peaks/<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">  </span>--chromsizes<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="w">  </span>--quantile<span class="w"> </span><span class="m">0</span>.90
-</span></code></pre></div></p>
-<h2 id="preparing-bigwig-files">Preparing BigWig Files<a class="headerlink" href="#preparing-bigwig-files" title="Anchor link to this section">&para;</a></h2>
-<p>Convert BAM to bigWig if needed:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="c1"># Create bedGraph</span>
-</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>bedtools<span class="w"> </span>genomecov<span class="w"> </span>-ibam<span class="w"> </span>sample.bam<span class="w"> </span>-bg<span class="w"> </span>-o<span class="w"> </span>sample.bedgraph
-</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>
-</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="c1"># Convert to bigWig</span>
-</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>bedGraphToBigWig<span class="w"> </span>sample.bedgraph<span class="w"> </span>hg38.chrom.sizes<span class="w"> </span>sample.bw
-</span></code></pre></div>
-<h2 id="python-equivalent">Python Equivalent<a class="headerlink" href="#python-equivalent" title="Anchor link to this section">&para;</a></h2>
-<p>There's currently no direct Python API for peak calling. Use the CLI command.</p>
-<h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Anchor link to this section">&para;</a></h2>
-<ul>
-<li><a href="../create_dataset/">Create Dataset Command</a></li>
-<li><a href="../">CLI Overview</a></li>
-<li><a href="../../examples/">Examples</a></li>
-<li><a href="../../basic_usage/">Basic Usage</a></li>
-</ul>
+<p>QuantNado writes BED files to the requested output directory, one result per eligible sample.</p>
 
 
 
@@ -2347,7 +1631,7 @@ Larger tiles = more robust to noise</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../create_dataset/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Create Dataset">
+          <a href="../combine_dataset/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Combine Dataset">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -2357,7 +1641,7 @@ Larger tiles = more robust to noise</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                Create Dataset
+                Combine Dataset
               </div>
             </div>
           </a>
