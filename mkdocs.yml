@@ -138,7 +138,7 @@ nav:
     - VariantStore: api/variantstore.md
   - Examples:
     - Overview: examples.md
-    - Example Notebook: example_dataset.ipynb
+    - Example Notebook: example/example_dataset.ipynb
   - Help:
     - FAQ: faq.md
     - Troubleshooting: troubleshooting.md

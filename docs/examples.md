@@ -2,6 +2,18 @@
 
 These examples mirror the current API and CLI.
 
+## Full Tutorial Notebook
+
+The main end-to-end tutorial lives in [example_dataset.ipynb](example/example_dataset.ipynb). It walks through:
+
+- creating per-sample stores with the CLI
+- combining stores into one dataset
+- inspecting datasets with `qn.info`
+- grouping and subsetting samples
+- normalisation, peak calling, locus plots, extraction, quantification, and PCA
+
+If you want the complete guided workflow, start with that notebook and use the examples below as shorter copy-paste references.
+
 ## Build Per-Sample Stores
 
 ```bash

@@ -10,7 +10,7 @@ if [[ ! -f "pyproject.toml" ]]; then
   exit 1
 fi
 
-RUN_DIR="example/multiomics_run"
+RUN_DIR="docs/example/multiomics_run"
 DATA_DIR="${RUN_DIR}/seqnado_output"
 REF_DIR="${RUN_DIR}/reference"
 OUT_DIR="${RUN_DIR}/output"
