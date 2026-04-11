@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from typer.testing import CliRunner
 
@@ -10,20 +11,29 @@ from quantnado.cli import app
 runner = CliRunner()
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _clean(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
 def test_dataset_create_help_mentions_direct_inputs():
     result = runner.invoke(app, ["dataset", "create", "--help"])
     assert result.exit_code == 0
-    assert "--bamfile" in result.stdout
-    assert "--vcf_file" in result.stdout
-    assert "--methylation" in result.stdout
+    clean = _clean(result.stdout)
+    assert "--bamfile" in clean
+    assert "--vcf_file" in clean
+    assert "--methylation" in clean
 
 
 def test_dataset_combine_help_mentions_stores_list():
     result = runner.invoke(app, ["dataset", "combine", "--help"])
     assert result.exit_code == 0
-    assert "--stores" in result.stdout
-    assert "single" in result.stdout
-    assert "flag" in result.stdout
+    clean = _clean(result.stdout)
+    assert "--stores" in clean
+    assert "single" in clean
+    assert "flag" in clean
 
 
 def test_dataset_create_dispatches_bam_store(monkeypatch, tmp_path):
