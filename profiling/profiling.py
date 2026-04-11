@@ -16,8 +16,6 @@ from loguru import logger
 import quantnado as qn
 from quantnado.analysis.core import QuantNadoDataset
 
-OUT_DIR = Path("profiling/output")
-SAMPLES_DIR = OUT_DIR / "samples"
 
 MCC_ROW = {
     "assay": "MCC",
@@ -62,7 +60,7 @@ def _profiled(log_file: Path, n_stats: int = 50):
         logger.remove(handler_id)
 
 
-def build_metadata() -> pd.DataFrame:
+def build_metadata(output_path: Path) -> pd.DataFrame:
     metadata = qn.metadata_from_seqnado("/Users/catherine/work/datasets")
     metadata = metadata[metadata.sample_id.str.contains("SEM")]
     metadata = metadata[~metadata.sample_id.str.contains("CM")]
@@ -72,24 +70,26 @@ def build_metadata() -> pd.DataFrame:
 
     mcc_row = pd.DataFrame([MCC_ROW]).reindex(columns=metadata.columns)
     metadata = pd.concat([metadata, mcc_row], ignore_index=True)
-    metadata.to_csv(OUT_DIR / "quantnado_metadata.csv", index=False)
+    metadata.to_csv(output_path / "quantnado_metadata.csv", index=False)
     return metadata
 
 
-def profile_stores(metadata: pd.DataFrame, overwrite: bool = False) -> None:
+def profile_stores(metadata: pd.DataFrame, output_path: Path, overwrite: bool = False, test: bool = False) -> None:
     """
     Profiles the creation of individual sample stores by running qn.create_dataset within a cProfile context and logging to files.
     If a store already exists for a sample and overwrite=False, that sample will be skipped.
     Args:
         metadata: DataFrame containing sample metadata, including columns like 'sample_id', 'assay', and paths to input files.
+        output_path: Path to save the stores (Zarr format).
         overwrite: If False, samples with existing stores will be skipped. If True, existing stores will be overwritten.
+        test: If True, only profile a subset of chromosomes.
 
     Returns:
         None (stores are created on disk and profiling logs are saved to OUT_DIR)
     """
     for _, row in metadata.iterrows():
         sample = row["sample_id"]
-        store_path = SAMPLES_DIR / f"{sample}.zarr"
+        store_path = output_path / f"{sample}.zarr"
 
         if store_path.exists() and not overwrite:
             print(f"Skipping {sample} (store already exists)")
@@ -99,7 +99,7 @@ def profile_stores(metadata: pd.DataFrame, overwrite: bool = False) -> None:
         shutil.rmtree(store_path, ignore_errors=True)
 
         try:
-            with _profiled(OUT_DIR / f"profile_store_{sample}.log", n_stats=3000):
+            with _profiled(output_path / f"profile_store_{sample}.log", n_stats=3000):
                 qn.create_dataset(
                     sample_id=sample,
                     assay=row["assay"],
@@ -108,6 +108,7 @@ def profile_stores(metadata: pd.DataFrame, overwrite: bool = False) -> None:
                     methyl_path=row.get("methylation_path"),
                     variants_path=row.get("variant_path"),
                     stranded=row.get("stranded", False),
+                    test=test,
                 )
             print(f"✓ {sample}")
         except Exception:
@@ -128,6 +129,8 @@ def profile_combine(
     Returns:
         The combined QuantNadoDataset.
     """
+    log_path = output_path.parent / "profile_combine_stores.log"
+
     if output_path.exists() and not overwrite:
         print(f"Loading existing combined dataset from {output_path}...")
         try:
@@ -139,31 +142,38 @@ def profile_combine(
             )
             shutil.rmtree(output_path, ignore_errors=True)
     print("Profiling QuantNadoDataset.combine...")
-    with _profiled(OUT_DIR / "profile_combine_stores.log"):
+    with _profiled(log_path):
         combined = QuantNadoDataset.combine(src=samples_dir, output=output_path)
     print(f"✓ Done: combined {len(combined.sample_names)} samples")
     return combined
 
 
-def parse_logs(metadata: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
-    logfile_names = {log_file.name for log_file in output_dir.glob("profile_store_*.log")}
+def parse_logs(
+    metadata: pd.DataFrame, output_dir: Path, stores: Path, plot: bool = True
+) -> pd.DataFrame:
+    log_paths = {
+        log_file.name: log_file
+        for base_dir in (output_dir, stores)
+        for log_file in base_dir.glob("profile_store_*.log")
+    }
     profile_df = metadata[["sample_id", "assay"]].drop_duplicates().copy()
     records = []
 
     for sample_id in metadata.sample_id.unique():
         log_file_name = f"profile_store_{sample_id}.log"
-        if log_file_name not in logfile_names:
+        log_path = log_paths.get(log_file_name)
+        if log_path is None:
             logger.warning(f"Log file for sample_id {sample_id} not found: {log_file_name}")
             continue
 
         record = {"sample_id": sample_id}
-        store_path = SAMPLES_DIR / f"{sample_id}.zarr"
+        store_path = stores / f"{sample_id}.zarr"
         if store_path.exists():
             record["store_size_mb"] = _path_size_mb(store_path)
         else:
             logger.warning(f"Store for sample_id {sample_id} not found: {store_path.name}")
 
-        with open(output_dir / log_file_name, "r") as f:
+        with open(log_path, "r") as f:
             for line in f:
                 if m := re.search(r"in (\d+\.\d+) seconds", line):
                     record["seconds"] = float(m.group(1))
@@ -178,6 +188,9 @@ def parse_logs(metadata: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
 
     if records:
         profile_df = profile_df.merge(pd.DataFrame(records), on="sample_id", how="left")
+
+    if not plot:
+        return profile_df
 
     if "seconds" in profile_df.columns:
         reads_df = (
@@ -203,7 +216,8 @@ def parse_logs(metadata: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
             ax.set_ylabel("Mapped Reads (Millions)")
             ax.set_title("QuantNado Store Profiling")
             max_sec = profile_df["seconds"].dropna().max()
-            ax.set_xticks(range(0, int(max_sec + 60), 60))
+            if max_sec > 120:
+                ax.set_xticks(range(0, int(max_sec + 60), 60))
             ax.grid(True, which="both", ls="--", lw=0.5)
 
             if not variants_df.empty:
@@ -252,8 +266,11 @@ def parse_logs(metadata: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    
 
-    metadata = build_metadata()
-    profile_stores(metadata, overwrite=False)
-    profile_combine(SAMPLES_DIR, OUT_DIR / "dataset.zarr", overwrite=False)
+    output_path = Path("profiling/output")
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    metadata = build_metadata(output_path)
+    profile_stores(metadata, output_path, overwrite=False, test=True)
+    profile_combine(output_path, output_path / "dataset.zarr", overwrite=False)

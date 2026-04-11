@@ -53,6 +53,16 @@ def _make_xr_dataset(n_ranges=4, with_range_length=True):
     return ds
 
 
+def _make_xr_coverage_dataset(n_positions=10):
+    rng = np.random.default_rng(3)
+    vals = rng.random((3, n_positions)).astype(np.float32)
+    return xr.Dataset(
+        {"coverage": (["sample", "position"], vals)},
+        coords={"sample": SAMPLES, "position": np.arange(n_positions)},
+        attrs={"bin_size": 1},
+    )
+
+
 def _make_xr_dataarray(n_intervals=4, n_positions=10):
     """xr.DataArray similar to extract() output, dims (interval, position, sample)."""
     rng = np.random.default_rng(2)
@@ -269,6 +279,26 @@ class TestNormaliseXrDataset:
         ds = _make_xr_dataset(with_range_length=False)
         with pytest.raises(ValueError, match="RPKM requires feature lengths"):
             normalise(ds, library_sizes=LIB_SIZES, method="rpkm")
+
+    def test_coverage_dataset_adds_cpm_variable(self):
+        ds = _make_xr_coverage_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="cpm")
+        assert "coverage" in result.data_vars
+        assert "cpm" in result.data_vars
+        np.testing.assert_array_equal(result["coverage"].values, ds["coverage"].values)
+
+    def test_coverage_dataset_cpm_values(self):
+        ds = _make_xr_coverage_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="cpm")
+        scale = np.array([1.0, 2.0, 4.0], dtype=np.float32)[:, np.newaxis]
+        expected = ds["coverage"].values / scale
+        np.testing.assert_allclose(result["cpm"].values, expected, rtol=1e-5)
+
+    def test_coverage_dataset_adds_rpkm_variable(self):
+        ds = _make_xr_coverage_dataset()
+        result = normalise(ds, library_sizes=LIB_SIZES, method="rpkm")
+        assert "coverage" in result.data_vars
+        assert "rpkm" in result.data_vars
 
 
 # ---------------------------------------------------------------------------

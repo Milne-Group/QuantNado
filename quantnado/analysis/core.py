@@ -28,6 +28,7 @@ from .features import load_gtf
 
 # Keys that are zarr infrastructure — excluded when listing chromosomes / assays
 _META_KEYS = frozenset({"metadata"})
+_COVERAGE_COLLAPSE_KEYS = frozenset({"atac", "chip", "cat"})
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +879,7 @@ class QuantNadoDataset:
         overwrite:
             Delete ``output`` if it already exists.
         """
+        from zarr.core.array_spec import ArrayConfig
         from zarr.storage import LocalStore
 
         src_ds = cls(src)
@@ -891,10 +893,13 @@ class QuantNadoDataset:
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         out_root = zarr.group(store=LocalStore(str(output_path)), overwrite=True, zarr_format=3)
+        write_config = ArrayConfig(order="C", write_empty_chunks=True)
 
         # Collect metadata across all stores
         all_samples: list[str] = src_ds.sample_names
-        all_array_keys: list[str] = src_ds.array_keys
+        all_array_keys: list[str] = [
+            key for key in src_ds.array_keys if key not in _COVERAGE_COLLAPSE_KEYS
+        ]
         all_assay_types: list[str] = src_ds.assays  # biological types e.g. ['atac', 'meth', 'rna']
 
         # Group stores by assay key; also build key→sample-names mapping for sel()
@@ -924,76 +929,80 @@ class QuantNadoDataset:
         for chrom, chrom_len in chromsizes.items():
             grp = out_root.require_group(chrom)
             for key, stores in key_to_stores.items():
-                if key == "coverage":
+                if key == "coverage" or key in _COVERAGE_COLLAPSE_KEYS:
                     continue  # written below as unified across all samples
-                # Stack: concatenate along sample axis
-                chunks_list = []
-                for store in stores:
-                    if chrom in store.chromosomes:
-                        arr = store.get_array(chrom, key)
-                        chunks_list.append(da.from_zarr(arr))  # (1, chrom_len)
-                if not chunks_list:
+                present_stores = [store for store in stores if chrom in store.chromosomes]
+                if not present_stores:
                     continue
-                stacked = da.concatenate(chunks_list, axis=0)  # (N, chrom_len)
-                n = stacked.shape[0]
-                first_dtype = chunks_list[0].dtype
+                n = len(present_stores)
+                first_arr = present_stores[0].get_array(chrom, key)
+                first_dtype = first_arr.dtype
                 fill = np.nan if np.issubdtype(first_dtype, np.floating) else 0
-                out_arr = grp.require_array(
+                out_arr = grp.create_array(
                     key,
                     shape=(n, chrom_len),
                     chunks=(1, chunk_len),
                     dtype=first_dtype,
                     fill_value=fill,
+                    config=write_config,
                     overwrite=True,
                 )
-                da.store(stacked, out_arr)
+                for row_idx, store in enumerate(present_stores):
+                    out_arr[row_idx, :] = store.get_array(chrom, key)[0, :]
 
             # Unified coverage: one row per sample, using primary signal per assay.
             # METH → coverage, RNA → rna_fwd + rna_rev, SNP → DP,
             # ATAC/ChIP/CUT&TAG → first key, MCC → viewpoint_{vp} per viewpoint.
-            cov_rows: list[da.Array] = []
+            cov_arr = grp.create_array(
+                "coverage",
+                shape=(len(all_samples), chrom_len),
+                chunks=(1, chunk_len),
+                dtype=np.float32,
+                fill_value=0.0,
+                config=write_config,
+                overwrite=True,
+            )
+            cov_row_idx = 0
             for store in src_ds._stores:
                 keys_set = set(store.array_keys())
                 missing_chrom = chrom not in store.chromosomes
                 if store.viewpoints:
                     for vp in store.viewpoints:
                         vp_key = f"viewpoint_{vp}"
-                        if missing_chrom or vp_key not in keys_set:
-                            cov_rows.append(da.zeros((1, chrom_len), dtype=np.float32))
-                        else:
-                            cov_rows.append(da.from_zarr(store.get_array(chrom, vp_key)).astype(np.float32))
+                        if not missing_chrom and vp_key in keys_set:
+                            cov_arr[cov_row_idx, :] = np.asarray(
+                                store.get_array(chrom, vp_key)[0, :], dtype=np.float32
+                            )
+                        cov_row_idx += 1
                 elif missing_chrom:
-                    cov_rows.append(da.zeros((1, chrom_len), dtype=np.float32))
+                    cov_row_idx += 1
                 elif "coverage" in keys_set:
-                    cov_rows.append(da.from_zarr(store.get_array(chrom, "coverage")).astype(np.float32))
+                    cov_arr[cov_row_idx, :] = np.asarray(
+                        store.get_array(chrom, "coverage")[0, :], dtype=np.float32
+                    )
+                    cov_row_idx += 1
                 elif "rna_fwd" in keys_set:
-                    fwd = da.from_zarr(store.get_array(chrom, "rna_fwd")).astype(np.float32)
-                    rev = (da.from_zarr(store.get_array(chrom, "rna_rev")).astype(np.float32)
-                           if "rna_rev" in keys_set else da.zeros_like(fwd))
-                    cov_rows.append(fwd + rev)
+                    fwd = np.asarray(store.get_array(chrom, "rna_fwd")[0, :], dtype=np.float32)
+                    if "rna_rev" in keys_set:
+                        fwd += np.asarray(store.get_array(chrom, "rna_rev")[0, :], dtype=np.float32)
+                    cov_arr[cov_row_idx, :] = fwd
+                    cov_row_idx += 1
                 elif "DP" in keys_set:
-                    cov_rows.append(da.from_zarr(store.get_array(chrom, "DP")).astype(np.float32))
+                    cov_arr[cov_row_idx, :] = np.asarray(
+                        store.get_array(chrom, "DP")[0, :], dtype=np.float32
+                    )
+                    cov_row_idx += 1
                 else:
                     first_key = store.array_keys()[0]
-                    cov_rows.append(da.from_zarr(store.get_array(chrom, first_key)).astype(np.float32))
-
-            cov_stacked = da.concatenate(cov_rows, axis=0)  # (n_all_samples, chrom_len)
-            cov_arr = grp.require_array(
-                "coverage",
-                shape=(len(all_samples), chrom_len),
-                chunks=(1, chunk_len),
-                dtype=np.float32,
-                fill_value=0.0,
-                overwrite=True,
-            )
-            da.store(cov_stacked, cov_arr)
+                    cov_arr[cov_row_idx, :] = np.asarray(
+                        store.get_array(chrom, first_key)[0, :], dtype=np.float32
+                    )
+                    cov_row_idx += 1
 
         # Write combined metadata
         meta_grp = out_root.require_group("metadata")
-        # Use VariableLengthUTF8 for string arrays in zarr v3
-        from zarr.core.dtype import VariableLengthUTF8
         sn_arr = meta_grp.require_array(
-            "sample_names", shape=(len(all_samples),), dtype=VariableLengthUTF8(), overwrite=True
+            "sample_names", shape=(len(all_samples),), dtype="str", overwrite=True
         )
         sn_arr[:] = all_samples
         # Expand per-store metadata to per-sample (MCC stores contribute N viewpoints each)
@@ -1015,7 +1024,7 @@ class QuantNadoDataset:
         meta_grp.require_array("total_reads", shape=(len(all_samples),), dtype=np.int64, overwrite=True)
         meta_grp["total_reads"][:] = np.array(total_reads_list, dtype=np.int64)
         assay_arr = meta_grp.require_array(
-            "assay", shape=(len(all_samples),), dtype=VariableLengthUTF8(), overwrite=True
+            "assay", shape=(len(all_samples),), dtype="str", overwrite=True
         )
         assay_arr[:] = assay_list
         meta_grp.require_array("mean_read_length", shape=(len(all_samples),), dtype=np.float32, overwrite=True)
@@ -1492,7 +1501,7 @@ class QuantNadoDataset:
             key_to_samples: dict = dict(
                 self._combined_root.attrs.get("key_to_samples", {})  # type: ignore[union-attr]
             )
-            for key, names in key_to_samples.items():
+            for key, names in sorted(key_to_samples.items(), key=lambda item: item[0] == "coverage"):
                 if sample_name in names:
                     return key
             return None

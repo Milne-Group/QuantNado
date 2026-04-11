@@ -76,19 +76,27 @@ class _RootView:
 class _TransposedArray:
 	"""Presents a (n_samples, chrom_len) array as (chrom_len, n_samples) for the reduce loop."""
 
-	def __init__(self, arr) -> None:
+	def __init__(self, arr, row_indices: np.ndarray | None = None) -> None:
 		self._arr = arr
-		ns, nc = int(arr.shape[0]), int(arr.shape[1])
+		self._row_indices = row_indices
+		ns = len(row_indices) if row_indices is not None else int(arr.shape[0])
+		nc = int(arr.shape[1])
 		self.shape = (nc, ns)
 		_c = getattr(arr, "chunks", None)
-		self.chunks = (_c[1], _c[0]) if _c else (nc, ns)
+		sample_chunk = len(row_indices) if row_indices is not None else _c[0] if _c else ns
+		self.chunks = (_c[1], sample_chunk) if _c else (nc, ns)
 
 	def __getitem__(self, key):
+		row_sel = self._row_indices if self._row_indices is not None else slice(None)
 		if isinstance(key, tuple) and len(key) == 2:
 			pos_key, sam_key = key
-			result = np.asarray(self._arr[sam_key, pos_key])
+			if self._row_indices is not None:
+				row_sel = np.asarray(self._row_indices[sam_key])
+			else:
+				row_sel = sam_key
+			result = np.asarray(self._arr[row_sel, pos_key])
 			return result.T if result.ndim == 2 else result
-		result = np.asarray(self._arr[:, key])
+		result = np.asarray(self._arr[row_sel, key])
 		return result.T if result.ndim == 2 else result
 
 
@@ -102,9 +110,10 @@ class _CombinedZarrView:
 	pos_axis = 0
 	samples_axis = 1
 
-	def __init__(self, zarr_root, array_key: str = "coverage") -> None:
+	def __init__(self, zarr_root, array_key: str = "coverage", row_indices: np.ndarray | None = None) -> None:
 		self._root = zarr_root
 		self._array_key = array_key
+		self._row_indices = row_indices
 
 	def _chrom_keys(self):
 		import zarr as _zarr
@@ -119,7 +128,7 @@ class _CombinedZarrView:
 		return key in self._root and self._array_key in self._root.get(key, {})
 
 	def __getitem__(self, key: str) -> _TransposedArray:
-		return _TransposedArray(self._root[key][self._array_key])
+		return _TransposedArray(self._root[key][self._array_key], self._row_indices)
 
 	def keys(self):
 		return iter(self._chrom_keys())

@@ -168,8 +168,7 @@ def _mean_read_lengths_from_qnd(dataset) -> pd.Series:
         result = full_series.reindex(dataset.sample_names)
         # NaN out incomplete samples
         completed = dataset.completed_mask
-        result.values[~completed] = np.nan
-        return result
+        return result.where(completed, np.nan)
 
     lengths_dict: dict[str, float] = {}
     for store in dataset._stores:
@@ -281,10 +280,22 @@ def normalise(
     if isinstance(mean_read_lengths, dict):
         mean_read_lengths = pd.Series(mean_read_lengths, name="mean_read_length")
 
+    if isinstance(data, xr.Dataset) and method == "rpkm" and mean_read_lengths is None and dataset is not None:
+        try:
+            mean_read_lengths = get_mean_read_lengths(dataset)
+        except (RuntimeError, AttributeError):
+            pass
+
     if isinstance(data, pd.DataFrame):
         return _normalise_dataframe(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths, device=device)
     if isinstance(data, xr.Dataset):
-        return _normalise_xr_dataset(data, method=method, lib_sizes=lib_sizes, feature_lengths=feature_lengths)
+        return _normalise_xr_dataset(
+            data,
+            method=method,
+            lib_sizes=lib_sizes,
+            feature_lengths=feature_lengths,
+            mean_read_lengths=mean_read_lengths,
+        )
     if isinstance(data, xr.DataArray):
         return _normalise_xr_dataarray(data, method=method, lib_sizes=lib_sizes, mean_read_lengths=mean_read_lengths, device=device)
 
@@ -396,11 +407,23 @@ def _normalise_xr_dataset(
     method: str,
     lib_sizes: pd.Series,
     feature_lengths: pd.Series | np.ndarray | None = None,
+    mean_read_lengths: pd.Series | None = None,
 ) -> xr.Dataset:
     sample_labels = list(data["sample"].values)
     scale = _scale_per_sample(lib_sizes, sample_labels)  # (n_samples,)
-    # Use a labelled DataArray so broadcasts align on "sample" regardless of dim order
-    scale_xr = xr.DataArray(scale, dims=["sample"], coords={"sample": sample_labels})
+
+    if "coverage" in data.data_vars:
+        coverage_norm = _normalise_xr_dataarray(
+            data["coverage"],
+            method=method,
+            lib_sizes=lib_sizes,
+            mean_read_lengths=mean_read_lengths,
+        )
+        result = data.copy()
+        result[method] = coverage_norm
+        result.attrs = {**data.attrs, "normalised": method}
+        logger.info(f"Added {method.upper()} variable to xr.Dataset from coverage.")
+        return result
 
     vars_to_norm = [v for v in data.data_vars if v != "count"]
 
