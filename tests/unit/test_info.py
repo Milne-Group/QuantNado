@@ -95,6 +95,17 @@ def test_info_prints_and_returns_summary(capsys):
     assert "ips       : MLLN" in rendered
 
 
+def test_info_property_result_is_also_callable_for_legacy_usage():
+    qn = _FakeInfoQN()
+
+    summary = qn.info
+    called = qn.info()
+
+    assert isinstance(called, dict)
+    assert called == summary
+    assert called["assays"] == ["ATAC", "CHIP"]
+
+
 def test_normalised_dataset_info_reports_method():
     qn = _FakeInfoQN()
     from quantnado.analysis.core import NormalisedQuantNadoDataset
@@ -146,6 +157,25 @@ def test_groups_returns_assay_to_samples_mapping():
     assert "ATAC-1, ATAC-2" in rendered
 
 
+def test_metadata_returns_core_per_sample_fields():
+    qn = _FakeInfoQN()
+
+    metadata = QuantNadoDataset.metadata.__get__(qn, _FakeInfoQN)
+
+    assert list(metadata["sample_id"]) == ["ATAC-1", "ATAC-2", "ChIP-1"]
+    assert list(metadata["assay"]) == ["ATAC", "ATAC", "CHIP"]
+    assert pd.isna(metadata.loc[0, "ip"])
+    assert pd.isna(metadata.loc[1, "ip"])
+    assert metadata.loc[2, "ip"] == "MLLN"
+    assert metadata["stranded"].isna().all()
+    assert list(metadata.columns) == [
+        "sample_id",
+        "assay",
+        "ip",
+        "stranded",
+    ]
+
+
 def test_group_by_ip_and_custom_groups():
     qn = _FakeInfoQN()
 
@@ -161,6 +191,47 @@ def test_group_by_ip_and_custom_groups():
     )
     assert custom["control"] == ["ATAC-1", "ATAC-2"]
     assert custom["treated"] == ["ChIP-1"]
+
+
+def test_metadata_uses_cached_group_labels_when_available():
+    class FakeNames(_FakeInfoQN):
+        @property
+        def sample_names(self):
+            return [
+                "C1-CD3-TEX-NTG-1_H3K27AC",
+                "C4-CD4-TEX-MEZI-PolyAminus-2",
+            ]
+
+        def _get_assay_per_sample(self):
+            return ["CUT&TAG", "RNA"]
+
+        def _get_ip_per_sample(self):
+            return ["H3K27AC", ""]
+
+        def _get_stranded_per_sample(self):
+            return ["", "R"]
+
+    qn = FakeNames()
+    QuantNadoDataset.group_by(
+        qn,
+        ip="ip",
+        cell_type={"CD3": ["-CD3-"], "CD4": ["-CD4-"]},
+        treatment={"NTG": ["-NTG-"], "MEZI": ["-MEZI-"]},
+        polya={"PolyAminus": ["PolyAminus"]},
+        match="contains",
+    )
+
+    metadata = QuantNadoDataset.metadata.__get__(qn, FakeNames).set_index("sample_id")
+
+    assert metadata.loc["C1-CD3-TEX-NTG-1_H3K27AC", "ip"] == "H3K27AC"
+    assert metadata.loc["C1-CD3-TEX-NTG-1_H3K27AC", "cell_type"] == "CD3"
+    assert metadata.loc["C1-CD3-TEX-NTG-1_H3K27AC", "treatment"] == "NTG"
+    assert pd.isna(metadata.loc["C1-CD3-TEX-NTG-1_H3K27AC", "polya"])
+
+    assert metadata.loc["C4-CD4-TEX-MEZI-PolyAminus-2", "cell_type"] == "CD4"
+    assert metadata.loc["C4-CD4-TEX-MEZI-PolyAminus-2", "treatment"] == "MEZI"
+    assert metadata.loc["C4-CD4-TEX-MEZI-PolyAminus-2", "polya"] == "PolyAminus"
+    assert list(metadata.columns) == ["assay", "ip", "stranded", "cell_type", "polya", "treatment"]
 
 
 def test_group_by_custom_contains_patterns():
@@ -336,3 +407,83 @@ def test_group_by_ip_falls_back_when_metadata_column_missing():
 
     assert groups["MLL"] == ["chip-rx_MLL"]
     assert groups["H3K27ac"] == ["CAT-SEM_H3K27ac"]
+
+
+
+
+def test_info_handles_assay_alias_mismatch_between_summary_and_sample_metadata():
+    class _FakeArray:
+        def __init__(self, values):
+            self._values = values
+
+        def __getitem__(self, item):
+            if isinstance(item, slice):
+                return self._values
+            return self._values[item]
+
+    class _FakeMeta(dict):
+        pass
+
+    class _FakeRoot:
+        attrs = {
+            "sample_names": ["CAT-SEM_H3K27ac", "rna-1"],
+            "array_keys": ["coverage", "cat_h3k27ac", "rna_fwd"],
+            "key_to_samples": {
+                "coverage": ["CAT-SEM_H3K27ac", "rna-1"],
+                "cat_h3k27ac": ["CAT-SEM_H3K27ac"],
+                "rna_fwd": ["rna-1"],
+            },
+        }
+
+        def __init__(self):
+            self._metadata = _FakeMeta({
+                "assay": _FakeArray(["CAT", "RNA"]),
+                "ip": _FakeArray(["H3K27ac", ""]),
+            })
+
+        def get(self, name):
+            if name == "metadata":
+                return self._metadata
+            return None
+
+    class FakeAliasInfo:
+        subset = QuantNadoDataset.subset
+        _get_assay_per_sample = QuantNadoDataset._get_assay_per_sample
+        _get_ip_per_sample = QuantNadoDataset._get_ip_per_sample
+        _combined = True
+        _subset_samples = None
+        path = "fake_dataset.zarr"
+        _genes_df = None
+        _exons_df = None
+        _group_sets = {}
+        _last_group_name = None
+        _combined_root = _FakeRoot()
+
+        @property
+        def sample_names(self):
+            if self._subset_samples is not None:
+                return self._subset_samples
+            return ["CAT-SEM_H3K27ac", "rna-1"]
+
+        @property
+        def assays(self):
+            if self._subset_samples == ["CAT-SEM_H3K27ac"]:
+                return ["CUT&TAG"]
+            if self._subset_samples == ["rna-1"]:
+                return ["RNA"]
+            return ["CUT&TAG", "RNA"]
+
+        @property
+        def chromosomes(self):
+            return []
+
+        @property
+        def chromsizes(self):
+            return {}
+
+    qn = FakeAliasInfo()
+
+    info = QuantNadoDataset.info.__get__(qn, FakeAliasInfo)
+
+    assert info["per_assay"]["CUT&TAG"]["sample_names"] == ["CAT-SEM_H3K27ac"]
+    assert info["per_assay"]["CUT&TAG"]["ips"] == ["H3K27ac"]
