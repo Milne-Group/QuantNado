@@ -129,11 +129,7 @@ def count_features(
             if attr not in seen_attrs and not seen_attrs.add(attr)
         ]
         gtf_source = (
-            gtf_df if gtf_df is not None else load_gtf(
-                gtf_file,
-                feature_types=[feature_type],
-                usecols=gtf_usecols,
-            )
+            gtf_df if gtf_df is not None else load_gtf(gtf_file, feature_types=None)
         )
         
         # Extract feature ranges and convert from PyRanges to DataFrame
