@@ -125,3 +125,35 @@ def test_subset_group_empty_intersection_error_is_helpful():
 
     with pytest.raises(ValueError, match="No samples found after applying group filter 'treatment"):
         QuantNadoDataset.subset(qn, ip="MLL", group={"treatment": "treated"})
+
+
+def test_resolve_samples_normalises_assay_aliases():
+    class _FakeAliasQN:
+        _combined = True
+        _subset_samples = None
+        path = "fake_dataset.zarr"
+        _genes_df = None
+        _exons_df = None
+        _group_sets = {}
+        _last_group_name = None
+        _combined_root = type("Root", (), {"attrs": {"sample_names": ["CAT-1", "CUTRUN-1", "RNA-1"]}})()
+
+        @property
+        def sample_names(self):
+            return ["CAT-1", "CUTRUN-1", "RNA-1"]
+
+        @property
+        def assays(self):
+            return ["CUT&TAG", "CUT&RUN", "RNA"]
+
+        def _get_assay_per_sample(self):
+            return ["CAT", "CUTRUN", "RNA"]
+
+        def _get_ip_per_sample(self):
+            return ["H3K27ac", "", ""]
+
+    qn = _FakeAliasQN()
+
+    assert QuantNadoDataset.subset(qn, assay="CUT&TAG").sample_names == ["CAT-1"]
+    assert QuantNadoDataset.subset(qn, assay="CUTTAG").sample_names == ["CAT-1"]
+    assert QuantNadoDataset.subset(qn, assay="CUT&RUN").sample_names == ["CUTRUN-1"]

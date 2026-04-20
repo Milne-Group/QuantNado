@@ -20,6 +20,7 @@ def count_features(
     start_col: str = "start",
     end_col: str = "end",
     contig_col: str | None = None,
+    feature_id_attr: str | list[str] | None = None,
     feature_id_col: str | list[str] | None = None,
     aggregate_by: str | None = None,
     strand: str | int | None = None,
@@ -55,6 +56,10 @@ def count_features(
         Column names for range boundaries within ranges_df.
     contig_col : str, optional
         Column name for contig in ranges_df. If provided and present, included in metadata.
+    feature_id_attr : str or list[str], optional
+        GTF attribute key(s) to use as feature identifiers, similar to
+        ``featureCounts -g``. For GTF inputs this also controls the default
+        exon-level aggregation key when ``aggregate_by`` is not supplied.
     feature_id_col : str, optional
         Column in ranges_df to use as feature identifiers and index the counts matrix. If omitted
         for GTF inputs, falls back to common IDs (gene_id, transcript_id, gene_name, transcript_name).
@@ -102,14 +107,33 @@ def count_features(
     # Resolve ranges priority: explicit df > BED > GTF
     resolved_ranges = ranges_df
     resolved_contig_col = contig_col
-    resolved_feature_id_col = feature_id_col
+    resolved_feature_id_col = feature_id_attr if feature_id_attr is not None else feature_id_col
     resolved_aggregate_by = aggregate_by
 
     if resolved_ranges is None and bed_file is None:
         if gtf_df is None and gtf_file is None:
             raise TypeError("Provide ranges_df, bed_file, or gtf_df/gtf_file")
+        requested_gtf_attrs: list[str] = []
+        if isinstance(resolved_feature_id_col, str):
+            requested_gtf_attrs.append(resolved_feature_id_col)
+        elif resolved_feature_id_col is not None:
+            requested_gtf_attrs.extend(str(col) for col in resolved_feature_id_col)
+        if resolved_aggregate_by is not None:
+            requested_gtf_attrs.append(str(resolved_aggregate_by))
+        requested_gtf_attrs.extend(
+            ["gene_id", "transcript_id", "gene_name", "transcript_name"]
+        )
+        seen_attrs: set[str] = set()
+        gtf_usecols = [
+            attr for attr in requested_gtf_attrs
+            if attr not in seen_attrs and not seen_attrs.add(attr)
+        ]
         gtf_source = (
-            gtf_df if gtf_df is not None else load_gtf(gtf_file, feature_types=[feature_type])
+            gtf_df if gtf_df is not None else load_gtf(
+                gtf_file,
+                feature_types=[feature_type],
+                usecols=gtf_usecols,
+            )
         )
         
         # Extract feature ranges and convert from PyRanges to DataFrame
@@ -137,13 +161,12 @@ def count_features(
                 if candidate in resolved_ranges.columns:
                     resolved_feature_id_col = candidate
                     break
-        # Default aggregation for exon-level: sum to gene_id when available.
-        if (
-            resolved_aggregate_by is None
-            and feature_type == "exon"
-            and "gene_id" in resolved_ranges.columns
-        ):
-            resolved_aggregate_by = "gene_id"
+        # Default aggregation for exon-level: mimic featureCounts -t exon -g <attr>.
+        if resolved_aggregate_by is None and feature_type == "exon":
+            if isinstance(resolved_feature_id_col, str) and resolved_feature_id_col in resolved_ranges.columns:
+                resolved_aggregate_by = resolved_feature_id_col
+            elif "gene_id" in resolved_ranges.columns:
+                resolved_aggregate_by = "gene_id"
 
     # Normalize PyRanges Strand column name across all input sources.
     if resolved_ranges is not None and "Strand" in resolved_ranges.columns and "strand" not in resolved_ranges.columns:

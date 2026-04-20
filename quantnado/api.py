@@ -328,6 +328,10 @@ class QuantNado:
         return self._dataset.groups
 
     @property
+    def metadata(self) -> pd.DataFrame:
+        return self._dataset.metadata
+
+    @property
     def available_peak_methods(self) -> list[str]:
         return self._dataset.available_peak_methods
 

@@ -32,6 +32,10 @@ _COVERAGE_COLLAPSE_KEYS = frozenset({"atac", "chip", "cat"})
 class DatasetInfo(dict):
     """Pretty-printable dict returned by :meth:`QuantNadoDataset.info`."""
 
+    def __call__(self) -> "DatasetInfo":
+        """Support legacy ``qn.info()`` usage while ``info`` remains a property."""
+        return self
+
     @staticmethod
     def _format_chromsizes(chromsizes: dict[str, int]) -> str:
         return ", ".join(f"{chrom}={size:,}" for chrom, size in chromsizes.items())
@@ -440,6 +444,28 @@ class QuantNadoDataset:
                 result.append(value)
         return result
 
+    def _get_stranded_per_sample(self) -> list[str]:
+        """Return strandedness label per sample, in sample_names order."""
+        if self._combined:
+            meta = self._combined_root.get("metadata")
+            if meta is not None and "stranded" in meta:
+                raw = meta["stranded"][:]
+                all_values = [s.decode() if isinstance(s, bytes) else str(s) for s in raw]
+                if self._subset_samples is not None:
+                    full_names = [str(s) for s in self._combined_root.attrs.get("sample_names", [])]
+                    name_to_idx = {s: i for i, s in enumerate(full_names)}
+                    return [all_values[name_to_idx[s]] for s in self._subset_samples if s in name_to_idx]
+                return all_values
+            return [""] * len(self.sample_names)
+        result = []
+        for store in self._stores:
+            value = str(getattr(store, "stranded", "") or "")
+            if store.viewpoints:
+                result.extend([value] * len(store.viewpoints))
+            else:
+                result.append(value)
+        return result
+
     @staticmethod
     def _infer_ip_from_sample_name(sample_name: str, assay_name: str) -> str:
         """Best-effort fallback for missing IP metadata from assay-style sample names."""
@@ -450,6 +476,64 @@ class QuantNadoDataset:
         if "_" not in sample:
             return ""
         return sample.rsplit("_", 1)[-1]
+
+    @property
+    def metadata(self) -> pd.DataFrame:
+        """Return per-sample metadata with core fields plus cached ``group_by`` labels."""
+        sample_names = list(self.sample_names)
+        assays = self._get_assay_per_sample()
+        ips = self._get_ip_per_sample()
+        stranded = self._get_stranded_per_sample()
+
+        rows = []
+        for sample, assay, ip, strand in zip(sample_names, assays, ips, stranded):
+            rows.append({
+                "sample_id": sample,
+                "assay": str(assay).upper(),
+                "ip": str(ip).strip() or None,
+                "stranded": str(strand).strip() or None,
+            })
+
+        metadata_df = pd.DataFrame(rows)
+        if metadata_df.empty:
+            return metadata_df
+
+        # Promote cached group labels to first-class metadata columns. These
+        # are user-defined and should override best-effort name parsing.
+        for group_name, groups in self._group_sets.items():
+            if not groups:
+                continue
+            labels_by_sample: dict[str, str] = {}
+            for label, members in groups.items():
+                for sample in members:
+                    if sample in labels_by_sample and labels_by_sample[sample] != label:
+                        labels_by_sample[sample] = f"{labels_by_sample[sample]}|{label}"
+                    else:
+                        labels_by_sample[sample] = label
+            metadata_df[group_name] = metadata_df["sample_id"].map(labels_by_sample)
+
+        preferred = [
+            "sample_id",
+            "assay",
+            "ip",
+            "stranded",
+        ]
+        remaining = [col for col in metadata_df.columns if col not in preferred]
+        metadata_df = metadata_df.loc[:, [col for col in preferred if col in metadata_df.columns] + sorted(remaining)]
+
+        sort_cols = [col for col in ["assay", "sample_id"] if col in metadata_df.columns]
+        return metadata_df.sort_values(sort_cols, na_position="last").reset_index(drop=True)
+
+    @staticmethod
+    def _canonicalise_assay_name(assay_name: str) -> str:
+        """Normalise biological assay aliases so assay filters match stored metadata."""
+        assay_upper = str(assay_name or "").strip().upper()
+        alias_map = {
+            "CUTTAG": "CUT&TAG",
+            "CAT": "CUT&TAG",
+            "CUTRUN": "CUT&RUN",
+        }
+        return alias_map.get(assay_upper, assay_upper)
 
     def group_by(
         self,
@@ -552,28 +636,6 @@ class QuantNadoDataset:
         result = GroupInfo(grouped)
         self._group_sets[key] = {k: list(v) for k, v in result.items()}
         self._last_group_name = key
-        return result
-
-    def _get_stranded_per_sample(self) -> list[str]:
-        """Return strandedness string per sample (``R``/``F``/``""``)."""
-        if self._combined:
-            meta = self._combined_root.get("metadata")
-            if meta is not None and "stranded" in meta:
-                raw = meta["stranded"][:]
-                all_values = [s.decode() if isinstance(s, bytes) else str(s) for s in raw]
-                if self._subset_samples is not None:
-                    full_names = [str(s) for s in self._combined_root.attrs.get("sample_names", [])]
-                    name_to_idx = {s: i for i, s in enumerate(full_names)}
-                    return [all_values[name_to_idx[s]] for s in self._subset_samples if s in name_to_idx]
-                return all_values
-            return [""] * len(self.sample_names)
-        result = []
-        for store in self._stores:
-            value = str(store.stranded or "")
-            if store.viewpoints:
-                result.extend([value] * len(store.viewpoints))
-            else:
-                result.append(value)
         return result
 
     # ------------------------------------------------------------------
@@ -1683,9 +1745,16 @@ class QuantNadoDataset:
             resolved = [s for s in resolved if s in requested_set]
 
         if assay_list is not None:
-            assay_upper = {a.upper() for a in assay_list}
+            assay_upper = {
+                QuantNadoDataset._canonicalise_assay_name(a)
+                for a in assay_list
+            }
             assay_per_sample = dict(zip(self.sample_names, self._get_assay_per_sample()))
-            resolved = [s for s in resolved if assay_per_sample.get(s, "").upper() in assay_upper]
+            resolved = [
+                s
+                for s in resolved
+                if QuantNadoDataset._canonicalise_assay_name(assay_per_sample.get(s, "")) in assay_upper
+            ]
             if not resolved:
                 raise ValueError(f"No samples found for assay='{assay}'. Available assays: {self.assays}")
 
@@ -1864,6 +1933,9 @@ class QuantNadoDataset:
             Pre-parsed ranges DataFrame.
         feature_type:
             GTF feature level (default ``"gene"``).
+            Combine with ``feature_id_attr`` in ``kwargs`` for featureCounts-like
+            ``-t/-g`` semantics, for example ``feature_type="exon"``,
+            ``feature_id_attr="gene_name"``.
         engine:
             Counting backend.
 
