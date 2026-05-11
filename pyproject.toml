@@ -55,7 +55,7 @@ gpu = [
 dev = [
     "mkdocs-material==9.7.4",
     "mkdocs>=1.6,<2.0",
-    "mkdocs-jupyter==0.25.1",
+    "mkdocs-jupyter==0.26.3",
     "mkdocstrings-python==2.0.3",
     "mkdocstrings==1.0.4",
     "pymdown-extensions==10.21",
