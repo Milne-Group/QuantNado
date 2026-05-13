@@ -101,15 +101,31 @@ def metadata_from_seqnado(
     if not design_files:
         raise FileNotFoundError(f"No metadata_*.csv files found in {seqnado_dir}")
 
-    metadata = pd.concat([pd.read_csv(f) for f in design_files], ignore_index=True)[
-        ["assay", "sample_id", "ip"]
-    ]
+    metadata = pd.concat([pd.read_csv(f) for f in design_files], ignore_index=True)
+    # Ensure 'ip' column exists (may not be present in all metadata files)
+    if "ip" not in metadata.columns:
+        metadata["ip"] = None
+    metadata = metadata[["assay", "sample_id", "ip"]]
     metadata["sample_id"] = metadata.apply(
         lambda row: f"{row['sample_id']}_{row['ip']}" if pd.notna(row["ip"]) else row["sample_id"],
         axis=1,
     )
-    metadata = metadata[metadata["sample_id"].apply(lambda s: any(s in b for b in bams))].copy()
-    metadata["bam_path"] = metadata["sample_id"].apply(lambda s: next(b for b in bams if s in b))
+    
+    # Try to match metadata to BAM files
+    if len(bams) > 0:
+        metadata = metadata[metadata["sample_id"].apply(lambda s: any(s in b for b in bams))].copy()
+        metadata["bam_path"] = metadata["sample_id"].apply(
+            lambda s: next((b for b in bams if s in b), None)
+        )
+    else:
+        # No BAM files found — log warning and set bam_path to None
+        logger.warning(
+            "No indexed BAM files found in {}. Found metadata for assays: {}. "
+            "Set bam_path to None. Download BAM files if needed and re-run.",
+            out,
+            metadata["assay"].unique().tolist(),
+        )
+        metadata["bam_path"] = None
 
     rna_config_path = seqnado_dir / "config_rna.yaml"
     if rna_config_path.exists():
