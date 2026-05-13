@@ -518,7 +518,8 @@ class BamStore:
             test=test,
             test_chromosomes=test_chromosomes,
         )
-        read_filter = bam_filter or bamnado.ReadFilter()
+        # MCC reads are single-end after ligation; disable proper_pair filter
+        read_filter = bam_filter or bamnado.ReadFilter(proper_pair=not is_mcc)
         use_fragment = bool(count_fragments) if count_fragments is not None else assay.upper() == "RNA"
 
         viewpoints: list[str] = []
