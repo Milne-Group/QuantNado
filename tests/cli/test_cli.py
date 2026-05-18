@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
 
 from typer.testing import CliRunner
 
@@ -34,6 +35,15 @@ def test_dataset_combine_help_mentions_stores_list():
     assert "--stores" in clean
     assert "single" in clean
     assert "flag" in clean
+
+
+def test_dataset_compress_help_mentions_parallel_archive():
+    result = runner.invoke(app, ["dataset", "compress", "--help"])
+    assert result.exit_code == 0
+    clean = _clean(result.stdout)
+    assert "--dataset" in clean
+    assert "--workers" in clean
+    assert "pigz" in clean
 
 
 def test_dataset_create_dispatches_bam_store(monkeypatch, tmp_path):
@@ -184,3 +194,75 @@ def test_dataset_combine_accepts_single_flag_store_list(monkeypatch, tmp_path):
     assert seen["stores"] == ["ATAC_1.zarr", "ChIP_1.zarr", "RNA_1.zarr"]
     assert seen["output"] == tmp_path / "combined.zarr"
     assert seen["n_workers"] == 2
+
+
+def test_dataset_compress_uses_pigz_workers(monkeypatch, tmp_path):
+    dataset = tmp_path / "combined.zarr"
+    dataset.mkdir()
+    (dataset / "zarr.json").write_text("{}")
+    output = tmp_path / "combined.zarr.gz"
+    seen: dict[str, list[str]] = {}
+
+    def fake_which(name: str) -> str | None:
+        if name in {"tar", "pigz"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run(cmd, stdout, stderr, text, check):
+        seen["cmd"] = cmd
+        archive = Path(cmd[cmd.index("-cf") + 1])
+        archive.write_bytes(b"archive")
+        return subprocess.CompletedProcess(cmd, 0, "")
+
+    monkeypatch.setattr("quantnado.cli.shutil.which", fake_which)
+    monkeypatch.setattr("quantnado.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "dataset",
+            "compress",
+            "--dataset",
+            str(dataset),
+            "--output",
+            str(output),
+            "--workers",
+            "8",
+        ],
+    )
+
+    assert result.exit_code == 0
+    cmd = seen["cmd"]
+    assert cmd[:4] == ["/usr/bin/tar", "-I", "pigz -p 8", "-cf"]
+    assert cmd[4] == str(output)
+    assert cmd[-3:] == ["-C", str(tmp_path), "combined.zarr"]
+
+
+def test_dataset_compress_requires_pigz_for_parallel_workers(monkeypatch, tmp_path):
+    dataset = tmp_path / "combined.zarr"
+    dataset.mkdir()
+    log_file = tmp_path / "compress.log"
+
+    def fake_which(name: str) -> str | None:
+        if name == "tar":
+            return "/usr/bin/tar"
+        return None
+
+    monkeypatch.setattr("quantnado.cli.shutil.which", fake_which)
+
+    result = runner.invoke(
+        app,
+        [
+            "dataset",
+            "compress",
+            "--dataset",
+            str(dataset),
+            "--workers",
+            "2",
+            "--log-file",
+            str(log_file),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "pigz" in _clean(log_file.read_text())

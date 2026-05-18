@@ -28,4 +28,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/milne-group/quantnado-ci:latest
+          tags: |
+            ghcr.io/milne-group/quantnado:latest
+            ghcr.io/milne-group/quantnado:${{ github.event.release.tag_name }}

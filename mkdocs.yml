@@ -128,6 +128,7 @@ nav:
     - CLI Overview: cli/index.md
     - Create Dataset: cli/create_dataset.md
     - Combine Dataset: cli/combine_dataset.md
+    - Compress Dataset: cli/compress_dataset.md
     - Call Peaks: cli/call_peaks.md
     - CLI Reference: cli.md
   - API Reference:
