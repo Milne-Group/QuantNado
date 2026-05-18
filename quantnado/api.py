@@ -427,10 +427,21 @@ class QuantNado:
 
     @classmethod
     def combine(
-        cls, src: Path | str, output: Path | str, overwrite: bool = True
+        cls,
+        src: Path | str,
+        output: Path | str,
+        overwrite: bool = True,
+        n_workers: int = 1,
     ) -> "QuantNado":
         """Combine a directory of per-sample zarrs into a single combined zarr."""
-        return cls(QuantNadoDataset.combine(src, output, overwrite=overwrite))
+        return cls(
+            QuantNadoDataset.combine(
+                src,
+                output,
+                overwrite=overwrite,
+                n_workers=n_workers,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Analysis helpers

@@ -282,3 +282,16 @@ class TestCombine:
         result = combined.sel(chrom="chr1")
         assert combined.array_keys == ["coverage"]
         assert result["coverage"].shape == (2, 100)
+
+    def test_combine_with_workers_preserves_values(self, tmp_path):
+        ds_dir = _make_dataset_dir(tmp_path, n_samples=2)
+        combined_path = tmp_path / "combined.zarr"
+        combined = QuantNadoDataset.combine(ds_dir, combined_path, n_workers=2)
+
+        result = combined.sel(chrom="chr1", start=1, end=5)
+
+        expected = np.vstack([
+            np.ones(5, dtype=np.float32),
+            np.full(5, 2, dtype=np.float32),
+        ])
+        np.testing.assert_array_equal(result["coverage"].values, expected)

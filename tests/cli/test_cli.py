@@ -154,11 +154,12 @@ def test_dataset_combine_accepts_single_flag_store_list(monkeypatch, tmp_path):
     seen: dict[str, object] = {}
 
     @classmethod
-    def fake_combine(cls, src, output, overwrite=True):
+    def fake_combine(cls, src, output, overwrite=True, n_workers=1):
         src_path = Path(src)
         seen["stores"] = sorted(p.name for p in src_path.glob("*.zarr"))
         seen["output"] = Path(output)
         seen["overwrite"] = overwrite
+        seen["n_workers"] = n_workers
         return None
 
     monkeypatch.setattr("quantnado.analysis.core.QuantNadoDataset.combine", fake_combine)
@@ -174,9 +175,12 @@ def test_dataset_combine_accepts_single_flag_store_list(monkeypatch, tmp_path):
             str(stores[2]),
             "--output",
             str(tmp_path / "combined.zarr"),
+            "--workers",
+            "2",
         ],
     )
 
     assert result.exit_code == 0
     assert seen["stores"] == ["ATAC_1.zarr", "ChIP_1.zarr", "RNA_1.zarr"]
     assert seen["output"] == tmp_path / "combined.zarr"
+    assert seen["n_workers"] == 2

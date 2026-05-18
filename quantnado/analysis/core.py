@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import tarfile
 import tempfile
+import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from pathlib import Path
 
 import dask.array as da
@@ -227,6 +230,73 @@ def _extract_tar_archive(path: Path, extract_dir: Path) -> Path:
         raise ValueError(f"Could not read tar archive {path}: {exc}") from exc
 
     return _find_extracted_dataset_root(extract_dir)
+
+
+def _copy_array_row_chunks(
+    src_arr: zarr.Array,
+    dst_arr: zarr.Array,
+    row_idx: int,
+    chrom_len: int,
+    chunk_len: int,
+    *,
+    dtype: np.dtype | type | None = None,
+) -> int:
+    """Copy one source row into one destination row using bounded chunks."""
+    bytes_written = 0
+    itemsize = np.dtype(dst_arr.dtype).itemsize
+    for start in range(0, chrom_len, chunk_len):
+        end = min(start + chunk_len, chrom_len)
+        data = src_arr[0, start:end]
+        if dtype is not None:
+            data = np.asarray(data, dtype=dtype)
+        dst_arr[row_idx, start:end] = data
+        bytes_written += (end - start) * itemsize
+    return bytes_written
+
+
+def _copy_sum_array_row_chunks(
+    src_arrays: Sequence[zarr.Array],
+    dst_arr: zarr.Array,
+    row_idx: int,
+    chrom_len: int,
+    chunk_len: int,
+    *,
+    dtype: np.dtype | type = np.float32,
+) -> int:
+    """Copy the row-wise sum of one or more source arrays into a destination row."""
+    if not src_arrays:
+        return 0
+
+    bytes_written = 0
+    itemsize = np.dtype(dst_arr.dtype).itemsize
+    for start in range(0, chrom_len, chunk_len):
+        end = min(start + chunk_len, chrom_len)
+        data = np.asarray(src_arrays[0][0, start:end], dtype=dtype)
+        for src_arr in src_arrays[1:]:
+            data += np.asarray(src_arr[0, start:end], dtype=dtype)
+        dst_arr[row_idx, start:end] = data
+        bytes_written += (end - start) * itemsize
+    return bytes_written
+
+
+def _run_copy_tasks(tasks: Sequence, n_workers: int) -> int:
+    """Run row-copy tasks serially or with a thread pool and return bytes written."""
+    if n_workers == 1 or len(tasks) <= 1:
+        return sum(task() for task in tasks)
+
+    bytes_written = 0
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = [executor.submit(task) for task in tasks]
+        for future in as_completed(futures):
+            bytes_written += future.result()
+    return bytes_written
+
+
+def _format_rate(bytes_written: int, elapsed: float) -> str:
+    """Human-readable throughput helper for combine logging."""
+    if elapsed <= 0:
+        return "n/a"
+    return f"{bytes_written / elapsed / 1024**2:.1f} MiB/s"
 
 
 # ---------------------------------------------------------------------------
@@ -1649,6 +1719,7 @@ class QuantNadoDataset:
         src: Path | str,
         output: Path | str,
         overwrite: bool = True,
+        n_workers: int = 1,
     ) -> "QuantNadoDataset":
         """Combine a directory of per-sample zarrs into a single multi-sample zarr.
 
@@ -1663,10 +1734,15 @@ class QuantNadoDataset:
             Path for the combined ``.zarr`` output.
         overwrite:
             Delete ``output`` if it already exists.
+        n_workers:
+            Number of thread workers for row-copy tasks. ``1`` preserves the
+            previous serial behaviour.
         """
         from zarr.core.array_spec import ArrayConfig
         from zarr.storage import LocalStore
 
+        n_workers = max(1, int(n_workers))
+        combine_start = time.perf_counter()
         src_ds = cls(src)
         if src_ds._combined:
             raise ValueError("src is already a combined store")
@@ -1690,8 +1766,9 @@ class QuantNadoDataset:
 
         # Group stores by assay key; also build key→sample-names mapping for sel()
         key_to_stores: dict[str, list[_PerSampleStore]] = {}
+        keys_by_store = {id(store): store.array_keys() for store in src_ds._stores}
         for store in src_ds._stores:
-            for key in store.array_keys():
+            for key in keys_by_store[id(store)]:
                 key_to_stores.setdefault(key, []).append(store)
 
         key_to_samples: dict[str, list[str]] = {}
@@ -1710,9 +1787,16 @@ class QuantNadoDataset:
             all_array_keys = sorted(set(all_array_keys) | {"coverage"})
 
         chromsizes = src_ds.chromsizes
-        chunk_len = src_ds._stores[0].chunk_len if src_ds._stores else 65536
+        chunk_len = max(1, src_ds._stores[0].chunk_len if src_ds._stores else 65536)
+        logger.info(
+            f"Combining {len(src_ds._stores)} store(s), {len(all_samples)} sample row(s), "
+            f"{len(chromsizes)} chromosome(s) -> {output_path} "
+            f"(workers={n_workers}, chunk_len={chunk_len:,})"
+        )
 
         for chrom, chrom_len in chromsizes.items():
+            chrom_start = time.perf_counter()
+            logger.info(f"Combining chromosome {chrom} ({chrom_len:,} bp)")
             grp = out_root.require_group(chrom)
             for key, stores in key_to_stores.items():
                 if key == "coverage" or key in _COVERAGE_COLLAPSE_KEYS:
@@ -1733,8 +1817,24 @@ class QuantNadoDataset:
                     config=write_config,
                     overwrite=True,
                 )
-                for row_idx, store in enumerate(present_stores):
-                    out_arr[row_idx, :] = store.get_array(chrom, key)[0, :]
+                key_start = time.perf_counter()
+                tasks = [
+                    partial(
+                        _copy_array_row_chunks,
+                        store.get_array(chrom, key),
+                        out_arr,
+                        row_idx,
+                        chrom_len,
+                        chunk_len,
+                    )
+                    for row_idx, store in enumerate(present_stores)
+                ]
+                bytes_written = _run_copy_tasks(tasks, n_workers)
+                elapsed = time.perf_counter() - key_start
+                logger.info(
+                    f"Combined {chrom}:{key} ({n} row(s)) in {elapsed:.1f}s "
+                    f"({_format_rate(bytes_written, elapsed)})"
+                )
 
             # Unified coverage: one row per sample, using primary signal per assay.
             # METH → coverage, RNA → rna_fwd + rna_rev, SNP → DP,
@@ -1748,42 +1848,89 @@ class QuantNadoDataset:
                 config=write_config,
                 overwrite=True,
             )
+            cov_start = time.perf_counter()
+            cov_tasks = []
             cov_row_idx = 0
             for store in src_ds._stores:
-                keys_set = set(store.array_keys())
+                keys = keys_by_store[id(store)]
+                keys_set = set(keys)
                 missing_chrom = chrom not in store.chromosomes
                 if store.viewpoints:
                     for vp in store.viewpoints:
                         vp_key = f"viewpoint_{vp}"
                         if not missing_chrom and vp_key in keys_set:
-                            cov_arr[cov_row_idx, :] = np.asarray(
-                                store.get_array(chrom, vp_key)[0, :], dtype=np.float32
+                            cov_tasks.append(
+                                partial(
+                                    _copy_sum_array_row_chunks,
+                                    (store.get_array(chrom, vp_key),),
+                                    cov_arr,
+                                    cov_row_idx,
+                                    chrom_len,
+                                    chunk_len,
+                                )
                             )
                         cov_row_idx += 1
                 elif missing_chrom:
                     cov_row_idx += 1
                 elif "coverage" in keys_set:
-                    cov_arr[cov_row_idx, :] = np.asarray(
-                        store.get_array(chrom, "coverage")[0, :], dtype=np.float32
+                    cov_tasks.append(
+                        partial(
+                            _copy_sum_array_row_chunks,
+                            (store.get_array(chrom, "coverage"),),
+                            cov_arr,
+                            cov_row_idx,
+                            chrom_len,
+                            chunk_len,
+                        )
                     )
                     cov_row_idx += 1
                 elif "rna_fwd" in keys_set:
-                    fwd = np.asarray(store.get_array(chrom, "rna_fwd")[0, :], dtype=np.float32)
+                    src_arrays = [store.get_array(chrom, "rna_fwd")]
                     if "rna_rev" in keys_set:
-                        fwd += np.asarray(store.get_array(chrom, "rna_rev")[0, :], dtype=np.float32)
-                    cov_arr[cov_row_idx, :] = fwd
+                        src_arrays.append(store.get_array(chrom, "rna_rev"))
+                    cov_tasks.append(
+                        partial(
+                            _copy_sum_array_row_chunks,
+                            tuple(src_arrays),
+                            cov_arr,
+                            cov_row_idx,
+                            chrom_len,
+                            chunk_len,
+                        )
+                    )
                     cov_row_idx += 1
                 elif "DP" in keys_set:
-                    cov_arr[cov_row_idx, :] = np.asarray(
-                        store.get_array(chrom, "DP")[0, :], dtype=np.float32
+                    cov_tasks.append(
+                        partial(
+                            _copy_sum_array_row_chunks,
+                            (store.get_array(chrom, "DP"),),
+                            cov_arr,
+                            cov_row_idx,
+                            chrom_len,
+                            chunk_len,
+                        )
                     )
                     cov_row_idx += 1
                 else:
-                    first_key = store.array_keys()[0]
-                    cov_arr[cov_row_idx, :] = np.asarray(
-                        store.get_array(chrom, first_key)[0, :], dtype=np.float32
+                    first_key = keys[0]
+                    cov_tasks.append(
+                        partial(
+                            _copy_sum_array_row_chunks,
+                            (store.get_array(chrom, first_key),),
+                            cov_arr,
+                            cov_row_idx,
+                            chrom_len,
+                            chunk_len,
+                        )
                     )
                     cov_row_idx += 1
+            bytes_written = _run_copy_tasks(cov_tasks, n_workers)
+            elapsed = time.perf_counter() - cov_start
+            logger.info(
+                f"Combined {chrom}:coverage ({len(all_samples)} row(s)) in {elapsed:.1f}s "
+                f"({_format_rate(bytes_written, elapsed)})"
+            )
+            logger.info(f"Finished chromosome {chrom} in {time.perf_counter() - chrom_start:.1f}s")
 
         # Write combined metadata
         meta_grp = out_root.require_group("metadata")
@@ -1848,7 +1995,10 @@ class QuantNadoDataset:
         )
 
         zarr.consolidate_metadata(str(output_path))
-        logger.info(f"Combined {len(src_ds._stores)} stores → {output_path}")
+        logger.info(
+            f"Combined {len(src_ds._stores)} stores -> {output_path} "
+            f"in {time.perf_counter() - combine_start:.1f}s"
+        )
         return cls(output_path)
 
     # ------------------------------------------------------------------
