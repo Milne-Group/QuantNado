@@ -526,6 +526,8 @@
       
         
       
+        
+      
     
     
     
@@ -654,6 +656,34 @@
     
   
     Combine Dataset
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="compress_dataset/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compress Dataset
   
 
     
@@ -1359,6 +1389,10 @@
 <td>Merge per-sample <code>.zarr</code> stores into one multi-sample dataset</td>
 </tr>
 <tr>
+<td><a href="compress_dataset/"><code>dataset compress</code></a></td>
+<td>Archive a QuantNado dataset as a tar.gz file</td>
+</tr>
+<tr>
 <td><a href="call_peaks/"><code>call-peaks</code></a></td>
 <td>Call peaks from a QuantNado dataset</td>
 </tr>
@@ -1373,6 +1407,7 @@
 <li><code>dataset create</code> is per-sample and input-file-driven</li>
 <li>outputs are written as one <code>.zarr</code> store per sample</li>
 <li><code>dataset combine</code> accepts one <code>--stores</code> flag followed by a list of store paths</li>
+<li><code>dataset compress</code> writes tar.gz archives that <code>QuantNado.open(...)</code> can read directly</li>
 <li>test-mode builds can use either the default chromosome trio or repeated <code>--test-chrom</code> values</li>
 <li><code>call-peaks</code> works from QuantNado zarr inputs, not from bigWig directories</li>
 </ul>
@@ -1387,15 +1422,21 @@
 </span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span>--stores<span class="w"> </span>dataset/ATAC_1.zarr<span class="w"> </span>dataset/RNA_1.zarr<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span>--output<span class="w"> </span>dataset/combined.zarr
 </span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span>--zarr<span class="w"> </span>dataset/combined.zarr<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">  </span>--method<span class="w"> </span>quantile<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span>--output-dir<span class="w"> </span>peaks
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>quantnado<span class="w"> </span>dataset<span class="w"> </span>compress<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span>--dataset<span class="w"> </span>dataset/combined.zarr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">  </span>--output<span class="w"> </span>dataset/combined.zarr.gz<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span>--workers<span class="w"> </span><span class="m">8</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>quantnado<span class="w"> </span>call-peaks<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span>--zarr<span class="w"> </span>dataset/combined.zarr<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span>--method<span class="w"> </span>quantile<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span>--output-dir<span class="w"> </span>peaks
 </span></code></pre></div>
 <h2 id="more-detail">More Detail<a class="headerlink" href="#more-detail" title="Anchor link to this section">&para;</a></h2>
 <ul>
 <li><a href="create_dataset/">Create Dataset</a></li>
 <li><a href="combine_dataset/">Combine Dataset</a></li>
+<li><a href="compress_dataset/">Compress Dataset</a></li>
 <li><a href="call_peaks/">Call Peaks</a></li>
 <li><a href="./">Legacy-style CLI summary</a></li>
 </ul>
