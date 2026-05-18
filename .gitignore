@@ -16,7 +16,7 @@
 202*
 build/
 CLAUDE.md
-example.ipynb
+explore.ipynb
 local/
 logs/
 mkdocs.yml
