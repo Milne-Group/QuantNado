@@ -70,6 +70,32 @@ Most important options:
 - `--log-file`
 - `--verbose`
 
+## `quantnado dataset compress`
+
+Archive a QuantNado dataset directory or combined `.zarr` store as a tar.gz file.
+
+```bash
+quantnado dataset compress \
+  --dataset dataset/combined.zarr \
+  --output dataset/combined.zarr.gz \
+  --workers 8
+```
+
+Key points:
+
+- writes a tar.gz archive that `QuantNado.open(...)` can read directly
+- uses `pigz` for parallel gzip compression when `--workers > 1`
+- defaults the archive path to `<dataset>.gz` when `--output` is omitted
+
+Most important options:
+
+- `--dataset`, `--input`
+- `--output`, `-o`
+- `--workers`, `--n-workers`
+- `--overwrite`
+- `--log-file`
+- `--verbose`
+
 ## `quantnado call-peaks`
 
 Call peaks from a QuantNado store or store directory.
@@ -102,4 +128,5 @@ Most important options:
 - [CLI Overview](cli/index.md)
 - [Create Dataset](cli/create_dataset.md)
 - [Combine Dataset](cli/combine_dataset.md)
+- [Compress Dataset](cli/compress_dataset.md)
 - [Call Peaks](cli/call_peaks.md)

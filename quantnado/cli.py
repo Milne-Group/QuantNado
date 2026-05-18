@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import traceback
 import warnings
 
@@ -11,6 +12,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 from typing import Optional
 
@@ -54,6 +56,85 @@ def _setup_logging(log_file: Path, verbose: bool) -> None:
         except Exception:
             pass
     setup_logging(log_file, verbose)
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _compress_dataset_impl(
+    *,
+    dataset: Path,
+    output: Path,
+    overwrite: bool,
+    n_workers: int,
+) -> None:
+    if not dataset.exists():
+        raise FileNotFoundError(f"Dataset does not exist: {dataset}")
+    if not dataset.is_dir():
+        raise ValueError(f"Dataset must be a directory or .zarr store: {dataset}")
+
+    output_parent = output.parent if output.parent != Path("") else Path(".")
+    output_parent.mkdir(parents=True, exist_ok=True)
+    if _path_is_within(output_parent, dataset):
+        raise ValueError("Output archive must not be written inside the input dataset directory.")
+
+    if output.exists():
+        if not overwrite:
+            raise FileExistsError(f"Output archive already exists: {output}")
+        output.unlink()
+
+    tar = shutil.which("tar")
+    if tar is None:
+        raise FileNotFoundError("Could not find 'tar' on PATH.")
+
+    pigz = shutil.which("pigz")
+    if pigz is None and n_workers > 1:
+        raise FileNotFoundError(
+            "Could not find 'pigz' on PATH. Install pigz in the container or use --workers 1."
+        )
+
+    if pigz is not None:
+        cmd = [
+            tar,
+            "-I",
+            f"pigz -p {n_workers}",
+            "-cf",
+            str(output),
+            "-C",
+            str(dataset.parent),
+            dataset.name,
+        ]
+    else:
+        cmd = [
+            tar,
+            "-czf",
+            str(output),
+            "-C",
+            str(dataset.parent),
+            dataset.name,
+        ]
+
+    logger.info(f"Compressing {dataset} -> {output}")
+    logger.info(f"Running: {shlex.join(cmd)}")
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if result.stdout:
+        for line in result.stdout.splitlines():
+            logger.info(f"[tar] {line}")
+    if result.returncode != 0:
+        raise RuntimeError(f"tar exited with status {result.returncode}")
+    if not output.exists():
+        raise RuntimeError(f"tar completed but output archive was not created: {output}")
 
 
 def _parse_stranded_value(value) -> str | None:
@@ -485,6 +566,60 @@ def combine_dataset(
         raise
     except Exception as e:
         logger.error(f"Dataset combine failed: {type(e).__name__}: {e}")
+        logger.debug(traceback.format_exc())
+        raise typer.Exit(code=1)
+
+
+@dataset_app.command("compress")
+def compress_dataset(
+    dataset: Path = typer.Option(
+        ...,
+        "--dataset",
+        "--input",
+        help="QuantNado dataset directory or combined .zarr store to archive.",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output tar.gz archive. Defaults to <dataset>.gz.",
+    ),
+    overwrite: bool = typer.Option(
+        True,
+        "--overwrite/--no-overwrite",
+        help="Overwrite the output archive if it already exists.",
+    ),
+    n_workers: int = typer.Option(
+        1,
+        "--workers",
+        "--n-workers",
+        min=1,
+        help="Number of pigz workers. Requires pigz when greater than 1.",
+    ),
+    log_file: Path = typer.Option(
+        Path("quantnado_compress.log"), "--log-file", help="Path to log file."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
+):
+    """Archive a QuantNado dataset as a tar.gz file.
+
+    The resulting archive can be opened directly with ``QuantNado.open(...)``.
+    """
+    _setup_logging(log_file, verbose)
+    archive = output or dataset.with_name(dataset.name + ".gz")
+
+    try:
+        _compress_dataset_impl(
+            dataset=dataset,
+            output=archive,
+            overwrite=overwrite,
+            n_workers=n_workers,
+        )
+        logger.success(f"Compressed dataset written to {archive}")
+    except typer.Exit:
+        raise
+    except Exception as e:
+        logger.error(f"Dataset compression failed: {type(e).__name__}: {e}")
         logger.debug(traceback.format_exc())
         raise typer.Exit(code=1)
 

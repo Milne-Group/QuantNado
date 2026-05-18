@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcurl4-openssl-dev \
     libssl-dev \
     git \
+    pigz \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
