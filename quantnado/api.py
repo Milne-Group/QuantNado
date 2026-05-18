@@ -308,7 +308,8 @@ class QuantNado:
         Parameters
         ----------
         path:
-            Directory of per-sample ``.zarr`` stores, or a combined ``.zarr``.
+            Directory of per-sample ``.zarr`` stores, a combined ``.zarr``, or a
+            ``.tar.gz``/``.tgz`` archive containing either layout.
         """
         return cls(QuantNadoDataset(path))
 
@@ -426,10 +427,21 @@ class QuantNado:
 
     @classmethod
     def combine(
-        cls, src: Path | str, output: Path | str, overwrite: bool = True
+        cls,
+        src: Path | str,
+        output: Path | str,
+        overwrite: bool = True,
+        n_workers: int = 1,
     ) -> "QuantNado":
         """Combine a directory of per-sample zarrs into a single combined zarr."""
-        return cls(QuantNadoDataset.combine(src, output, overwrite=overwrite))
+        return cls(
+            QuantNadoDataset.combine(
+                src,
+                output,
+                overwrite=overwrite,
+                n_workers=n_workers,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Analysis helpers

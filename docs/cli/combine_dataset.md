@@ -18,6 +18,7 @@ quantnado dataset combine \
 ## Options
 
 - `--overwrite / --no-overwrite`: replace the output store if it already exists
+- `--workers`, `--n-workers`: number of thread workers to use while copying rows
 - `--log-file PATH`: log destination
 - `--verbose`, `-v`: debug logging
 
@@ -34,5 +35,6 @@ quantnado dataset combine \
 ```bash
 quantnado dataset combine \
   --stores samples/ATAC_1.zarr samples/H3K27ac_1.zarr samples/RNA_1.zarr \
-  --output samples/combined.zarr
+  --output samples/combined.zarr \
+  --workers 4
 ```

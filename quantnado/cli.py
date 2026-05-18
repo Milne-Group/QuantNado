@@ -433,6 +433,13 @@ def combine_dataset(
         "--overwrite/--no-overwrite",
         help="Overwrite the output store if it already exists.",
     ),
+    n_workers: int = typer.Option(
+        1,
+        "--workers",
+        "--n-workers",
+        min=1,
+        help="Number of thread workers to use while copying rows.",
+    ),
     log_file: Path = typer.Option(
         Path("quantnado_combine.log"), "--log-file", help="Path to log file."
     ),
@@ -443,7 +450,12 @@ def combine_dataset(
     from quantnado.analysis.core import QuantNadoDataset
 
     def _combine_from_source(source: Path) -> None:
-        QuantNadoDataset.combine(src=source, output=output, overwrite=overwrite)
+        QuantNadoDataset.combine(
+            src=source,
+            output=output,
+            overwrite=overwrite,
+            n_workers=n_workers,
+        )
 
     try:
         store_paths = [stores] + [Path(arg) for arg in ctx.args]
