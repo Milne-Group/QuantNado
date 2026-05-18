@@ -1,6 +1,8 @@
 """Integration tests for the new QuantNadoDataset (analysis.core)."""
 from __future__ import annotations
 
+import tarfile
+
 import numpy as np
 import pytest
 import zarr
@@ -105,6 +107,35 @@ class TestInit:
         store_path = _make_per_sample_store(tmp_path)
         qn = QuantNadoDataset(store_path)
         assert qn.sample_names == ["s1"]
+
+    def test_tar_gz_archive_loads_per_sample_directory(self, tmp_path):
+        ds_dir = _make_dataset_dir(tmp_path)
+        archive_path = tmp_path / "dataset.zarr.gz"
+        with tarfile.open(archive_path, mode="w:gz") as tar:
+            tar.add(ds_dir, arcname=ds_dir.name)
+
+        qn = QuantNadoDataset(archive_path)
+
+        assert sorted(qn.sample_names) == ["s1", "s2"]
+        assert qn.source_path == archive_path
+        assert qn.path.name == ds_dir.name
+        result = qn.sel(chrom="chr1", start=1, end=3)
+        assert result["atac"].shape == (2, 3)
+
+    def test_tar_gz_archive_loads_combined_zarr(self, tmp_path):
+        ds_dir = _make_dataset_dir(tmp_path)
+        combined_path = tmp_path / "combined.zarr"
+        QuantNadoDataset.combine(ds_dir, combined_path)
+        archive_path = tmp_path / "combined.zarr.gz"
+        with tarfile.open(archive_path, mode="w:gz") as tar:
+            tar.add(combined_path, arcname=combined_path.name)
+
+        qn = QuantNadoDataset(archive_path)
+
+        assert qn._combined is True
+        assert sorted(qn.sample_names) == ["s1", "s2"]
+        result = qn.sel(chrom="chr1", start=1, end=3)
+        assert result["coverage"].shape == (2, 3)
 
 
 # ---------------------------------------------------------------------------

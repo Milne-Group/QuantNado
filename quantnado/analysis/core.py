@@ -8,13 +8,17 @@ Supports two layouts:
 2. **Combined zarr** — ``QuantNadoDataset("dataset/combined.zarr")``
    Written by :meth:`QuantNadoDataset.combine`.
 
+Both layouts may also be opened from a ``.tar.gz``/``.tgz`` archive.
+
 Both expose the same API.  Auto-detected on open.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import tarfile
+import tempfile
 from collections.abc import Sequence
+from pathlib import Path
 
 import dask.array as da
 import numpy as np
@@ -178,6 +182,61 @@ def _assay_keys(chrom_group: zarr.Group) -> list[str]:
     return [k for k in chrom_group.keys() if isinstance(chrom_group[k], zarr.Array)]
 
 
+def _is_tar_archive(path: Path) -> bool:
+    """Return True when *path* is a readable tar archive, regardless of suffix."""
+    return path.is_file() and tarfile.is_tarfile(path)
+
+
+def _looks_like_zarr_store(path: Path) -> bool:
+    """Return True when *path* contains zarr metadata at its root."""
+    return any((path / name).exists() for name in ("zarr.json", ".zarray", ".zgroup"))
+
+
+def _looks_like_dataset_directory(path: Path) -> bool:
+    """Return True when *path* looks like a directory of per-sample zarr stores."""
+    return path.is_dir() and any(
+        child.is_dir() and child.name.endswith(".zarr")
+        for child in path.iterdir()
+    )
+
+
+def _find_extracted_dataset_root(extract_dir: Path) -> Path:
+    """Find the dataset root inside an extracted archive."""
+    if _looks_like_zarr_store(extract_dir):
+        return extract_dir
+
+    children = [child for child in extract_dir.iterdir() if child.name != "__MACOSX"]
+    if len(children) == 1 and children[0].is_dir():
+        child = children[0]
+        if _looks_like_zarr_store(child) or _looks_like_dataset_directory(child):
+            return child
+
+    if _looks_like_dataset_directory(extract_dir):
+        return extract_dir
+
+    zarr_children = [child for child in children if child.is_dir() and child.name.endswith(".zarr")]
+    if len(zarr_children) == 1 and _looks_like_zarr_store(zarr_children[0]):
+        return zarr_children[0]
+    if zarr_children:
+        return extract_dir
+
+    raise ValueError(
+        f"Archive extracted to {extract_dir}, but no QuantNado .zarr store "
+        "or dataset directory was found."
+    )
+
+
+def _extract_tar_archive(path: Path, extract_dir: Path) -> Path:
+    """Extract *path* safely and return the QuantNado dataset root within it."""
+    try:
+        with tarfile.open(path, mode="r:*") as tar:
+            tar.extractall(extract_dir, filter="data")
+    except tarfile.TarError as exc:
+        raise ValueError(f"Could not read tar archive {path}: {exc}") from exc
+
+    return _find_extracted_dataset_root(extract_dir)
+
+
 # ---------------------------------------------------------------------------
 # Internal store descriptors
 # ---------------------------------------------------------------------------
@@ -229,6 +288,8 @@ class QuantNadoDataset:
         Path to either:
         - a directory containing per-sample ``.zarr`` stores, or
         - a single combined ``.zarr`` store written by :meth:`combine`.
+        ``.tar.gz``/``.tgz`` archives containing either layout are extracted to
+        a temporary directory and opened read-only.
 
     Examples
     --------
@@ -239,7 +300,10 @@ class QuantNadoDataset:
     """
 
     def __init__(self, path: Path | str, annotation: str | Path | None = None) -> None:
-        self.path = Path(path)
+        input_path = Path(path)
+        self.source_path = input_path
+        self.path = input_path
+        self._archive_tmpdir: tempfile.TemporaryDirectory[str] | None = None
         self._stores: list[_PerSampleStore] = []
         self._combined_root: zarr.Group | None = None
         self._combined = False
@@ -248,6 +312,10 @@ class QuantNadoDataset:
         self._subset_samples: list[str] | None = None
         self._group_sets: dict[str, dict[str, list[str]]] = {}
         self._last_group_name: str | None = None
+
+        if input_path.exists() and _is_tar_archive(input_path):
+            self._archive_tmpdir = tempfile.TemporaryDirectory(prefix="quantnado-")
+            self.path = _extract_tar_archive(input_path, Path(self._archive_tmpdir.name))
 
         if self.path.is_dir() and not str(self.path).endswith(".zarr"):
             # Directory of per-sample zarrs
@@ -686,6 +754,8 @@ class QuantNadoDataset:
 
         new: QuantNadoDataset = object.__new__(QuantNadoDataset)
         new.path = self.path
+        new.source_path = getattr(self, "source_path", self.path)
+        new._archive_tmpdir = getattr(self, "_archive_tmpdir", None)
         new._combined = self._combined
         new._combined_root = self._combined_root
         new._genes_df = self._genes_df
@@ -2427,6 +2497,9 @@ class QuantNadoDataset:
             },
             "per_assay": {},
         })
+        source_path = getattr(self, "source_path", self.path)
+        if source_path != self.path:
+            summary["extras"]["source_path"] = str(source_path)
         if self._subset_samples is not None:
             summary["extras"]["subset_samples"] = list(self._subset_samples)
 

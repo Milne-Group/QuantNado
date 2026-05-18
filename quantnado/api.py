@@ -308,7 +308,8 @@ class QuantNado:
         Parameters
         ----------
         path:
-            Directory of per-sample ``.zarr`` stores, or a combined ``.zarr``.
+            Directory of per-sample ``.zarr`` stores, a combined ``.zarr``, or a
+            ``.tar.gz``/``.tgz`` archive containing either layout.
         """
         return cls(QuantNadoDataset(path))
 
