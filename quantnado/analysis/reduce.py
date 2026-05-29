@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import numpy as np
 import pandas as pd
 import dask.array as da
@@ -85,6 +86,7 @@ class _TransposedArray:
 		_c = getattr(arr, "chunks", None)
 		sample_chunk = len(row_indices) if row_indices is not None else _c[0] if _c else ns
 		self.chunks = (_c[1], sample_chunk) if _c else (nc, ns)
+		self.dtype = arr.dtype
 
 	def __getitem__(self, key):
 		row_sel = self._row_indices if self._row_indices is not None else slice(None)
@@ -431,17 +433,48 @@ def _select_samples(
 
 
 def _group_ranges_into_islands(
-	starts: np.ndarray, ends: np.ndarray, max_gap: int
+	starts: np.ndarray,
+	ends: np.ndarray,
+	max_gap: int,
+	max_span: int | None = None,
 ) -> list[np.ndarray]:
 	"""Group ranges into islands where consecutive gaps <= max_gap.
 
 	Returns a list of index arrays (original positions), one per island.
-	Using max_gap = store chunk_len ensures no Zarr chunk is read twice.
+	When max_span is provided, islands are also split before their genomic span
+	exceeds that bound. This keeps fallback reducers from materialising very large
+	inter-range deserts when zarr chunks are coarse.
 	"""
 	order = np.argsort(starts, kind="stable")
 	s, e = starts[order], ends[order]
-	breaks = np.where(s[1:] - e[:-1] > max_gap)[0] + 1
-	return [order[idx] for idx in np.split(np.arange(len(order)), breaks)]
+	if len(order) == 0:
+		return []
+
+	islands: list[np.ndarray] = []
+	current: list[int] = [0]
+	island_start = int(s[0])
+	island_end = int(e[0])
+	for sorted_pos in range(1, len(order)):
+		next_start = int(s[sorted_pos])
+		next_end = int(e[sorted_pos])
+		gap_too_large = next_start - island_end > max_gap
+		span_too_large = (
+			max_span is not None
+			and current
+			and max(island_end, next_end) - island_start > max_span
+		)
+		if gap_too_large or span_too_large:
+			islands.append(order[np.asarray(current, dtype=np.int64)])
+			current = [sorted_pos]
+			island_start = next_start
+			island_end = next_end
+		else:
+			current.append(sorted_pos)
+			island_end = max(island_end, next_end)
+
+	if current:
+		islands.append(order[np.asarray(current, dtype=np.int64)])
+	return islands
 
 
 def _reduce_byranges_prefix_np(
@@ -941,6 +974,207 @@ def _read_contig_matrix(zarr_array, sample_indices: np.ndarray, start: int, end:
 
 	merged = _read_sorted_runs(sorted_indices)
 	return merged.T[:, restore_order]
+
+
+def _read_position_sample_block(
+	zarr_array,
+	start: int,
+	end: int,
+	sample_indices: np.ndarray,
+) -> np.ndarray:
+	"""Read a positions-by-selected-samples block from either array orientation."""
+	if end <= start:
+		return np.empty((0, len(sample_indices)), dtype=np.float32)
+
+	sample_indices = np.asarray(sample_indices, dtype=np.int64)
+	if isinstance(zarr_array, _TransposedArray):
+		return np.asarray(zarr_array[start:end, sample_indices], dtype=np.float32)
+
+	raw = np.asarray(zarr_array[start:end, :], dtype=np.float32)
+	if not np.array_equal(sample_indices, np.arange(raw.shape[1], dtype=np.int64)):
+		return raw[:, sample_indices]
+	return raw
+
+
+def _iter_sample_batches(
+	sample_indices: np.ndarray,
+	positions: int,
+	dtype,
+	*,
+	target_bytes: int = 128 * 1024**2,
+):
+	"""Yield output-column slices and source sample indices bounded by memory."""
+	sample_indices = np.asarray(sample_indices, dtype=np.int64)
+	if sample_indices.size == 0:
+		return
+
+	bytes_per_value = np.dtype(dtype).itemsize if dtype is not None else np.dtype(np.float32).itemsize
+	bytes_per_sample = max(1, int(positions)) * max(1, bytes_per_value)
+	batch_size = max(1, target_bytes // bytes_per_sample)
+	batch_size = min(int(batch_size), sample_indices.size)
+	for out_start in range(0, sample_indices.size, batch_size):
+		out_end = min(sample_indices.size, out_start + batch_size)
+		yield slice(out_start, out_end), sample_indices[out_start:out_end]
+
+
+def _iter_touched_position_chunks(
+	starts: np.ndarray,
+	ends: np.ndarray,
+	arr_len: int,
+	chunk_len: int,
+):
+	"""Yield range indices and read bounds for position chunks touched by ranges."""
+	if starts.size == 0:
+		return
+
+	chunk_len = max(1, int(chunk_len))
+	first_chunk_start = (int(starts.min()) // chunk_len) * chunk_len
+	last_pos = max(int(ends.max()) - 1, 0)
+	last_chunk_start = (last_pos // chunk_len) * chunk_len
+
+	for chunk_start in range(first_chunk_start, last_chunk_start + 1, chunk_len):
+		chunk_end = min(arr_len, chunk_start + chunk_len)
+		overlap_idx = np.flatnonzero((starts < chunk_end) & (ends > chunk_start))
+		if overlap_idx.size == 0:
+			continue
+
+		overlap_starts = np.maximum(starts[overlap_idx], chunk_start)
+		overlap_ends = np.minimum(ends[overlap_idx], chunk_end)
+		read_start = int(overlap_starts.min())
+		read_end = int(overlap_ends.max())
+		yield overlap_idx, read_start, read_end, overlap_starts, overlap_ends
+
+
+def _reduce_ranges_streaming_np(
+	zarr_array,
+	starts: np.ndarray,
+	ends: np.ndarray,
+	sample_indices: np.ndarray,
+	reduction: str,
+	*,
+	min_count: int = 1,
+	chunk_len: int | None = None,
+	progress_stats: dict[str, int] | None = None,
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+	"""Reduce ranges by streaming position chunks instead of materialising islands."""
+	starts = np.asarray(starts, dtype=np.int64)
+	ends = np.asarray(ends, dtype=np.int64)
+	sample_indices = np.asarray(sample_indices, dtype=np.int64)
+	n_ranges = starts.size
+	n_samples = sample_indices.size
+	if n_ranges == 0:
+		empty = np.empty((0, n_samples), dtype=np.float32)
+		return {"sum": empty, "count": empty, "mean": empty}, empty
+
+	arr_len = int(zarr_array.shape[0])
+	if chunk_len is None:
+		chunks = getattr(zarr_array, "chunks", None)
+		chunk_len = int(chunks[0]) if chunks else arr_len
+	chunk_len = max(1, int(chunk_len))
+
+	dtype = getattr(zarr_array, "dtype", np.float32)
+	sums = np.zeros((n_ranges, n_samples), dtype=np.float32)
+	counts_1d = np.zeros(n_ranges, dtype=np.float32)
+
+	if reduction == "max":
+		reduced = np.full((n_ranges, n_samples), -np.inf, dtype=np.float32)
+	elif reduction == "min":
+		reduced = np.full((n_ranges, n_samples), np.inf, dtype=np.float32)
+	else:
+		reduced = np.zeros((n_ranges, n_samples), dtype=np.float32)
+
+	for overlap_idx, read_start, read_end, overlap_starts, overlap_ends in _iter_touched_position_chunks(
+		starts, ends, arr_len, chunk_len
+	):
+		if progress_stats is not None:
+			progress_stats["position_chunks"] = progress_stats.get("position_chunks", 0) + 1
+			progress_stats["interval_chunk_refs"] = progress_stats.get("interval_chunk_refs", 0) + int(overlap_idx.size)
+			progress_stats["max_read_bases"] = max(
+				progress_stats.get("max_read_bases", 0),
+				int(read_end - read_start),
+			)
+		counts_1d[overlap_idx] += (overlap_ends - overlap_starts).astype(np.float32, copy=False)
+		local_starts = (overlap_starts - read_start).astype(np.int64, copy=False)
+		local_ends = (overlap_ends - read_start).astype(np.int64, copy=False)
+		read_len = read_end - read_start
+
+		for out_cols, batch_samples in _iter_sample_batches(sample_indices, read_len, dtype):
+			block = _read_position_sample_block(zarr_array, read_start, read_end, batch_samples)
+			if progress_stats is not None:
+				progress_stats["read_batches"] = progress_stats.get("read_batches", 0) + 1
+				progress_stats["max_block_bytes"] = max(
+					progress_stats.get("max_block_bytes", 0),
+					int(block.nbytes),
+				)
+			prefix = np.empty((block.shape[0] + 1, block.shape[1]), dtype=np.float32)
+			prefix[0, :] = 0.0
+			np.cumsum(block, axis=0, dtype=np.float32, out=prefix[1:, :])
+			chunk_sums = prefix[local_ends] - prefix[local_starts]
+			sums[overlap_idx, out_cols] += chunk_sums
+
+			if reduction in {"max", "min"}:
+				lengths = local_ends - local_starts
+				batch_size = _estimate_interval_batch_size(
+					int(lengths.max()) if lengths.size else 0,
+					block.shape[1],
+					target_bytes=64 * 1024**2,
+				)
+				for interval_slice in _iter_interval_slices(len(overlap_idx), batch_size):
+					local_reduced = _reduce_ranges_vectorized_np(
+						block,
+						local_starts[interval_slice],
+						local_ends[interval_slice],
+						reduction,
+					)
+					target_idx = overlap_idx[interval_slice]
+					if reduction == "max":
+						reduced[target_idx, out_cols] = np.maximum(
+							reduced[target_idx, out_cols],
+							local_reduced,
+						)
+					else:
+						reduced[target_idx, out_cols] = np.minimum(
+							reduced[target_idx, out_cols],
+							local_reduced,
+						)
+
+	counts = counts_1d[:, None].repeat(n_samples, axis=1).astype(np.float32, copy=False)
+	means = np.full_like(sums, np.nan, dtype=np.float32)
+	np.divide(sums, counts, out=means, where=counts >= min_count)
+
+	if reduction == "mean":
+		reduced = means
+	elif reduction == "sum":
+		reduced = sums
+	elif reduction == "max":
+		reduced[~np.isfinite(reduced)] = np.nan
+	elif reduction == "min":
+		reduced[~np.isfinite(reduced)] = np.nan
+
+	return {"sum": sums, "count": counts, "mean": means}, reduced.astype(np.float32, copy=False)
+
+
+def _estimate_max_region_bases(
+	n_samples: int,
+	dtype,
+	*,
+	target_bytes: int = 128 * 1024**2,
+) -> int:
+	"""Estimate a bounded in-memory span for fallback island reducers."""
+	bytes_per_value = np.dtype(dtype).itemsize if dtype is not None else np.dtype(np.float32).itemsize
+	# Prefix reducers keep both the source block and prefix copy alive.
+	bytes_per_position = max(1, n_samples) * max(1, bytes_per_value) * 2
+	return max(1, int(target_bytes // bytes_per_position))
+
+
+def _format_bytes(n_bytes: int) -> str:
+	"""Format byte counts for progress logs."""
+	value = float(n_bytes)
+	for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+		if value < 1024.0 or unit == "TiB":
+			return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+		value /= 1024.0
+	return f"{value:.1f} TiB"
 
 
 def _gather_numpy_batch(
@@ -1489,6 +1723,7 @@ def reduce_byranges_signal(
 	sample_indices: np.ndarray | None = None,
 	strand_mode: int = 0,
 	array_key: str | None = None,
+	progress: bool = False,
 ) -> xr.Dataset:
 	"""
 	Summarize per-chromosome Zarr arrays over genomic ranges using efficient reduction.
@@ -1540,6 +1775,8 @@ def reduce_byranges_signal(
 		Requires the BamStore to have been built with ``stranded`` set. Falls back
 		to total coverage for features with no strand annotation or when the
 		stranded arrays are absent.
+	progress:
+		If True, show a tqdm progress bar over chromosome/strand work items.
 
 	Returns
 	-------
@@ -1640,53 +1877,114 @@ def reduce_byranges_signal(
 		if starts.size == 0:
 			return None
 
-		# Batch ranges into islands separated by >= chunk_len bp so each Zarr
-		# chunk is read at most once and inter-range deserts are skipped.
+		# Stream ranges by touched position chunks.  Combined stores are chunked
+		# as (sample, position), often with very large position chunks; building
+		# islands from chunk_len can otherwise materialise whole chromosomes.
 		_zarr_arr = root[akey]
 		chunk_len = int(_zarr_arr.chunks[0]) if hasattr(_zarr_arr, "chunks") else int(_zarr_arr.shape[0])
-		islands = _group_ranges_into_islands(starts, ends, max_gap=chunk_len)
+		work_start = time.perf_counter()
+		interval_bases = int((ends - starts).sum())
+		logger.info(
+			f"Reducing {contig}:{akey}: {starts.size:,} interval(s), "
+			f"{interval_bases:,} bp total, {len(sample_indices):,} sample(s), "
+			f"chrom_len={arr_len:,}, chunk_len={chunk_len:,}, reduction={reduction_str}"
+		)
 
-		island_sums: list[np.ndarray] = []
-		island_counts: list[np.ndarray] = []
-		island_means: list[np.ndarray] = []
-		island_red: list[np.ndarray] = []
-		island_order: list[np.ndarray] = []
+		if reduction_str in {"mean", "sum", "max", "min"}:
+			progress_stats: dict[str, int] = {}
+			r, red_np = _reduce_ranges_streaming_np(
+				_zarr_arr,
+				starts,
+				ends,
+				sample_indices,
+				reduction_str,
+				min_count=min_count,
+				chunk_len=chunk_len,
+				progress_stats=progress_stats,
+			)
+		else:
+			max_region_bases = _estimate_max_region_bases(
+				len(sample_indices),
+				getattr(_zarr_arr, "dtype", np.float32),
+			)
+			islands = _group_ranges_into_islands(
+				starts,
+				ends,
+				max_gap=min(chunk_len, max_region_bases),
+				max_span=max_region_bases,
+			)
+			island_spans = [
+				int(ends[island_idx].max() - starts[island_idx].min())
+				for island_idx in islands
+			]
+			progress_stats = {
+				"islands": len(islands),
+				"max_island_bases": max(island_spans) if island_spans else 0,
+				"total_island_bases": sum(island_spans),
+			}
 
-		for island_idx in islands:
-			i_starts = starts[island_idx]
-			i_ends = ends[island_idx]
-			span_start = int(i_starts.min())
-			span_end = int(i_ends.max())
-			# Use basic slicing (rows then columns) rather than fancy indexing.
-			# Passing a list as the column index triggers np.ix_ inside Zarr,
-			# adding ~0.17s of overhead per island. Reading all columns then
-			# selecting in numpy avoids this when n_samples is small.
-			_raw = _zarr_arr[span_start:span_end, :]
-			region_np = _raw[:, sample_indices] if sample_indices.size < _raw.shape[1] else _raw
-			adj_starts = i_starts - span_start
-			adj_ends = i_ends - span_start
-			r_i = _reduce_byranges_prefix_np(adj_starts, adj_ends, region_np, min_count=min_count)
-			if reduction_str == "mean":
-				red_np_i = r_i["mean"]
-			else:
+			island_sums: list[np.ndarray] = []
+			island_counts: list[np.ndarray] = []
+			island_means: list[np.ndarray] = []
+			island_red: list[np.ndarray] = []
+			island_order: list[np.ndarray] = []
+
+			for island_idx in islands:
+				i_starts = starts[island_idx]
+				i_ends = ends[island_idx]
+				span_start = int(i_starts.min())
+				span_end = int(i_ends.max())
+				region_np = _read_position_sample_block(
+					_zarr_arr,
+					span_start,
+					span_end,
+					sample_indices,
+				)
+				adj_starts = i_starts - span_start
+				adj_ends = i_ends - span_start
+				r_i = _reduce_byranges_prefix_np(adj_starts, adj_ends, region_np, min_count=min_count)
 				red_np_i = _reduce_ranges_vectorized_np(region_np, adj_starts, adj_ends, reduction_str)
-			island_sums.append(r_i["sum"])
-			island_counts.append(r_i["count"])
-			island_means.append(r_i["mean"])
-			island_red.append(red_np_i)
-			island_order.append(island_idx)
+				island_sums.append(r_i["sum"])
+				island_counts.append(r_i["count"])
+				island_means.append(r_i["mean"])
+				island_red.append(red_np_i)
+				island_order.append(island_idx)
 
-		# Restore original range order within this work item's group
-		contig_order = np.concatenate(island_order)
-		restore = np.empty_like(contig_order)
-		restore[contig_order] = np.arange(contig_order.size)
+			# Restore original range order within this work item's group.
+			contig_order = np.concatenate(island_order)
+			restore = np.empty_like(contig_order)
+			restore[contig_order] = np.arange(contig_order.size)
 
-		r = {
-			"sum": np.concatenate(island_sums)[restore],
-			"count": np.concatenate(island_counts)[restore],
-			"mean": np.concatenate(island_means)[restore],
-		}
-		red_np = np.concatenate(island_red)[restore]
+			r = {
+				"sum": np.concatenate(island_sums)[restore],
+				"count": np.concatenate(island_counts)[restore],
+				"mean": np.concatenate(island_means)[restore],
+			}
+			red_np = np.concatenate(island_red)[restore]
+
+		elapsed = time.perf_counter() - work_start
+		if "read_batches" in progress_stats:
+			logger.info(
+				f"Finished reducing {contig}:{akey}: {starts.size:,} interval(s), "
+				f"{progress_stats.get('position_chunks', 0):,} position chunk(s), "
+				f"{progress_stats.get('read_batches', 0):,} read batch(es) in {elapsed:.1f}s"
+			)
+			logger.debug(
+				f"Reduce detail {contig}:{akey}: "
+				f"interval_chunk_refs={progress_stats.get('interval_chunk_refs', 0):,}, "
+				f"max_read={progress_stats.get('max_read_bases', 0):,} bp, "
+				f"max_block={_format_bytes(progress_stats.get('max_block_bytes', 0))}"
+			)
+		else:
+			logger.info(
+				f"Finished reducing {contig}:{akey}: {starts.size:,} interval(s), "
+				f"{progress_stats.get('islands', 0):,} bounded island(s) in {elapsed:.1f}s"
+			)
+			logger.debug(
+				f"Reduce detail {contig}:{akey}: "
+				f"total_island_span={progress_stats.get('total_island_bases', 0):,} bp, "
+				f"max_island_span={progress_stats.get('max_island_bases', 0):,} bp"
+			)
 
 		# Wrap as zero-copy dask for downstream xr.Dataset assembly
 		reduced_arrs = {k: da.from_array(v, chunks=v.shape) for k, v in r.items()}
@@ -1707,13 +2005,20 @@ def reduce_byranges_signal(
 			"names": names,
 		}
 
-	# Run one work item per chromosome (or per strand group) in parallel.
-	# zarr reads and numpy prefix-sums both release the GIL, so threading gives
-	# real concurrency for I/O-bound workloads.
+	# Run one work item per chromosome (or per strand group).  Default to a
+	# single worker because combined stores can have 100+ MiB sample-position
+	# chunks; users can opt into more parallelism once memory is known.
 	import os
 	from concurrent.futures import ThreadPoolExecutor, as_completed
 
-	n_workers = min(len(_work_items), os.cpu_count() or 4)
+	_requested_workers = int(os.environ.get("QUANTNADO_REDUCE_WORKERS", "1"))
+	n_workers = min(len(_work_items), max(1, _requested_workers))
+	reduce_start = time.perf_counter()
+	logger.info(
+		f"Starting reduce: {len(ranges_df):,} input interval(s), "
+		f"{len(_work_items):,} work item(s), {len(sample_indices):,} sample(s), "
+		f"array_key={array_key or 'default'}, reduction={reduction_str}, workers={n_workers}"
+	)
 	if n_workers > 1:
 		with ThreadPoolExecutor(max_workers=n_workers) as _pool:
 			_futures = {
@@ -1751,6 +2056,8 @@ def reduce_byranges_signal(
 	if not outputs:
 		raise ValueError("No valid ranges found for provided contigs")
 
+	logger.info(f"Assembling reduce result from {len(outputs):,} completed work item(s)")
+
 	# Concatenate across contigs preserving original order
 	sums = da.concatenate([o["sum"] for o in outputs], axis=0)
 	counts = da.concatenate([o["count"] for o in outputs], axis=0)
@@ -1781,6 +2088,11 @@ def reduce_byranges_signal(
 		coords["strand"] = ("ranges", strands_cat[sort_order])
 	if name_col is not None:
 		coords["name"] = ("ranges", names_cat[sort_order])
+
+	logger.info(
+		f"Reduce complete: {range_index.size:,} interval(s) x {len(sample_labels):,} sample(s) "
+		f"in {time.perf_counter() - reduce_start:.1f}s"
+	)
 
 	return xr.Dataset(
 		{
