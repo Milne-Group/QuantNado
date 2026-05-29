@@ -24,7 +24,7 @@ dependencies = [
     "dask==2026.3.0",
     "loguru>=0.7",
     "matplotlib==3.10.9",
-    "numpy>=2,<=2.2.6",
+    "numpy>=2,<=2.4.5",
     "pandas>=2,<3.0.0",
     "pyBigWig>=0.3",
     "pyranges1>=1.0",
@@ -53,20 +53,20 @@ gpu = [
     "torch>=2.0",
 ]
 dev = [
-    "mkdocs-material==9.7.4",
+    "mkdocs-material==9.7.6",
     "mkdocs>=1.6,<2.0",
     "mkdocs-jupyter==0.26.3",
     "mkdocstrings-python==2.0.3",
     "mkdocstrings==1.0.4",
     "pymdown-extensions==10.21",
-    "pytest==9.0.2",
+    "pytest==9.0.3",
     "pytest-cov==7.0.0",
     "pytest-xdist>=3.0",
     "ruff==0.15.12",
 ]
 example = [
     "ipykernel>6.0.0,<7.3.0",
-    "jupyterlab==4.5.5",
+    "jupyterlab==4.5.7",
 ]
 
 [project.scripts]
