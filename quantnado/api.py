@@ -618,6 +618,8 @@ class QuantNado:
         assay: str | Sequence[str] | None = None,
         samples: str | Sequence[str] | None = None,
         modality: str | Sequence[str] | None = None,
+        progress: bool = False,
+        workers: int | None = None,
         **kwargs,
     ):
         """Reduce signal over genomic intervals. See :meth:`QuantNadoDataset.reduce`."""
@@ -630,6 +632,8 @@ class QuantNado:
             assay=assay,
             samples=samples,
             modality=modality,
+            progress=progress,
+            workers=workers,
             **kwargs,
         )
 

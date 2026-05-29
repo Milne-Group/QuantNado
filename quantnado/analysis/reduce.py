@@ -1055,6 +1055,7 @@ def _reduce_ranges_streaming_np(
 	min_count: int = 1,
 	chunk_len: int | None = None,
 	progress_stats: dict[str, int] | None = None,
+	progress_callback=None,
 ) -> tuple[dict[str, np.ndarray], np.ndarray]:
 	"""Reduce ranges by streaming position chunks instead of materialising islands."""
 	starts = np.asarray(starts, dtype=np.int64)
@@ -1111,6 +1112,8 @@ def _reduce_ranges_streaming_np(
 			np.cumsum(block, axis=0, dtype=np.float32, out=prefix[1:, :])
 			chunk_sums = prefix[local_ends] - prefix[local_starts]
 			sums[overlap_idx, out_cols] += chunk_sums
+			if progress_callback is not None:
+				progress_callback()
 
 			if reduction in {"max", "min"}:
 				lengths = local_ends - local_starts
@@ -1724,6 +1727,7 @@ def reduce_byranges_signal(
 	strand_mode: int = 0,
 	array_key: str | None = None,
 	progress: bool = False,
+	workers: int | None = None,
 ) -> xr.Dataset:
 	"""
 	Summarize per-chromosome Zarr arrays over genomic ranges using efficient reduction.
@@ -1776,7 +1780,10 @@ def reduce_byranges_signal(
 		to total coverage for features with no strand annotation or when the
 		stranded arrays are absent.
 	progress:
-		If True, show a tqdm progress bar over chromosome/strand work items.
+		If True, show a tqdm progress bar over read batches.
+	workers:
+		Number of chromosome/strand work items to reduce concurrently. Defaults to
+		``QUANTNADO_REDUCE_WORKERS`` when set, otherwise 1.
 
 	Returns
 	-------
@@ -1848,6 +1855,13 @@ def reduce_byranges_signal(
 			_akey = f"{contig}{_array_suffix}" if _array_suffix and f"{contig}{_array_suffix}" in root else contig
 			_work_items.append((group, _akey, contig))
 
+	def _work_label(contig, akey) -> str:
+		if array_key is not None and akey == contig:
+			return f"{contig}:{array_key}"
+		if akey == contig:
+			return str(contig)
+		return f"{contig}:{akey}"
+
 	def _process_work_item(sg, akey, contig):
 		"""Reduce one (subgroup, array_key) pair. Thread-safe — zarr reads are
 		immutable and all helpers operate on local numpy arrays."""
@@ -1884,11 +1898,18 @@ def reduce_byranges_signal(
 		chunk_len = int(_zarr_arr.chunks[0]) if hasattr(_zarr_arr, "chunks") else int(_zarr_arr.shape[0])
 		work_start = time.perf_counter()
 		interval_bases = int((ends - starts).sum())
-		logger.info(
-			f"Reducing {contig}:{akey}: {starts.size:,} interval(s), "
+		label = _work_label(contig, akey)
+		log_message = (
+			f"Reducing {label}: {starts.size:,} interval(s), "
 			f"{interval_bases:,} bp total, {len(sample_indices):,} sample(s), "
 			f"chrom_len={arr_len:,}, chunk_len={chunk_len:,}, reduction={reduction_str}"
 		)
+		if progress:
+			logger.debug(log_message)
+		else:
+			logger.info(log_message)
+		if progress_bar is not None:
+			progress_bar.set_postfix_str(label, refresh=False)
 
 		if reduction_str in {"mean", "sum", "max", "min"}:
 			progress_stats: dict[str, int] = {}
@@ -1901,6 +1922,7 @@ def reduce_byranges_signal(
 				min_count=min_count,
 				chunk_len=chunk_len,
 				progress_stats=progress_stats,
+				progress_callback=_progress_callback,
 			)
 		else:
 			max_region_bases = _estimate_max_region_bases(
@@ -1949,6 +1971,7 @@ def reduce_byranges_signal(
 				island_means.append(r_i["mean"])
 				island_red.append(red_np_i)
 				island_order.append(island_idx)
+				_progress_callback()
 
 			# Restore original range order within this work item's group.
 			contig_order = np.concatenate(island_order)
@@ -1964,24 +1987,32 @@ def reduce_byranges_signal(
 
 		elapsed = time.perf_counter() - work_start
 		if "read_batches" in progress_stats:
-			logger.info(
-				f"Finished reducing {contig}:{akey}: {starts.size:,} interval(s), "
+			log_message = (
+				f"Finished reducing {label}: {starts.size:,} interval(s), "
 				f"{progress_stats.get('position_chunks', 0):,} position chunk(s), "
 				f"{progress_stats.get('read_batches', 0):,} read batch(es) in {elapsed:.1f}s"
 			)
+			if progress:
+				logger.debug(log_message)
+			else:
+				logger.info(log_message)
 			logger.debug(
-				f"Reduce detail {contig}:{akey}: "
+				f"Reduce detail {label}: "
 				f"interval_chunk_refs={progress_stats.get('interval_chunk_refs', 0):,}, "
 				f"max_read={progress_stats.get('max_read_bases', 0):,} bp, "
 				f"max_block={_format_bytes(progress_stats.get('max_block_bytes', 0))}"
 			)
 		else:
-			logger.info(
-				f"Finished reducing {contig}:{akey}: {starts.size:,} interval(s), "
+			log_message = (
+				f"Finished reducing {label}: {starts.size:,} interval(s), "
 				f"{progress_stats.get('islands', 0):,} bounded island(s) in {elapsed:.1f}s"
 			)
+			if progress:
+				logger.debug(log_message)
+			else:
+				logger.info(log_message)
 			logger.debug(
-				f"Reduce detail {contig}:{akey}: "
+				f"Reduce detail {label}: "
 				f"total_island_span={progress_stats.get('total_island_bases', 0):,} bp, "
 				f"max_island_span={progress_stats.get('max_island_bases', 0):,} bp"
 			)
@@ -2011,7 +2042,7 @@ def reduce_byranges_signal(
 	import os
 	from concurrent.futures import ThreadPoolExecutor, as_completed
 
-	_requested_workers = int(os.environ.get("QUANTNADO_REDUCE_WORKERS", "1"))
+	_requested_workers = int(workers if workers is not None else os.environ.get("QUANTNADO_REDUCE_WORKERS", "1"))
 	n_workers = min(len(_work_items), max(1, _requested_workers))
 	reduce_start = time.perf_counter()
 	logger.info(
@@ -2019,39 +2050,57 @@ def reduce_byranges_signal(
 		f"{len(_work_items):,} work item(s), {len(sample_indices):,} sample(s), "
 		f"array_key={array_key or 'default'}, reduction={reduction_str}, workers={n_workers}"
 	)
-	if n_workers > 1:
-		with ThreadPoolExecutor(max_workers=n_workers) as _pool:
-			_futures = {
-				_pool.submit(_process_work_item, sg, akey, contig): (sg, akey, contig)
-				for sg, akey, contig in _work_items
-			}
-			for _fut in as_completed(_futures):
-				result = _fut.result()
-				if result is None:
-					continue
-				outputs.append(result["output"])
-				idx_order.append(result["idx"])
-				starts_all.append(result["starts"])
-				ends_all.append(result["ends"])
-				contigs_all.append(result["contigs"])
-				if has_strand and result["strands"] is not None:
-					strands_all.append(result["strands"])
-				if name_col is not None and result["names"] is not None:
-					names_all.append(result["names"])
-	else:
-		for sg, akey, contig in _work_items:
-			result = _process_work_item(sg, akey, contig)
-			if result is None:
-				continue
-			outputs.append(result["output"])
-			idx_order.append(result["idx"])
-			starts_all.append(result["starts"])
-			ends_all.append(result["ends"])
-			contigs_all.append(result["contigs"])
-			if has_strand and result["strands"] is not None:
-				strands_all.append(result["strands"])
-			if name_col is not None and result["names"] is not None:
-				names_all.append(result["names"])
+	progress_bar = None
+	if progress:
+		try:
+			from tqdm.auto import tqdm
+
+			progress_bar = tqdm(
+				total=None,
+				desc="Reducing ranges",
+				unit="batch",
+				leave=True,
+			)
+		except Exception as exc:
+			logger.warning(f"Could not initialise tqdm progress bar: {exc}")
+
+	def _progress_callback() -> None:
+		if progress_bar is not None:
+			progress_bar.update(1)
+
+	def _record_result(result, label: str) -> None:
+		if progress_bar is not None:
+			progress_bar.set_postfix_str(label, refresh=False)
+		if result is None:
+			return
+		outputs.append(result["output"])
+		idx_order.append(result["idx"])
+		starts_all.append(result["starts"])
+		ends_all.append(result["ends"])
+		contigs_all.append(result["contigs"])
+		if has_strand and result["strands"] is not None:
+			strands_all.append(result["strands"])
+		if name_col is not None and result["names"] is not None:
+			names_all.append(result["names"])
+
+	try:
+		if n_workers > 1:
+			with ThreadPoolExecutor(max_workers=n_workers) as _pool:
+				_futures = {
+					_pool.submit(_process_work_item, sg, akey, contig): (sg, akey, contig)
+					for sg, akey, contig in _work_items
+				}
+				for _fut in as_completed(_futures):
+					_sg, _akey, _contig = _futures[_fut]
+					result = _fut.result()
+					_record_result(result, _work_label(_contig, _akey))
+		else:
+			for sg, akey, contig in _work_items:
+				result = _process_work_item(sg, akey, contig)
+				_record_result(result, _work_label(contig, akey))
+	finally:
+		if progress_bar is not None:
+			progress_bar.close()
 
 	if not outputs:
 		raise ValueError("No valid ranges found for provided contigs")
