@@ -1045,6 +1045,30 @@ def _iter_touched_position_chunks(
 		yield overlap_idx, read_start, read_end, overlap_starts, overlap_ends
 
 
+def _count_streaming_read_batches(
+	zarr_array,
+	starts: np.ndarray,
+	ends: np.ndarray,
+	sample_indices: np.ndarray,
+	chunk_len: int | None = None,
+) -> int:
+	"""Count streaming read batches for tqdm without touching zarr data."""
+	arr_len = int(zarr_array.shape[0])
+	if chunk_len is None:
+		chunks = getattr(zarr_array, "chunks", None)
+		chunk_len = int(chunks[0]) if chunks else arr_len
+	chunk_len = max(1, int(chunk_len))
+
+	dtype = getattr(zarr_array, "dtype", np.float32)
+	n_batches = 0
+	for _, read_start, read_end, _, _ in _iter_touched_position_chunks(
+		starts, ends, arr_len, chunk_len
+	):
+		for _ in _iter_sample_batches(sample_indices, read_end - read_start, dtype):
+			n_batches += 1
+	return n_batches
+
+
 def _reduce_ranges_streaming_np(
 	zarr_array,
 	starts: np.ndarray,
@@ -1862,6 +1886,47 @@ def reduce_byranges_signal(
 			return str(contig)
 		return f"{contig}:{akey}"
 
+	def _count_work_item_batches(sg, akey) -> int:
+		if akey not in root:
+			return 0
+
+		starts = np.asarray(sg[start_col], dtype=np.int64)
+		ends = np.asarray(sg[end_col], dtype=np.int64)
+		_zarr_arr = root[akey]
+		arr_len = root.chrom_len(akey) if hasattr(root, "chrom_len") else int(_zarr_arr.shape[0])
+
+		starts = starts.clip(min=0)
+		ends = ends.clip(max=arr_len)
+		valid = (ends > starts) & (starts < arr_len) & (ends > 0)
+		if not np.all(valid):
+			starts = starts[valid]
+			ends = ends[valid]
+		if starts.size == 0:
+			return 0
+
+		chunk_len = int(_zarr_arr.chunks[0]) if hasattr(_zarr_arr, "chunks") else int(_zarr_arr.shape[0])
+		if reduction_str in {"mean", "sum", "max", "min"}:
+			return _count_streaming_read_batches(
+				_zarr_arr,
+				starts,
+				ends,
+				sample_indices,
+				chunk_len=chunk_len,
+			)
+
+		max_region_bases = _estimate_max_region_bases(
+			len(sample_indices),
+			getattr(_zarr_arr, "dtype", np.float32),
+		)
+		return len(
+			_group_ranges_into_islands(
+				starts,
+				ends,
+				max_gap=min(chunk_len, max_region_bases),
+				max_span=max_region_bases,
+			)
+		)
+
 	def _process_work_item(sg, akey, contig):
 		"""Reduce one (subgroup, array_key) pair. Thread-safe — zarr reads are
 		immutable and all helpers operate on local numpy arrays."""
@@ -2044,11 +2109,19 @@ def reduce_byranges_signal(
 
 	_requested_workers = int(workers if workers is not None else os.environ.get("QUANTNADO_REDUCE_WORKERS", "1"))
 	n_workers = min(len(_work_items), max(1, _requested_workers))
+	progress_total = None
+	if progress:
+		progress_total = sum(
+			_count_work_item_batches(sg, akey)
+			for sg, akey, _ in _work_items
+		)
 	reduce_start = time.perf_counter()
+	progress_msg = f", progress_batches={progress_total:,}" if progress_total is not None else ""
 	logger.info(
 		f"Starting reduce: {len(ranges_df):,} input interval(s), "
 		f"{len(_work_items):,} work item(s), {len(sample_indices):,} sample(s), "
 		f"array_key={array_key or 'default'}, reduction={reduction_str}, workers={n_workers}"
+		f"{progress_msg}"
 	)
 	progress_bar = None
 	if progress:
@@ -2056,7 +2129,7 @@ def reduce_byranges_signal(
 			from tqdm.auto import tqdm
 
 			progress_bar = tqdm(
-				total=None,
+				total=progress_total,
 				desc="Reducing ranges",
 				unit="batch",
 				leave=True,
