@@ -4,10 +4,12 @@ from __future__ import annotations
 import tarfile
 
 import numpy as np
+import pandas as pd
 import pytest
 import zarr
 import xarray as xr
 
+import quantnado.analysis.reduce as reduce_module
 from quantnado.analysis.core import QuantNadoDataset
 
 pytestmark = pytest.mark.integration
@@ -295,3 +297,56 @@ class TestCombine:
             np.full(5, 2, dtype=np.float32),
         ])
         np.testing.assert_array_equal(result["coverage"].values, expected)
+
+
+# ---------------------------------------------------------------------------
+# TestReduce
+# ---------------------------------------------------------------------------
+
+
+class TestReduce:
+    def test_combined_reduce_reads_bounded_position_chunks(self, tmp_path, monkeypatch):
+        store_path = tmp_path / "combined.zarr"
+        root = zarr.open_group(str(store_path), mode="w", zarr_format=3)
+        grp = root.require_group("chr1")
+        coverage = grp.create_array(
+            "coverage",
+            shape=(2, 1000),
+            chunks=(1, 400),
+            dtype=np.float32,
+            overwrite=True,
+        )
+        coverage[0, :] = np.arange(1000, dtype=np.float32)
+        coverage[1, :] = np.arange(1000, dtype=np.float32) * 2
+        root.attrs.update({
+            "sample_names": ["s1", "s2"],
+            "assay_types": ["CHIP"],
+            "array_keys": ["coverage"],
+            "key_to_samples": {"coverage": ["s1", "s2"]},
+            "chromsizes": {"chr1": 1000},
+            "chunk_len": 400,
+        })
+
+        reads = []
+        original_read = reduce_module._read_position_sample_block
+
+        def tracking_read(zarr_array, start, end, sample_indices):
+            reads.append((start, end, tuple(sample_indices)))
+            return original_read(zarr_array, start, end, sample_indices)
+
+        monkeypatch.setattr(reduce_module, "_read_position_sample_block", tracking_read)
+        qn = QuantNadoDataset(store_path)
+        ranges = pd.DataFrame(
+            {
+                "Chromosome": ["chr1", "chr1"],
+                "Start": [10, 850],
+                "End": [20, 860],
+            }
+        )
+
+        result = qn.reduce(ranges_df=ranges, reduction="mean", modality="coverage")
+
+        expected = np.array([[14.5, 29.0], [854.5, 1709.0]], dtype=np.float32)
+        np.testing.assert_allclose(result["mean"].values, expected)
+        assert reads
+        assert max(end - start for start, end, _ in reads) <= 400

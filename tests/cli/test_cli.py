@@ -26,6 +26,7 @@ def test_dataset_create_help_mentions_direct_inputs():
     assert "--bamfile" in clean
     assert "--vcf_file" in clean
     assert "--methylation" in clean
+    assert "--single-end" in clean
 
 
 def test_dataset_combine_help_mentions_stores_list():
@@ -81,6 +82,42 @@ def test_dataset_create_dispatches_bam_store(monkeypatch, tmp_path):
     assert calls[0]["sample"] == "RNA_1"
     assert calls[0]["assay"] == "RNA"
     assert calls[0]["stranded"] == "R"
+    assert calls[0]["paired"] is True
+
+
+def test_dataset_create_forwards_single_end_to_bam_store(monkeypatch, tmp_path):
+    calls: list[dict] = []
+
+    def fake_from_bam_files(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("quantnado.dataset.store_bam.BamStore.from_bam_files", fake_from_bam_files)
+
+    bam = tmp_path / "sample.bam"
+    bam.write_text("")
+
+    result = runner.invoke(
+        app,
+        [
+            "dataset",
+            "create",
+            "--sample",
+            "RNA_1",
+            "--assay",
+            "RNA",
+            "--bamfile",
+            str(bam),
+            "--stranded",
+            "R",
+            "--single-end",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["paired"] is False
 
 
 def test_dataset_create_dispatches_methyl_store(monkeypatch, tmp_path):
@@ -119,6 +156,7 @@ def test_dataset_create_dispatches_methyl_store(monkeypatch, tmp_path):
     assert calls[0]["bam_path"] == str(bam)
     assert calls[0]["methyl_path"] == str(methyl)
     assert calls[0]["sample"] == "METH_1"
+    assert calls[0]["paired"] is True
 
 
 def test_dataset_create_dispatches_variant_store(monkeypatch, tmp_path):

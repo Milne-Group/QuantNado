@@ -151,6 +151,8 @@ quantnado dataset create \
   --output-dir dataset
 ```
 
+For single-end BAMs, add `--single-end`.
+
 Supported assays: `ATAC`, `ChIP`, `RNA`, `CUT&TAG`, `METH`, `SNP`, `MCC`.
 
 ### `dataset combine`

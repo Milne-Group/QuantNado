@@ -2150,6 +2150,8 @@ class QuantNadoDataset:
         assay: "str | Sequence[str] | None" = None,
         samples: "str | Sequence[str] | None" = None,
         modality: "str | Sequence[str] | None" = None,
+        progress: bool = False,
+        workers: int | None = None,
         **kwargs,
     ):
         """Reduce signal over genomic intervals.
@@ -2172,6 +2174,10 @@ class QuantNadoDataset:
             Explicit sample names (overrides *assay*).
         modality:
             Zarr array key (e.g. ``"atac"``, ``"rna_fwd"``).
+        progress:
+            Show a tqdm progress bar over reduce read batches.
+        workers:
+            Number of chromosome/strand work items to reduce concurrently.
 
         Returns
         -------
@@ -2191,6 +2197,8 @@ class QuantNadoDataset:
             reduction=reduction,
             sample_indices=indices if len(indices) < len(self.sample_names) else None,
             array_key=self._resolve_modalities(modality) if modality is not None else None,
+            progress=progress,
+            workers=workers,
             **kwargs,
         )
 
