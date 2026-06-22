@@ -1550,6 +1550,7 @@
 <li><code>SNP</code> uses <code>--vcf_file</code></li>
 <li><code>ChIP</code> and <code>CUT&amp;TAG</code> can also use <code>--ip</code></li>
 <li><code>RNA</code> can also use <code>--stranded</code></li>
+<li>Single-end BAMs should use <code>--single-end</code></li>
 </ul>
 <h2 id="supported-assays">Supported Assays<a class="headerlink" href="#supported-assays" title="Anchor link to this section">&para;</a></h2>
 <ul>
@@ -1568,6 +1569,7 @@
 <li><code>--methylation_file</code>: methylation bedGraph/TSV for <code>METH</code></li>
 <li><code>--ip</code>: target label for <code>ChIP</code> / <code>CUT&amp;TAG</code></li>
 <li><code>--stranded</code>: RNA strandedness (<code>R</code>, <code>F</code>, <code>1</code>, <code>2</code>, <code>U</code>)</li>
+<li><code>--paired / --single-end</code>: BAM read layout; defaults to paired-end</li>
 <li><code>--chromsizes PATH</code>: fallback <code>.chrom.sizes</code> file</li>
 <li><code>--filter-chromosomes / --no-filter-chromosomes</code>: keep only canonical chromosomes</li>
 <li><code>--overwrite / --no-overwrite</code>: replace an existing store</li>
@@ -1586,32 +1588,41 @@
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--bamfile<span class="w"> </span>/data/ATAC_1.bam<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span>--output-dir<span class="w"> </span>dataset
 </span></code></pre></div>
-<p>ChIP:</p>
+<p>Single-end RNA:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>quantnado<span class="w"> </span>dataset<span class="w"> </span>create<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--sample<span class="w"> </span>H3K27ac_1<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--assay<span class="w"> </span>ChIP<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--bamfile<span class="w"> </span>/data/H3K27ac_1.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span>--ip<span class="w"> </span>H3K27ac<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span>--output-dir<span class="w"> </span>dataset
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--sample<span class="w"> </span>RNA_SE_1<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--assay<span class="w"> </span>RNA<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--bamfile<span class="w"> </span>/data/RNA_SE_1.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span>--stranded<span class="w"> </span>R<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span>--single-end<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span>--output-dir<span class="w"> </span>dataset
 </span></code></pre></div>
-<p>METH:</p>
+<p>ChIP:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>quantnado<span class="w"> </span>dataset<span class="w"> </span>create<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--sample<span class="w"> </span>METH_1<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--assay<span class="w"> </span>METH<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--bamfile<span class="w"> </span>/data/METH_1.bam<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--methylation_file<span class="w"> </span>/data/METH_1.bedGraph<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--sample<span class="w"> </span>H3K27ac_1<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>--assay<span class="w"> </span>ChIP<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--bamfile<span class="w"> </span>/data/H3K27ac_1.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span>--ip<span class="w"> </span>H3K27ac<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--output-dir<span class="w"> </span>dataset
 </span></code></pre></div>
-<p>SNP:</p>
+<p>METH:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>quantnado<span class="w"> </span>dataset<span class="w"> </span>create<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--sample<span class="w"> </span>SNP_1<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--assay<span class="w"> </span>SNP<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--vcf_file<span class="w"> </span>/data/SNP_1.vcf.gz<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span>--output-dir<span class="w"> </span>dataset
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--sample<span class="w"> </span>METH_1<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--assay<span class="w"> </span>METH<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--bamfile<span class="w"> </span>/data/METH_1.bam<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span>--methylation_file<span class="w"> </span>/data/METH_1.bedGraph<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span>--output-dir<span class="w"> </span>dataset
+</span></code></pre></div>
+<p>SNP:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>quantnado<span class="w"> </span>dataset<span class="w"> </span>create<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--sample<span class="w"> </span>SNP_1<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--assay<span class="w"> </span>SNP<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--vcf_file<span class="w"> </span>/data/SNP_1.vcf.gz<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span>--output-dir<span class="w"> </span>dataset
 </span></code></pre></div>
 <h2 id="output">Output<a class="headerlink" href="#output" title="Anchor link to this section">&para;</a></h2>
 <p>For <code>--sample ATAC_1</code>, QuantNado writes:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>dataset/ATAC_1.zarr
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>dataset/ATAC_1.zarr
 </span></code></pre></div>
 <p>Only completed stores are later included when you open a directory or combine stores.</p>
 
