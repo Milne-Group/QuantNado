@@ -2201,7 +2201,7 @@ wheels = [
 
 [[package]]
 name = "plotnado"
-version = "0.3"
+version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "loguru" },
@@ -2212,13 +2212,15 @@ dependencies = [
     { name = "pybigtools" },
     { name = "pydantic" },
     { name = "pyranges1" },
+    { name = "pyyaml" },
+    { name = "rich" },
     { name = "tomli-w" },
     { name = "tqdm" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e0/e5/16d797a335ee05ec691599f42739295bcfe2c00d5d00e1f7ec2c9fda7b51/plotnado-0.3.tar.gz", hash = "sha256:2bc0fb3b257a49678108d2e9486a2b001fbf78caf7dd0373233618039b743d88", size = 8589376, upload-time = "2026-03-11T17:59:49.379Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/9e/025c511a17552bf68dc4206ec762ae7dc8f81c0a52b95d5a51efad320315/plotnado-0.3.1.tar.gz", hash = "sha256:f21241afdedd8a74e347fd6ac238661ceee5c397ec90f314235ce221b7518e5d", size = 7807203, upload-time = "2026-05-27T15:45:59.508Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/01/2fb7321369b10c71ebf9003009b20eb5ad39245e256aaf2abb3a8db4bd3b/plotnado-0.3-py3-none-any.whl", hash = "sha256:ae131d30ea073e517c9c67940ac02f3e6ec1600cdec32b0eca5cae51fed84421", size = 7771259, upload-time = "2026-03-11T17:59:47.048Z" },
+    { url = "https://files.pythonhosted.org/packages/99/9e/e5f6f458de802cef09445c43e1e4f53911292eb30956d613a5cd9e74a125/plotnado-0.3.1-py3-none-any.whl", hash = "sha256:36f4502cfb1dbb5ee37153529cd3165bb4ae4c3ce23a3f206737f17900d51b88", size = 7810839, upload-time = "2026-05-27T15:45:57.359Z" },
 ]
 
 [[package]]
