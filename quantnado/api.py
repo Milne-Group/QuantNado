@@ -173,6 +173,7 @@ def create_dataset(
     construction_compression: str = "default",
     overwrite: bool = True,
     filter_chromosomes: bool = True,
+    paired: bool = True,
     test: bool = False,
     test_chromosomes: "Sequence[str] | None" = None,
     log_file: "Path | None" = None,
@@ -202,6 +203,8 @@ def create_dataset(
         Strand orientation for RNA: "R" (reverse), "F" (forward), or None (unstranded).
     chromsizes:
         Path to ``.chrom.sizes``, a dict, or ``None`` to infer from BAM/VCF.
+    paired:
+        Whether BAM input is paired-end. Set ``False`` for single-end BAMs.
 
     Returns
     -------
@@ -240,6 +243,7 @@ def create_dataset(
             methyl_path=methyl_path,
             store_path=output_path,
             sample=sample_id,
+            paired=paired,
             **shared,
         )
     elif assay_upper == "SNP":
@@ -263,6 +267,7 @@ def create_dataset(
             sample=sample_id,
             ip=ip or None,
             stranded=stranded,
+            paired=paired,
             **shared,
         )
 

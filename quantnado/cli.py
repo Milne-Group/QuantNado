@@ -154,6 +154,21 @@ def _parse_stranded_value(value) -> str | None:
     )
 
 
+def _parse_paired_value(value) -> bool:
+    """Normalize paired-end metadata to a boolean."""
+    if value is None or pd.isna(value):
+        return True
+
+    text = str(value).strip().lower().replace("_", "-").replace(" ", "-")
+    if text in {"", "true", "t", "yes", "y", "1", "paired", "paired-end", "pe"}:
+        return True
+    if text in {"false", "f", "no", "n", "0", "single", "single-end", "se"}:
+        return False
+    raise ValueError(
+        f"Invalid paired value '{value}'. Expected paired/single-end or true/false."
+    )
+
+
 def _create_store_impl(
     *,
     sample: str,
@@ -165,6 +180,7 @@ def _create_store_impl(
     ip: Optional[str],
     chromsizes: Optional[Path],
     stranded: Optional[str],
+    paired: bool,
     filter_chromosomes: bool,
     overwrite: bool,
     chunk_len: Optional[int],
@@ -203,6 +219,7 @@ def _create_store_impl(
                 construction_compression=construction_compression,
                 overwrite=overwrite,
                 filter_chromosomes=filter_chromosomes,
+                paired=paired,
                 test=test or bool(test_chrom),
                 test_chromosomes=test_chrom or None,
             )
@@ -239,6 +256,7 @@ def _create_store_impl(
                 ip=ip or None,
                 chromsizes=chromsizes,
                 stranded=normalised_stranded,
+                paired=paired,
                 chunk_len=chunk_len,
                 construction_compression=construction_compression,
                 overwrite=overwrite,
@@ -260,6 +278,7 @@ def _create_dataset_from_metadata_impl(
     output_dir: Path,
     chromsizes: Optional[Path],
     filter_chromosomes: bool,
+    paired: bool,
     overwrite: bool,
     chunk_len: Optional[int],
     construction_compression: str,
@@ -295,6 +314,8 @@ def _create_dataset_from_metadata_impl(
             if row_chromsizes and str(row_chromsizes).strip()
             else chromsizes
         )
+        row_paired = row.get("paired", None)
+        effective_paired = _parse_paired_value(row_paired) if not pd.isna(row_paired) else paired
 
         try:
             _create_store_impl(
@@ -307,6 +328,7 @@ def _create_dataset_from_metadata_impl(
                 ip=str(row.get("ip", "") or "") or None,
                 chromsizes=effective_chromsizes,
                 stranded=str(row.get("stranded", "")).strip() or None,
+                paired=effective_paired,
                 filter_chromosomes=filter_chromosomes,
                 overwrite=overwrite,
                 chunk_len=chunk_len,
@@ -369,6 +391,11 @@ def create_dataset(
         "--stranded",
         help="RNA strandedness: R/F/1/2/U.",
     ),
+    paired: bool = typer.Option(
+        True,
+        "--paired/--single-end",
+        help="Treat BAM input as paired-end or single-end.",
+    ),
     chromsizes: Optional[Path] = typer.Option(
         None,
         "--chromsizes",
@@ -415,6 +442,7 @@ def create_dataset(
         ip=ip,
         chromsizes=chromsizes,
         stranded=stranded,
+        paired=paired,
         filter_chromosomes=filter_chromosomes,
         overwrite=overwrite,
         chunk_len=chunk_len,
@@ -451,6 +479,11 @@ def create_dataset_legacy(
         "--filter-chromosomes/--no-filter-chromosomes",
         help="Keep only canonical chromosomes (chr* without underscore).",
     ),
+    paired: bool = typer.Option(
+        True,
+        "--paired/--single-end",
+        help="Default BAM read layout when metadata has no paired column.",
+    ),
     overwrite: bool = typer.Option(
         False, "--overwrite/--no-overwrite", help="Overwrite existing stores."
     ),
@@ -482,6 +515,7 @@ def create_dataset_legacy(
         output_dir=output_dir,
         chromsizes=chromsizes,
         filter_chromosomes=filter_chromosomes,
+        paired=paired,
         overwrite=overwrite,
         chunk_len=chunk_len,
         construction_compression=construction_compression,

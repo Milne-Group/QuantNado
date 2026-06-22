@@ -471,6 +471,7 @@ class BamStore:
         stranded: str | None = None,
         bam_filter: bamnado.ReadFilter | None = None,
         count_fragments: bool | None = None,
+        paired: bool = True,
         viewpoint_tag: str = "VP",
         chunk_len: int | None = None,
         construction_compression: str = DEFAULT_CONSTRUCTION_COMPRESSION,
@@ -500,6 +501,10 @@ class BamStore:
         stranded:
             Strand orientation: "R" (reverse), "F" (forward), or None (unstranded).
             Required for RNA assays.
+        paired:
+            Whether the BAM contains paired-end reads. Set ``False`` for
+            single-end libraries to disable proper-pair filtering and
+            fragment-level coverage.
         """
         if log_file is not None:
             from quantnado.utils import setup_logging
@@ -518,9 +523,25 @@ class BamStore:
             test=test,
             test_chromosomes=test_chromosomes,
         )
-        # MCC reads are single-end after ligation; disable proper_pair filter
-        read_filter = bam_filter or bamnado.ReadFilter(proper_pair=not is_mcc)
-        use_fragment = bool(count_fragments) if count_fragments is not None else assay.upper() == "RNA"
+        # MCC reads are single-end after ligation; single-end reads cannot pass
+        # bamnado's proper-pair filter or fragment-level signal extraction.
+        use_paired_reads = bool(paired) and not is_mcc
+        if bam_filter is not None:
+            read_filter = _copy_read_filter(bam_filter)
+            if not use_paired_reads:
+                read_filter.proper_pair = False
+        else:
+            read_filter = bamnado.ReadFilter(proper_pair=use_paired_reads)
+
+        if count_fragments is None:
+            use_fragment = assay.upper() == "RNA" and use_paired_reads
+        else:
+            use_fragment = bool(count_fragments)
+            if use_fragment and not use_paired_reads:
+                logger.warning(
+                    "count_fragments=True requires paired-end reads; using read-level coverage"
+                )
+                use_fragment = False
 
         viewpoints: list[str] = []
         if is_mcc:
@@ -551,6 +572,10 @@ class BamStore:
             overwrite=overwrite,
         )
         store._viewpoint_tag = viewpoint_tag
+        store.root.attrs.update({
+            "paired": use_paired_reads,
+            "count_fragments": use_fragment,
+        })
 
         if is_mcc:
             sparsity = store._write_viewpoint_coverage(bam_path, read_filter, use_fragment)

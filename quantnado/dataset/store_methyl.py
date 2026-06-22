@@ -32,6 +32,7 @@ from zarr.storage import LocalStore
 from .metadata import _parse_chromsizes, create_metadata_group
 from .store_bam import (
     _collect_bam_stats,
+    _copy_read_filter,
     _delete_path,
     _get_chromsizes_from_bam,
     _resolve_chunk_len,
@@ -301,6 +302,7 @@ class MethylStore:
         *,
         bam_filter: bamnado.ReadFilter | None = None,
         count_fragments: bool = False,
+        paired: bool = True,
         chunk_len: int | None = None,
         construction_compression: str = DEFAULT_CONSTRUCTION_COMPRESSION,
         overwrite: bool = True,
@@ -323,6 +325,10 @@ class MethylStore:
             Sample name.
         chromsizes:
             Path to .chrom.sizes, dict, or None to infer from BAM header.
+        paired:
+            Whether the BAM contains paired-end reads. Set ``False`` for
+            single-end libraries to disable proper-pair filtering and
+            fragment-level coverage.
         """
         if log_file is not None:
             from quantnado.utils import setup_logging
@@ -350,7 +356,19 @@ class MethylStore:
 
         resolved_chunk_len = _resolve_chunk_len(chromsizes_dict, Path(store_path), chunk_len)
         compressors = _resolve_compressors(construction_compression)
-        read_filter = bam_filter or bamnado.ReadFilter()
+        if bam_filter is not None:
+            read_filter = _copy_read_filter(bam_filter)
+            if not paired:
+                read_filter.proper_pair = False
+        else:
+            read_filter = bamnado.ReadFilter(proper_pair=paired)
+
+        use_fragment = bool(count_fragments)
+        if use_fragment and not paired:
+            logger.warning(
+                "count_fragments=True requires paired-end reads; using read-level coverage"
+            )
+            use_fragment = False
 
         store = cls(
             store_path=store_path,
@@ -360,9 +378,13 @@ class MethylStore:
             compressors=compressors,
             overwrite=overwrite,
         )
+        store.root.attrs.update({
+            "paired": bool(paired),
+            "count_fragments": use_fragment,
+        })
 
         logger.info(f"Writing BAM coverage for {sample}")
-        sparsity = store._write_coverage(bam_path, read_filter, count_fragments)
+        sparsity = store._write_coverage(bam_path, read_filter, use_fragment)
         logger.info(f"Writing methylation data for {sample}")
         store._write_methylation(by_chrom)
         store._finalise(bam_path, sparsity)

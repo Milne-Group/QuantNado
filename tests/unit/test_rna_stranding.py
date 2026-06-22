@@ -6,7 +6,7 @@ import pytest
 import bamnado
 import xarray as xr
 
-from quantnado.cli import _parse_stranded_value
+from quantnado.cli import _parse_paired_value, _parse_stranded_value
 from quantnado.analysis.core import (
     _PlotnadoCoverageAdapter,
     _orient_rna_strands,
@@ -83,6 +83,34 @@ def test_parse_stranded_value_rejects_unknown_values():
         _parse_stranded_value("weird")
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("paired", True),
+        ("paired-end", True),
+        ("paired end", True),
+        ("PE", True),
+        ("true", True),
+        ("1", True),
+        ("single", False),
+        ("single-end", False),
+        ("single end", False),
+        ("SE", False),
+        ("false", False),
+        ("0", False),
+        ("", True),
+        (None, True),
+    ],
+)
+def test_parse_paired_value_normalizes_common_metadata_values(raw, expected):
+    assert _parse_paired_value(raw) == expected
+
+
+def test_parse_paired_value_rejects_unknown_values():
+    with pytest.raises(ValueError, match="Invalid paired value"):
+        _parse_paired_value("weird")
+
+
 class _FakeDataset:
     sample_names = ["rna-1"]
 
@@ -145,6 +173,36 @@ def test_rna_from_bam_files_defaults_to_fragment_counting(tmp_path, monkeypatch)
     )
 
     assert seen["use_fragment"] is True
+
+
+def test_rna_from_bam_files_single_end_uses_read_counting(tmp_path, monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(
+        "quantnado.dataset.store_bam._get_chromsizes_from_bam",
+        lambda bam_path: {"chr1": 5},
+    )
+
+    def fake_write_coverage(self, bam_file, read_filter, use_fragment):
+        seen["use_fragment"] = use_fragment
+        seen["proper_pair"] = read_filter.proper_pair
+        return 0.0
+
+    monkeypatch.setattr(BamStore, "_write_coverage", fake_write_coverage)
+    monkeypatch.setattr(BamStore, "_finalise", lambda self, bam_file, sparsity: None)
+
+    BamStore.from_bam_files(
+        bam_path="dummy.bam",
+        store_path=tmp_path / "rna.zarr",
+        assay="RNA",
+        sample="rna-1",
+        stranded="R",
+        chromsizes={"chr1": 5},
+        paired=False,
+    )
+
+    assert seen["use_fragment"] is False
+    assert seen["proper_pair"] is False
 
 
 def test_orient_rna_strands_only_swaps_reverse_libraries():

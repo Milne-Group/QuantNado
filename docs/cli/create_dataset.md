@@ -26,6 +26,7 @@ quantnado dataset create \
 - `SNP` uses `--vcf_file`
 - `ChIP` and `CUT&TAG` can also use `--ip`
 - `RNA` can also use `--stranded`
+- Single-end BAMs should use `--single-end`
 
 ## Supported Assays
 
@@ -44,6 +45,7 @@ quantnado dataset create \
 - `--methylation_file`: methylation bedGraph/TSV for `METH`
 - `--ip`: target label for `ChIP` / `CUT&TAG`
 - `--stranded`: RNA strandedness (`R`, `F`, `1`, `2`, `U`)
+- `--paired / --single-end`: BAM read layout; defaults to paired-end
 - `--chromsizes PATH`: fallback `.chrom.sizes` file
 - `--filter-chromosomes / --no-filter-chromosomes`: keep only canonical chromosomes
 - `--overwrite / --no-overwrite`: replace an existing store
@@ -63,6 +65,18 @@ quantnado dataset create \
   --sample ATAC_1 \
   --assay ATAC \
   --bamfile /data/ATAC_1.bam \
+  --output-dir dataset
+```
+
+Single-end RNA:
+
+```bash
+quantnado dataset create \
+  --sample RNA_SE_1 \
+  --assay RNA \
+  --bamfile /data/RNA_SE_1.bam \
+  --stranded R \
+  --single-end \
   --output-dir dataset
 ```
 
