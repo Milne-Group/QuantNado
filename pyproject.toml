@@ -59,7 +59,7 @@ dev = [
     "mkdocstrings-python==2.0.3",
     "mkdocstrings==1.0.4",
     "pymdown-extensions==10.21",
-    "pytest==9.1.0",
+    "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-xdist>=3.0",
     "ruff==0.15.17",
